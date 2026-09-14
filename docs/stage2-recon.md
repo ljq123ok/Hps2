@@ -70,25 +70,52 @@ CMake Error at cmake/Pcsx2Utils.cmake:29 (message):
 
 ### 2.2 障碍 2：外部依赖缺口 —— 🔴 当前阻塞
 
-`cmake/SearchForStuff.cmake` 要求 **24 个 REQUIRED 依赖**：
+`cmake/SearchForStuff.cmake` 中 **11 个无条件 REQUIRED 依赖**
+（无法用 CMake 开关关闭）：
 
 ```
-Threads PNG JPEG ZLIB Zstd LZ4 WebP SDL3 Freetype plutovg plutosvg
-DirectX-Headers Shaderc CURL PCAP Fontconfig X11 ECM Wayland Libbacktrace
-PkgConfig Qt6 KDDockWidgets-qt6
+Threads  PNG  JPEG  ZLIB  Zstd  LZ4  WebP  SDL3  Freetype
+plutovg  plutosvg
 ```
 
-**OHOS sysroot 中可用的**：仅 `Threads`(?)、`ZLIB`(部分)。
-其余**全部缺失**，且实测配置失败于：
+（另有 CURL / PCAP / X11 / Wayland / Fontconfig / Qt6 / KDDockWidgets
+等 **有开关可关**，不属于阻塞项。）
+
+#### OHOS sysroot 实测结果
 
 ```
-CMake Error: Could NOT find PNG (missing: PNG_LIBRARY PNG_PNG_INCLUDE_DIR)
-              (Required is at least version "1.6.40")
+$ ls $SYSROOT/usr/lib/aarch64-linux-ohos/ | grep -iE "png|jpeg|zstd|lz4|webp|sdl|freetype"
+（仅 libz.so 命中）
+$ ls $SYSROOT/usr/include/ | grep -E "png.h|jpeglib.h|zlib.h|ft2build.h"
+✅ zlib.h            ❌ 其余全部缺失
 ```
 
-**3rdparty 已自带的**（可随源码交叉编译）：
-`fmt vixl zydis cpuinfo rapidyaml rapidjson fmt imgui plutovg plutosvg
-libchdr libzip lzma soundtouch cubeb vixl ...`
+| 依赖 | sysroot | 上游自带 | 结论 |
+|---|---|---|---|
+| ZLIB | ✅ | — | 直接可用 |
+| PNG / JPEG / Zstd / LZ4 / WebP / SDL3 / Freetype | ❌ | ❌ | **需交叉编译** |
+| plutovg / plutosvg | ❌ | ✅ `3rdparty/` | 随源码交叉编译 |
+| Threads | ✅ | — | 实测通过 |
+
+#### 各库在核心中的真实引用量（已修正统计）
+
+> 首次统计得出"每个库都被 17 个文件引用"，**该结果是错的** ——
+> 一次 grep 同时匹配多个模式造成计数假象。重新逐库统计数据如下：
+
+| 库 | .cpp 引用 | .h 引用 |
+|---|---|---|
+| zlib.h | 7 | 7 |
+| png.h | 4 | 4 |
+| jpeglib.h | 3 | 3 |
+| zstd.h | 2 | 2 |
+| SDL3/ | 2 | 2 |
+| lz4.h | 1 | 1 |
+| webp/ | 1 | 1 |
+| ft2build.h | 1 | 1 |
+
+**含义**：引用点都不多（每库 1–7 处），说明这些库多用于
+**存档状态序列化 / 截图 / 纹理解压**等与"BIOS 启动"关系不大的路径，
+因此"**先桩化、后补齐**"是可行策略。
 
 **缺口**：`PNG JPEG ZLIB Zstd LZ4 WebP SDL3 Freetype CURL PCAP`
 —— 需自行交叉编译或提供替代实现。
