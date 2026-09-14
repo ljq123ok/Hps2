@@ -231,3 +231,56 @@ SDL 提供的是**音频与输入**，与 BIOS 启动无关；
 为一个与目标无关的依赖投入大型移植工作不划算。
 
 **但这需要用户确认** —— 因为方案 B 会偏离"完全保留上游功能"的目标。
+
+---
+
+## 6. 方案 B 执行：SDL3 stub + OHOS 原生替换
+
+**用户已确认采用方案 B。**
+
+### 6.1 关键前提已验证：SDL3 头文件可在 OHOS toolchain 下使用 ✅
+
+```
+clang --target=aarch64-linux-ohos --sysroot=$SYSROOT -I include -c sdl_hdr_test.c
+=> EXIT=0
+```
+
+这决定了 stub 的实现策略：**使用 SDL3 真实头文件**（保证类型/枚举/ABI
+与上游代码预期一致），**只提供空实现**（保证链接通过）。
+不需要手写头文件，避免了类型定义不一致的风险。
+
+### 6.2 SDL 的真实使用面（已核实，含一处误报纠正）
+
+初次扫描得出 6 个文件使用 SDL，复查后发现 **`R5900OpcodeImpl.cpp`
+是误报** —— 其中的 `SDL_MASK` / `SDL_SHIFT` 是 PS2 的
+**Shift-Double-Left 指令**相关常量，与 SDL 库无关。
+
+**真实使用面仅 3 个文件**：
+
+| 文件 | 规模 | 用途 | 处理方式 |
+|---|---|---|---|
+| `Host/SDLAudioStream.cpp` | 161 行 | 音频输出 | OHOS 原生替换（`AudioStream` 是虚基类，可派生） |
+| `Input/SDLInputSource.cpp` | 1869 行 | 手柄输入 | OHOS 原生替换（`InputSource` 是纯虚接口） |
+| `USB/usb-pad/usb-pad-sdl-ff.cpp` | 370 行 | USB 手柄力反馈 | 先用 stub，后续按需 |
+
+### 6.3 有利条件：两个抽象都是干净接口
+
+```
+class AudioStream   { virtual ~AudioStream(); virtual void SetPaused(bool); ... };
+class InputSource   { virtual bool Initialize(...) = 0; virtual void PollEvents() = 0; ... };
+```
+
+`InputSource` 是**纯虚接口**，`AudioStream` 是虚基类 —— 都适合派生
+OHOS 原生实现，不需要改动上游的调用方代码。
+
+### 6.4 Stub 需要覆盖的符号（已精确统计）
+
+**52 个函数**（需符号），分布在：
+- 音频：`SDL_OpenAudioDeviceStream` / `SDL_PutAudioStreamData` /
+  `SDL_DestroyAudioStream` / `SDL_GetAudioDeviceFormat` 等
+- 手柄/摇杆：`SDL_OpenGamepad` / `SDL_GetGamepadName` /
+  `SDL_GetNumJoystickAxes` 等
+- 力反馈：`SDL_OpenHapticFromJoystick` / `SDL_PlayHapticRumble` 等
+- 事件/日志/属性：`SDL_PollEvent` / `SDL_GetError` / `SDL_SetHint` 等
+
+另有 ~118 个枚举/常量（由真实头文件提供，无需 stub）。
