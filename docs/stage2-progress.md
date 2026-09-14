@@ -284,3 +284,87 @@ OHOS 原生实现，不需要改动上游的调用方代码。
 - 事件/日志/属性：`SDL_PollEvent` / `SDL_GetError` / `SDL_SetHint` 等
 
 另有 ~118 个枚举/常量（由真实头文件提供，无需 stub）。
+
+---
+
+## 7. 宿主机与目标的 SME 能力查证（2026-09-14）
+
+> 此前的文档中我**从未确认过宿主 Mac 的芯片型号**，只查了 `uname -m`（arm64）。
+> 现补上实测结果 —— 不把推测当已确认事实。
+
+### 7.1 宿主 Mac（实测）
+
+```bash
+$ sysctl -n machdep.cpu.brand_string
+Apple M3
+$ sysctl -n hw.model
+Mac15,12
+$ sysctl -n hw.ncpu
+8          # 4 性能核 + 4 能效核
+```
+
+### 7.2 SME 支持：**不支持**
+
+```bash
+$ sysctl -a | grep -iE "FEAT_SME|SME_"
+hw.optional.arm.FEAT_SME:        0
+hw.optional.arm.FEAT_SME2:       0
+hw.optional.arm.FEAT_SME2p1:     0
+hw.optional.arm.FEAT_SME_F64F64: 0
+hw.optional.arm.FEAT_SME_I16I64: 0
+hw.optional.arm.FEAT_SME_F16F16: 0
+hw.optional.arm.FEAT_SME_B16B16: 0
+hw.optional.arm.SME_F32F32:      0
+hw.optional.arm.SME_BI32I32:     0
+hw.optional.arm.SME_B16F32:      0
+hw.optional.arm.SME_F16F32:      0
+hw.optional.arm.SME_I8I32:       0
+hw.optional.arm.SME_I16I32:      0
+hw.optional.arm.sme_max_svl_b:   0
+```
+
+**全部为 0** —— Apple M3 **不支持 SME/SME2**。
+
+> 对照说明（证明该 sysctl 可信，不是整体失效）：
+> 同一批查询中 `FEAT_BF16=1`、`FEAT_I8MM=1`、`FEAT_FP16=1`、
+> `FEAT_DotProd=1`、`FEAT_LSE=1` 等均为 1，说明 sysctl 正常反映
+> 该芯片真实具备的特性，SME 的 0 是真值。
+
+### 7.3 对本项目**无影响**（已核实）
+
+```bash
+$ grep -rniE "\bsme\b|sme2|za\[|__arm_sme" pcsx2/ common/ | grep -v 3rdparty
+（无匹配）
+$ grep -rhoE "__ARM_FEATURE_[A-Z0-9_]+|__ARM_NEON|VIXL" pcsx2/arm64/ common/arm64/ | sort | uniq -c
+     21 VIXL
+```
+
+- **ARMSX2 完全不使用 SME/SVE**，只依赖 VIXL 生成标准 AArch64 指令
+- 编译目标（`--target=aarch64-linux-ohos`）默认也不启用 SME
+
+**验证方法**：编译一个简单函数并检查生成的汇编：
+
+```bash
+$ clang --target=aarch64-linux-ohos -O2 -S -o test.s test.c
+$ grep -c "sme\|sve" test.s
+1        # 但这 1 处是文件名 "sme_test.c" 中的字符串，属误报
+$ cat test.s | grep -vE "^\s*\."
+f:
+	madd	w0, w1, w0, w0
+	ret
+```
+
+生成的代码是普通 `madd`/`ret`，**无任何 SME/SVE 指令**。
+
+> 注：本次查证中 `grep -c` 返回 1，初看像命中，实为文件名误报。
+> 已展开原文核实，未据错误计数下结论。
+
+### 7.4 结论
+
+| 项目 | 状态 |
+|---|---|
+| 宿主 Mac | Apple M3（Mac15,12），8 核 |
+| 宿主 SME/SME2 | ❌ 不支持 |
+| ARMSX2 是否用 SME | ❌ 不使用（仅 VIXL 标准 AArch64） |
+| OHOS 编译目标是否需 SME | ❌ 不需要 |
+| **对本项目影响** | **无** |
