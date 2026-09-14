@@ -446,6 +446,85 @@ void TestAlternativePaths(std::string *report) {
 }
 
 // ---------------------------------------------------------------------------
+// ===========================================================================
+// 启动自检（JIT 可用性判定 + 可操作诊断）
+// ===========================================================================
+// 产品决策（用户明确要求）：
+//   **不做降级**。PS2 模拟器离开 JIT 就没有意义，与其降级跑幻灯片，
+//   不如明确告诉用户当前不可用、以及具体该怎么操作到可用。
+// 因此本函数只做两件事：
+//   1. 判定 JIT 当前是否真的可用（一次最小可执行内存往返）；
+//   2. 若不可用，给出**可操作**的诊断结论，供 UI 直接引导用户。
+struct JitSelfCheck {
+    bool available = false;      // JIT 是否可用
+    int  stage = 0;              // 失败所处阶段（0=通过）
+    int  errnoVal = 0;           // 失败时的 errno
+    std::string stageName;       // 阶段名
+    std::string message;         // 面向用户的说明
+    std::string action;          // 面向用户的操作建议
+};
+
+// 最小可用性检查：申请一页 RW → 写入 movz/ret → 切 RX → 执行 → 校验 123
+JitSelfCheck RunSelfCheck() {
+    JitSelfCheck r;
+    constexpr size_t kPage = 4096;
+    constexpr int kExpected = 123;
+
+    // 阶段 1：申请可写内存
+    errno = 0;
+    void *p = mmap(nullptr, kPage, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        r.stage = 1;
+        r.stageName = "mmap(RW)";
+        r.errnoVal = errno;
+        r.message = "无法申请可写内存";
+        r.action = "请重启设备后重试；若仍失败，请反馈此错误码。";
+        return r;
+    }
+
+    // 阶段 2：写入指令
+    auto *code = static_cast<uint32_t *>(p);
+    code[0] = EncodeMovzW0(static_cast<uint16_t>(kExpected));
+    code[1] = kRet;
+
+    // 阶段 3：提交为可执行（关键步骤）
+    errno = 0;
+    if (mprotect(p, kPage, PROT_READ | PROT_EXEC) != 0) {
+        r.stage = 3;
+        r.stageName = "mprotect(RX)";
+        r.errnoVal = errno;
+        r.message = "系统当前拒绝将内存标记为可执行（JIT 被拦截）";
+        // 这是实测过的真实故障模式：errno=EINVAL
+        r.action = "请重启手机后重试。重启可恢复；开发阶段每次开始测试前建议先重启设备。";
+        munmap(p, kPage);
+        return r;
+    }
+
+    // 阶段 4：同步指令缓存并执行
+    __builtin___clear_cache(static_cast<char *>(p), static_cast<char *>(p) + kPage);
+    __asm__ __volatile__("dsb ish\n\tisb" ::: "memory");
+
+    JitFnInt fn = reinterpret_cast<JitFnInt>(p);
+    int got = fn();
+    munmap(p, kPage);
+
+    if (got != kExpected) {
+        r.stage = 4;
+        r.stageName = "execute";
+        r.message = "生成的代码执行结果不正确（返回 " + std::to_string(got) + "）";
+        r.action = "这是严重错误，请反馈此结果。";
+        return r;
+    }
+
+    r.available = true;
+    r.stageName = "ok";
+    r.message = "JIT 可用";
+    r.action = "";
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // 主测试入口
 // ---------------------------------------------------------------------------
 std::string RunAllTests() {
@@ -454,6 +533,21 @@ std::string RunAllTests() {
 
     LOGI("========== HPS2 JIT 探针开始 ==========");
     LOGI("TARGET_OHOS=%{public}d", HPS2_TARGET_OHOS);
+
+    // 先做启动自检，把结论显式记录（不含降级逻辑）
+    {
+        JitSelfCheck sc = RunSelfCheck();
+        if (sc.available) {
+            AddStep("0.0 启动自检：JIT 可用性", true, "通过（最小可执行内存往返成功）");
+            LOGI("SELFCHECK=available");
+        } else {
+            AddStep("0.0 启动自检：JIT 可用性", false,
+                    "阶段[" + sc.stageName + "] 失败 errno=" +
+                    std::to_string(sc.errnoVal) + " -> " + sc.message);
+            LOGE("SELFCHECK=unavailable stage=%{public}s errno=%{public}d",
+                 sc.stageName.c_str(), sc.errnoVal);
+        }
+    }
 
     int basicValue = -1;
     std::string d;
@@ -561,12 +655,46 @@ static napi_value NapiPlatformInfo(napi_env env, napi_callback_info cbInfo) {
     return result;
 }
 
+// 启动自检接口：供 UI 在进入模拟器前调用。
+// 返回 JSON：{ available, stage, stageName, errno, message, action }
+// 设计意图：**不做降级**，只报告当前是否可用 + 若不可用该让用户做什么。
+static napi_value NapiSelfCheck(napi_env env, napi_callback_info cbInfo) {
+    (void)cbInfo;
+    JitSelfCheck sc = RunSelfCheck();
+
+    auto esc = [](const std::string &s) {
+        std::string o;
+        for (char c : s) {
+            if (c == '"' || c == '\\') { o += '\\'; }
+            if (c == '\n') { o += ' '; continue; }
+            o += c;
+        }
+        return o;
+    };
+
+    std::string json = "{";
+    json += "\"available\":" + std::string(sc.available ? "true" : "false");
+    json += ",\"stage\":" + std::to_string(sc.stage);
+    json += ",\"stageName\":\"" + esc(sc.stageName) + "\"";
+    json += ",\"errno\":" + std::to_string(sc.errnoVal);
+    json += ",\"message\":\"" + esc(sc.message) + "\"";
+    json += ",\"action\":\"" + esc(sc.action) + "\"";
+    json += "}";
+
+    LOGI("SELFCHECK_JSON=%{public}s", json.c_str());
+
+    napi_value result;
+    napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &result);
+    return result;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"runAll",      nullptr, NapiRunAll,      nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getSteps",    nullptr, NapiGetSteps,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"platformInfo", nullptr, NapiPlatformInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"selfCheck",   nullptr, NapiSelfCheck,   nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;
