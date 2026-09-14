@@ -177,7 +177,44 @@ JIT 代码缓存是纯原生 C++，**不经过 JSVM**。现有公开材料**没�
 "JIT 不可用"的降级路径（虽然任务书明确不以解释器作为最终性能兜底，
 但作为可用性兜底仍需存在）。
 
-### 2.6 需要走官方渠道解决的事项
+### 2.6 真机内核实证：JITFort 机制真实存在并处于启用状态
+
+**这是真机接入后获得的最重要的一条运行期证据**（模拟器上完全没有）。
+
+在真机（HUAWEI Pura X View，HongMeng Kernel 1.13.0）上：
+
+```bash
+$ hdc -t <device> shell ls /proc/sys/kernel/
+... jitfort ...          ← 存在 jitfort 节点
+
+$ hdc -t <device> shell ls -la /proc/sys/kernel/jitfort/
+dr-xr-xr-x 2 root root 0 2026-09-13 20:46 .
+dr-xr-xr-x 11 root root 0 2026-09-13 20:46 ..
+-?????????  ? ?    ?    ?         ? jitfort_mode
+
+$ hdc -t <device> shell cat /proc/sys/kernel/jitfort/jitfort_mode
+/bin/sh: cat: /proc/sys/kernel/jitfort/jitfort_mode: Permission denied
+```
+
+**结论**：
+
+1. `jitfort` **不是纯用户态概念** —— 它由**内核直接暴露一个 sysctl 目录**
+   （`/proc/sys/kernel/jitfort/jitfort_mode`）。HongMeng 内核**原生实现了**
+   JITFort 语义，这与普通 Linux 内核有本质区别。
+2. 该节点为 **root-only**（普通 shell 读为 `Permission denied`），
+   即其开关由系统/root 控制，**三方应用无法自行开启**。
+3. 这解释了 `ohos.permission.kernel.ALLOW_USE_JITFORT_INTERFACE`
+   （"允许应用调用 JITFort 接口更新 MAP_FORT 内存的内容"）的**存在意义**：
+   内核提供机制，应用需显式获权才能调用。
+4. **同时也解释了为何公开 NDK 没有该接口**：它是**高度受限的内核能力**，
+   连头文件都不对普通 NDK 暴露，只对系统 JS 引擎（ArkTS）开放。
+
+**对项目的影响**：这**加强了** R1/R3 风险判断 —— JITFort 是**为系统
+JS 引擎定制的内核能力**，把 PS2 模拟器的自研 JIT 接入这条路，
+需要官方明确开放，不是靠逆向或猜测可达成的。任务书已明确禁止
+"绕过代码签名、XPM、提权或内核漏洞"的方案，本审计严格遵守。
+
+### 2.7 需要走官方渠道解决的事项
 
 以下是**只能由用户/官方渠道推进**、无法靠本机代码绕过的阻塞项：
 
@@ -186,6 +223,7 @@ JIT 代码缓存是纯原生 C++，**不经过 JSVM**。现有公开材料**没�
    需确认：该权限能否覆盖非 JSVM 场景。
 2. **确认 `ohos.permission.kernel.ALLOW_USE_JITFORT_INTERFACE` 是否存在
    可调用的接口**。若存在，索取头文件与文档；若不存在，请官方确认该权限的用途。
+   真机已证实 `/proc/sys/kernel/jitfort/jitfort_mode` 存在（§2.6）。
 3. **确认 Pura X（手机形态）能否申请 `ALLOW_WRITABLE_CODE_MEMORY`**。
    文档写"当前仅平板、2in1 设备应用可申请"，需确认真机形态判定规则。
 4. **确认 W^X 策略下 RW→RX 分步映射（`mprotect`）是否被允许**。

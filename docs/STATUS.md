@@ -1,7 +1,12 @@
 # HPS2 项目状态
 
 **最后更新**：2026-09-14
-**当前阶段**：阶段 0 已完成；阶段 1 **模拟器验证通过（PASS=8 / FAIL=1，生成代码返回 123）**；**真机验证未完成（阻塞）**
+**当前阶段**：阶段 0 已完成；阶段 1 **模拟器验证通过（PASS=8 / FAIL=1，返回 123）**；
+真机**已接入并采集完整设备事实**，但**因签名信任根受限无法安装 HAP**，探针未能在真机运行。
+
+> **真机事实已确认**（不再是推测）：HUAWEI Pura X View / `VOL-AL00` /
+> **OpenHarmony-7.0.0.105 / API 26** / arm64-v8a / 形态 phone /
+> HongMeng Kernel 1.13.0。
 
 ---
 
@@ -17,11 +22,18 @@
 | SDK Native 版本 | 6.1.1.125 | `native/oh-uni-package.json` |
 | NDK clang | 15.0.4 | `build/cmake/ohos.toolchain.cmake` |
 | 宿主 | macOS 26.6.1，arm64 | `sw_vers` / `uname -m` |
-| 真机 | **未连接，型号/系统/架构均未确认** | `hdc list targets` |
+| **真机** | **HUAWEI Pura X View（`VOL-AL00`）** | `param get const.product.name` |
+| 真机系统 | **OpenHarmony-7.0.0.105 / API 26**，安全补丁 2026/07/01 | `param get const.ohos.fullname` |
+| 真机架构 | **arm64-v8a**，形态 `phone` | `param get const.product.cpu.abilist` |
+| 真机内核 | **HongMeng Kernel 1.13.0**（aarch64） | `uname -a` |
+| 真机软件版本 | `VOL-AL00 7.0.0.105(SP12C00E8R5P3)` | `const.product.software.version` |
+| 真机硬件版本 | HL1VGDM | `const.product.hardwareversion` |
+| 模拟器 | OpenHarmony-6.1.1.125 / API 24（emulator） | `param get const.ohos.fullname` |
 
-> ⚠️ **关于「HarmonyOS 7」**：本机 SDK 为 6.1.1 / API 24，`sdk-pkg.json` 中
-> 不存在任何 "7" 版本标识，DevEco 可安装列表亦以 6.1.1 为最高级别。
-> 因此所有结论基于**实际可用的 API 24 SDK**，不假设 HarmonyOS 7 独有接口存在。
+> ⚠️ **关于「HarmonyOS 7」**：本机 **SDK** 为 6.1.1 / API 24（`sdk-pkg.json` 中
+> 不存在 "7" 版本标识），但**真机实际运行 HarmonyOS 7.0.0 / API 26**。
+> 即真机 API 级别（26）**高于本机 SDK（24）**，属前向兼容：
+> 可用 API 24 编译并运行在 API 26 设备上，但**无法使用 API 25/26 新增接口**。
 
 ---
 
@@ -134,23 +146,77 @@
 
 ## 3. 阻塞原因
 
-### 阻塞 1：无真机连接 🔴 —— **当前唯一阻塞项**
+### 阻塞 1：真机签名信任根受限 🔴 —— **当前唯一阻塞项**
+
+真机**已成功接入**，设备事实已完整采集（见 §1）。但 **HAP 无法安装到真机**。
+
+#### 3.1.1 未签名 HAP —— 预期失败
 
 ```
-$ hdc list targets -v
-127.0.0.1:5555          TCP     Connected   localhost   ← 模拟器（已跑通）
-<DEVICE_ID>        USB     Offline     localhost   ← 疑似目标真机
+$ hdc -t <DEVICE_ID> install -r entry-default-unsigned.hap
+error: failed to install bundle. code:9568320 error: no signature file.
 ```
 
-存在一个 USB 设备 `<DEVICE_ID>`，但状态为 **Offline**：
+#### 3.1.2 自签名 HAP（OpenHarmony 测试链）—— 失败，且原因已精确定位
+
+我用 **SDK 自带的 OpenHarmony 官方测试签名链**完成了完整签名：
 
 ```
-$ hdc -t <DEVICE_ID> shell param get const.product.model
-[Fail][E001005] Device not found or connected
+sign-profile : sign-profile success
+sign-app     : Sign Hap success!
+verify-app   : Digest verify result: true / verify: Verify success   ← 签名自校验通过
 ```
 
-**推测**（非确认事实）：该设备是需要在手机上确认"允许 USB 调试"的
-目标真机。**其型号、系统版本、CPU 架构一律未经确认。**
+但真机安装仍失败：
+
+```
+error: failed to install bundle. code:9568257 error: fail to verify pkcs7 file.
+```
+
+设备端 HapVerify 给出了**确切原因**：
+
+```
+E C011FE/foundation/HapVerify: [hap_cert_verify_openssl_utils.cpp(GetCertsChain:322)]
+  it do not come from trusted root,
+  issuer: C=CN, O=OpenHarmony, OU=OpenHarmony Team, CN=OpenHarmony Application Root CA
+```
+
+#### 3.1.3 排除法：我的签名**没有错**
+
+为排除"签名流程写错"这一可能，我把同一个已签名 HAP 装到模拟器：
+
+```
+$ hdc -t 127.0.0.1:5555 install -r hps2-signed.hap
+install bundle successfully.          ← 安装成功
+$ (启动应用)
+HPS2_JIT: 探针结束: PASS=8 FAIL=1 | basicReturn=123
+```
+
+**结论**：签名结构、profile 绑定、证书链装配**全部正确**；
+真机拒绝的**唯一原因是信任根不同**：
+
+| 签名链根证书 | 模拟器 | 华为真机 |
+|---|---|---|
+| `OpenHarmony Application Root CA`（SDK 测试链） | ✅ 接受 | ❌ 拒绝 |
+| `Huawei CBG Root CA G2` / `HOS Profile Management Debug`（AGC 签发） | ✅ | ✅ 接受 |
+
+对照证据：本机另一个工程 `com.aobai.cyclingcomputer` 使用 **AGC 签发**的
+profile（链中可见 `Huawei CBG Root CA G2` + `HOS Profile Management Debug`），
+**已成功安装在同型号真机上**。而它的 profile 内
+`"bundle-name":"com.aobai.cyclingcomputer"` ——
+**profile 与 bundle name 强绑定**，不能挪用到 `com.hps2.jitprobe`。
+
+#### 3.1.4 需要的操作（详见 §6.1）
+
+要让探针跑在真机上，需要一份**为该 bundle name 签发的华为 Profile**。
+两个途径（任一即可）：
+
+- **A（推荐，最快）**：用 DevEco Studio 打开本工程 →
+  `File > Project Structure > Signing Configs` → 勾选
+  `Automatically generate signature` → 重新构建运行。
+  （本机 DevEco **已登录华为账号**且历史上执行过 AutoSign，此路应可一次成功。）
+- **B**：把 AGC 为新 bundle 签发的 `.p12` / `.cer` / `.p7b` 三件套给我路径，
+  我用 `scripts/sign.sh` 签名。
 
 ### 已解决：模拟器曾无法驻留 🟢
 
@@ -158,13 +224,13 @@ $ hdc -t <DEVICE_ID> shell param get const.product.model
 macOS 上不存在 `setsid`，非交互式 shell 中 detach 失败。
 改用**受管后台任务**方式启动后，模拟器稳定驻留并完成全部验证。
 
-**当前模拟器状态**：运行中，`127.0.0.1:5555` Connected。
-
 > **重要**：模拟器结果**不计作真机成功**（任务书明确要求）。
 > 且模拟器为 OpenHarmony 6.1.1 镜像，其 JIT/权限策略与
 > 华为 HarmonyOS 商业版真机**可能不同**，即使跑通也**不能替代真机结论**。
 > 这一点在本次实测中已有具体佐证：模拟器运行在 `o:r:debug_hap:s0`
-> 调试域，且允许 W+X —— 这两项在真机发布签名下都可能不同。
+> 调试域，且允许 W+X —— 这两项在真机发布签名下都可能不同。更关键的是，
+> 真机上存在 `/proc/sys/kernel/jitfort/`（模拟器上未见），
+> 说明两者的**内核 JIT 机制本身就不相同**。
 
 ---
 
@@ -230,44 +296,52 @@ HarmonyOS 的内存/权限策略上。这是阶段 1 失败诊断的关键前提
 
 ### 6.1 需要你操作的**最短清单**
 
-按重要性排序，只需做 1 件事即可解除主要阻塞：
+✅ **① 接入真机 —— 已完成**（USB 调试已授权，设备事实已采集）
 
-**① 接入真机（解除阻塞 1）** — 必须
+🔴 **② 为 `com.hps2.jitprobe` 提供华为签名 —— 当前唯一待办**
+
+只做下面**任一**一件事即可解除阻塞：
+
+**途径 A（推荐，最快，约 1 分钟）**
+
 ```
-1. 用 USB 线连接 Pura X 到本机
-2. 手机上：设置 → 系统和更新 → 开发者选项 → 打开「USB 调试」
-3. 手机弹出「允许 USB 调试吗？」→ 勾选「始终允许」→ 确定
-4. 告诉我，我会先跑设备事实采集（型号/系统/架构），再装探针
+1. 用 DevEco Studio 打开工程：
+   <USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe
+2. File > Project Structure > Signing Configs
+3. 勾选 "Automatically generate signature"
+   （本机 DevEco 已登录华为账号，历史上执行过 AutoSign，此步应能直接成功）
+4. 点 OK，然后告诉我 —— 我随后重新构建、签名、安装并抓真机日志
 ```
-> 我不会把"Pura X"当作已确认事实——接入后第一件事就是用
-> `hdc shell param get` 把型号、`const.ohos.apiversion`、
-> CPU 架构全部读出来记录。
+> 若第 3 步要求重新登录或同意协议，照做即可；签名材料会落到
+> `~/.ohos/config/`，我就能用 `scripts/sign.sh` 直接复用。
 
-**② 真机签名（可能必需）** — 视①的结果而定
+**途径 B（若 A 不便）**
 
-真机通常拒绝未签名 HAP（`no signature file`）。两条路：
-- **快速路**：DevEco Studio → `File > Project Structure > Signing Configs`
-  → 勾选 `Automatically generate signature`（需登录华为开发者账号）
-- **可控路**：把 AGC 签发的 `.p12` / `.cer` / `.p7b` 放到一个目录，
-  告诉我路径，我用 `scripts/sign.sh` 签名
+```
+把 AGC 为 com.hps2.jitprobe（或任意 bundle，我可改工程名配合）
+签发的三件套放进一个目录，告诉我路径：
+  app.p12 / app.cer / app.p7b
+我会用：HPS2_SIGN_DIR=<那个目录> HPS2_KEY_PWD=<口令> bash scripts/sign.sh
+```
+> 注意：Profile 与 bundle name 强绑定。现有 `aobai` 材料虽覆盖本机真机，
+> 但绑的是 `com.aobai.cyclingcomputer`，**不能直接挪用**。
 
-**③ 向 AGC 申请 JIT ACL（长期，可并行）** — 建议尽早启动
+🟡 **③ 向 AGC 申请 JIT ACL（长期，建议并行启动）**
 
 申请 `ohos.permission.kernel.ALLOW_EXECUTABLE_FORT_MEMORY`，
-并在申请理由中明确说明用途是**自研原生 ARM64 JIT 重编译器（PS2 模拟器）**，
-而非 JSVM。**关键问题**：该权限能否覆盖非 JSVM 的原生 JIT 场景。
+理由写明用途是**自研原生 ARM64 JIT 重编译器（PS2 模拟器）**，而非 JSVM。
+**需官方澄清**：该权限能否覆盖非 JSVM 的原生 JIT 场景。
 
-理由：这是官方唯一指明的 JIT 授权通道，且审批需要时间。
-即使①的探针跑通（RW→RX 路径可行），也建议并行推进，以备系统策略收紧。
+依据：这是官方唯一指明的 JIT 授权通道；且真机已证实内核存在
+`/proc/sys/kernel/jitfort/jitfort_mode`（§§2.6），说明机制真实但需授权。
+审批需要时间，建议与②并行。
 
 ### 6.2 我这边不依赖以上材料可继续做的事
 
-1. 完成 ARMSX2 源码审计的整理（`docs/source-audit.md`）
-2. 把探针扩展为「权限/接口矩阵报告」：对每个候选接口逐一给出
-   存在性、可调用性、失败原因
-3. 准备阶段 2 的平台层骨架（构建系统、文件访问、线程、计时），
-   这部分不依赖 JIT 权限
-4. 静态验证 ARMSX2 的 GS/Vulkan 后端与 `vulkan_ohos.h` 的兼容性差距
+1. 整理 ARMSX2 源码审计为 `docs/source-audit.md`
+2. 把探针扩展为「权限/接口矩阵报告」：逐接口给出存在性、可调用性、失败原因
+3. 准备阶段 2 的平台层骨架（构建系统、文件访问、线程、计时）——不依赖 JIT 权限
+4. 静态分析 ARMSX2 的 GS/Vulkan 后端与 `vulkan_ohos.h` 的兼容性差距
 
 **但按任务书要求，在真机 JIT 验证通过之前，不展开整套模拟器移植。**
 
@@ -295,11 +369,52 @@ HarmonyOS 的内存/权限策略上。这是阶段 1 失败诊断的关键前提
 
 | # | 问题 | 状态 |
 |---|---|---|
-| Q1 | **真机 RW→RX 分步映射是否被允许？**（唯一不依赖 AGC 审批的突破口；模拟器已验证可行） | **待真机确认** |
-| Q2 | 真机型号 / 系统版本 / CPU 架构 | 未确认（设备 Offline） |
-| Q3 | 真机是否被判定为"手机形态"（影响 W+X 权限可申请性） | 未确认 |
-| Q4 | 真机是否开启坚盾守护模式 | 未确认 |
+| Q1 | **真机 RW→RX 分步映射是否被允许？**（唯一不依赖 AGC 审批的突破口；模拟器已验证可行） | **仍待真机确认** —— 阻塞于签名，探针未能在真机运行 |
+| Q2 | 真机型号 / 系统版本 / CPU 架构 | ✅ **已确认**：HUAWEI Pura X View / `VOL-AL00` / OpenHarmony-7.0.0.105 / API 26 / arm64-v8a |
+| Q3 | 真机形态判定 | ✅ **已确认**：`const.product.devicetype = phone` |
+| Q4 | 真机是否开启坚盾守护模式 | 未确认（相关 param 均不可读） |
 | Q5 | `ALLOW_EXECUTABLE_FORT_MEMORY` 能否覆盖非 JSVM 原生 JIT | 需官方澄清 |
-| Q6 | `ALLOW_USE_JITFORT_INTERFACE` 对应的可调用接口是否存在 | 无公开接口 |
+| Q6 | `ALLOW_USE_JITFORT_INTERFACE` 对应的可调用接口是否存在 | **真机已证实内核侧存在** `/proc/sys/kernel/jitfort/jitfort_mode`（root-only）；但公开 NDK 仍无可调用接口 |
 | Q7 | 真机 GPU Vulkan 驱动版本与可用扩展 | 未验证 |
 | Q8 | ARMSX2 原位代码修补与代码签名约束是否冲突 | **部分明确**：ARMSX2 已有 `HostSys::BeginCodeWrite/EndCodeWriteRange` 抽象，iOS 的 `Legacy` 模式用 mprotect 往返切换；真机需实测其性能代价 |
+| Q9 | **真机签名信任根受限** | 🔴 **当前唯一阻塞**：真机只信任 Huawei CBG 签发链；需 AGC Profile（见 §6.1 ②） |
+| Q10 | 真机 W+X 是否被允许（模拟器允许，真机未知） | 未验证（阻塞于 Q9） |
+| Q11 | 真机 SELinux 对 JIT 域的策略 | 不可直接读取（`/sys/fs/selinux/policy` 权限不足）；需探针实测 |
+
+---
+
+## 9. 附带发现（供后续阶段参考）
+
+### 9.1 SDK 内有权威权限清单，此前审计遗漏
+
+`toolchains/lib/PermissionDefinitions.json`（273 KB）是**本机 SDK 内置的
+权限定义全集**，含每个权限的 `grantMode` / `availableLevel` /
+`provisionEnable` / `deviceTypes` / `since`。这比查阅在线文档更权威、更完整，
+**后续阶段应优先查它**。
+
+从该文件读出的 JIT 相关权限（与在线文档一致，且多出一条）：
+
+| 权限 | 级别 | since | deviceTypes |
+|---|---|---|---|
+| `kernel.ALLOW_WRITABLE_CODE_MEMORY` | system_basic | 14 | — |
+| `kernel.ALLOW_EXECUTABLE_FORT_MEMORY` | system_basic | 14 | — |
+| `kernel.ALLOW_USE_JITFORT_INTERFACE` | system_basic | 16 | — |
+| `kernel.DISABLE_CODE_MEMORY_PROTECTION` | system_basic | 14 | — |
+| **`kernel.EXEMPT_ANONYMOUS_EXECUTABLE_MEMORY`** | **normal** | **23** | **仅 `2in1`** |
+
+最后一条值得注意：**normal 级**（普通应用可申请）、`system_grant`，
+语义为"豁免匿名可执行内存"，但 `deviceTypes` **仅 `2in1`**。
+本真机 `devicetype=phone`，预计**不可用**；列出以备后续核实。
+
+### 9.2 真机内核为 HongMeng Kernel，不是 Linux
+
+```
+$ uname -a
+HarmonyOS localhost HongMeng Kernel 1.13.0 #1 SMP Sat Aug 29 03:07:38 UTC 2026 aarch64
+```
+
+这对 ARMSX2 移植**有实际影响**：ARMSX2 现有平台层是
+Linux/Windows/Darwin 三套（`common/{Linux,Windows,Darwin}`），
+其 Linux 后端的若干行为依赖 Linux 特定语义。**HarmonyOS 内核虽与 Linux
+高度相似，但不能假定 `mmap`/`mprotect` 语义完全一致** ——
+阶段 3 实现 HarmonyOS 后端时必须逐项实测，**不可直接用 Linux 后端顶替**。
