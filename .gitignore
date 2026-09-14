@@ -26,3 +26,9 @@ stage1-jitprobe/host-test/encode_check
 
 # release 签名私钥与证书 —— 绝不入库
 .release-signing/
+
+# 第三方交叉编译产物（可从源码重建）
+thirdparty-ohos/src/
+thirdparty-ohos/build/
+thirdparty-ohos/prefix/
+thirdparty-ohos/logs/
