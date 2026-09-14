@@ -161,77 +161,79 @@
 
 ## 3. 阻塞原因
 
-### 阻塞 1：真机签名信任根受限 🔴 —— **当前唯一阻塞项**
+### 阻塞 1：真机签名 bundle name 不匹配 🟡 —— **已定位，待用户一步操作解除**
 
-真机**已成功接入**，设备事实已完整采集（见 §1）。但 **HAP 无法安装到真机**。
+> 📌 **进展**：已找到完整可用的**华为 CBG 签名链**（含解密出的口令），
+> 并实证**真机接受了该链的 PKCS7 签名**。当前唯一障碍是
+> profile 绑定的 bundle name 与本工程不同 —— **纯配置问题，非技术阻塞**。
+> 详见 `docs/signing-breakthrough.md`。
 
-#### 3.1.1 未签名 HAP —— 预期失败
+#### 3.1.1 三种签名的失败阶段对照（已精确定位）
 
-```
-$ hdc -t <DEVICE_ID> install -r entry-default-unsigned.hap
-error: failed to install bundle. code:9568320 error: no signature file.
-```
-
-#### 3.1.2 自签名 HAP（OpenHarmony 测试链）—— 失败，且原因已精确定位
-
-我用 **SDK 自带的 OpenHarmony 官方测试签名链**完成了完整签名：
-
-```
-sign-profile : sign-profile success
-sign-app     : Sign Hap success!
-verify-app   : Digest verify result: true / verify: Verify success   ← 签名自校验通过
-```
-
-但真机安装仍失败：
-
-```
-error: failed to install bundle. code:9568257 error: fail to verify pkcs7 file.
-```
-
-设备端 HapVerify 给出了**确切原因**：
-
-```
-E C011FE/foundation/HapVerify: [hap_cert_verify_openssl_utils.cpp(GetCertsChain:322)]
-  it do not come from trusted root,
-  issuer: C=CN, O=OpenHarmony, OU=OpenHarmony Team, CN=OpenHarmony Application Root CA
-```
-
-#### 3.1.3 排除法：我的签名**没有错**
-
-为排除"签名流程写错"这一可能，我把同一个已签名 HAP 装到模拟器：
-
-```
-$ hdc -t 127.0.0.1:5555 install -r hps2-signed.hap
-install bundle successfully.          ← 安装成功
-$ (启动应用)
-HPS2_JIT: 探针结束: PASS=8 FAIL=1 | basicReturn=123
-```
-
-**结论**：签名结构、profile 绑定、证书链装配**全部正确**；
-真机拒绝的**唯一原因是信任根不同**：
-
-| 签名链根证书 | 模拟器 | 华为真机 |
+| 签名方式 | 真机错误 | **失败阶段** |
 |---|---|---|
-| `OpenHarmony Application Root CA`（SDK 测试链） | ✅ 接受 | ❌ 拒绝 |
-| `Huawei CBG Root CA G2` / `HOS Profile Management Debug`（AGC 签发） | ✅ | ✅ 接受 |
+| 未签名 | `9568320 no signature file` | 无签名块 |
+| SDK 内置 **OpenHarmony 测试链**（自校验通过） | `9568257 fail to verify pkcs7` | **信任根校验**（`it do not come from trusted root ... OpenHarmony Application Root CA`） |
+| 本机 **华为 CBG 链**（来自 arktunnel 工程材料） | `9568329 verify signature failed` | **bundle name 比对** ✅ 签名已通过 |
 
-对照证据：本机另一个工程 `com.aobai.cyclingcomputer` 使用 **AGC 签发**的
-profile（链中可见 `Huawei CBG Root CA G2` + `HOS Profile Management Debug`），
-**已成功安装在同型号真机上**。而它的 profile 内
-`"bundle-name":"com.aobai.cyclingcomputer"` ——
-**profile 与 bundle name 强绑定**，不能挪用到 `com.hps2.jitprobe`。
+设备端日志（华为 CBG 链那次）：
 
-#### 3.1.4 需要的操作（详见 §6.1）
+```
+E BMSInstaller: CheckBundleName:853
+  CheckBundleName failed provisionBundleName:com.lianconnect.app,
+  bundleName:com.hps2.jitprobe
+E BMSInstaller: ParseHapFiles:5632 parse hap file failed due to errorCode : 8519752
+```
 
-要让探针跑在真机上，需要一份**为该 bundle name 签发的华为 Profile**。
-两个途径（任一即可）：
+**解读**：失败出现在 `CheckBundleName` 阶段 —— 说明**签名与 PKCS7 校验
+已全部通过**，才走到名称比对。**华为 CBG 链被真机接受。**
 
-- **A（推荐，最快）**：用 DevEco Studio 打开本工程 →
-  `File > Project Structure > Signing Configs` → 勾选
-  `Automatically generate signature` → 重新构建运行。
-  （本机 DevEco **已登录华为账号**且历史上执行过 AutoSign，此路应可一次成功。）
-- **B**：把 AGC 为新 bundle 签发的 `.p12` / `.cer` / `.p7b` 三件套给我路径，
-  我用 `scripts/sign.sh` 签名。
+#### 3.1.2 已解决的子问题：拿到密钥库口令
+
+此前"有材料但无口令"的阻塞已解决：DevEco 以 **AES-128-GCM** 加密存储口令，
+密钥由 `~/.ohos/config/material/{fd,ac,ce}` 派生。已复刻该算法为
+`scripts/devpwd.js`，实测可解开密钥库：
+
+```
+$ node scripts/devpwd.js "<storePassword 密文>"
+OK len=10 prefix=AR****
+$ keytool -list -keystore default_arktunnel_*.p12 -storepass <解出的口令>
+debugkey, 2026年9月9日, PrivateKeyEntry,      ← 成功打开
+```
+
+#### 3.1.3 profile 与 bundle name 强绑定，无法自行伪造
+
+`*.p7b` 内固定 `"bundle-name":"com.lianconnect.app"`，真机强制比对。
+**profile 只能由华为 AGC 签发**；用测试链自行签名会退回信任根错误。
+全盘搜索确认本机**不存在**其它可用 profile。
+
+#### 3.1.4 待用户操作（约 1 分钟）
+
+**方案 B（用户已选定）**：由 DevEco 为本工程生成签名材料。
+
+```
+1. 用 DevEco Studio 打开：<USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe
+2. File > Project Structure > Signing Configs
+3. 勾选 "Automatically generate signature"
+4. 点 OK
+```
+
+依据：本机 DevEco **已登录华为账号**，且日志显示 AutoSign 此前各步骤均成功
+（`addCertificate_responseContent: OK` / `addDevice_responseContent: OK` /
+`addProvision_responseContent: OK`），预期可一次成功。
+
+完成后执行（无需再手动操作）：
+
+```bash
+bash stage1-jitprobe/scripts/verify-on-device.sh
+```
+
+该脚本自动完成 **构建 → 签名 → 安装真机 → 启动 → 抓取结果与
+SELinux/XPM 拒绝记录**，输出到 `docs/evidence/`。
+
+> **已排除的方案 A**（记录备用）：把探针临时以 `com.lianconnect.app` 安装，
+> 复用现有 profile。**技术上可逆**（本机存有原始已签名 HAP 与完整工程，
+> 可 `install -r` 还原），但会中断用户正在运行的 VPN 应用，故未采用。
 
 ### 已解决：模拟器曾无法驻留 🟢
 
