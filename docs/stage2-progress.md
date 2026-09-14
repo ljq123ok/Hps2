@@ -146,3 +146,88 @@ cmake -S upstream/ARMSX2 -B /tmp/build \
   -DCMAKE_TOOLCHAIN_FILE=upstream/ARMSX2/cmake/ohos.toolchain.cmake \
   -DCMAKE_BUILD_TYPE=Release
 ```
+
+---
+
+## 5. SDL3：唯一未解决的依赖（附决策依据）
+
+### 5.1 当前状态：配置失败
+
+用 `-DSDL_UNIX_CONSOLE_BUILD=ON`（SDL3 官方文档给的
+"不需要桌面窗口"开关）后，SDL3 **源码列表为空**：
+
+```
+CMake Error: No SOURCES given to target: SDL3-static
+```
+
+改用保留 `SDL_VIDEO` + `SDL_DUMMYVIDEO=ON` 的方案，则在
+`check_include_file` 的 `try_compile` 阶段失败：
+
+```
+CMake Error: No SOURCES given to target: cmTC_15dc8
+CMakeLists.txt:1137 (check_include_file)
+```
+
+### 5.2 根因分析
+
+**SDL3 没有 HarmonyOS 平台支持。** 其平台检测只有
+UNIX / Android / Apple / RISCOS 等分支：
+
+```cmake
+if(UNIX AND NOT ANDROID AND NOT APPLE AND NOT RISCOS)
+  set(UNIX_SYS ON)
+```
+
+OHOS 会落到 `UNIX_SYS ON`，于是要求 X11 / Wayland / ALSA 等
+OHOS 上**不存在**的桌面 Linux 依赖。官方给的
+`SDL_UNIX_CONSOLE_BUILD=ON` 会跳过这些检查，但同时把该分支的
+全部源码也去掉了，导致空目标。
+
+**结论：SDL3 上 OHOS 需要实质性的平台移植工作**，
+不是加几个 flag 能解决的。
+
+### 5.3 SDL3 在 ARMSX2 中的真实用途（已核实）
+
+| 用途 | 文件 | 是否可替换 |
+|---|---|---|
+| 音频输出 | `Host/SDLAudioStream.cpp` | ✅ 已有 `CubebAudioStream.cpp` / `OboeAudioStream.cpp`（Android 用的是 Oboe）|
+| 手柄输入 | `Input/SDLInputSource.cpp` | ⚠️ 需自写 OHOS 输入源（OHOS 有 `libohgame_controller.z.so`）|
+| 前端 | `pcsx2-sdl/` | ✅ 我们不用该前端 |
+
+### 5.4 ⚠️ 关键约束：SDL 源文件是**无条件**编入的
+
+```
+pcsx2/CMakeLists.txt:
+set(pcsx2HostSources
+    Host/AudioStream.cpp
+    Host/CubebAudioStream.cpp
+    Host/SDLAudioStream.cpp)      <- 无平台条件
+
+set(pcsx2InputSources
+    Input/InputManager.cpp
+    Input/InputSource.cpp
+    Input/SDLInputSource.cpp)     <- 无平台条件
+```
+
+**因此"不编 SDL 就行"是不成立的** —— 要让核心编译，
+必须二选一：
+
+- **方案 A**：移植 SDL3 到 OHOS（工作量大，SDL3 是大型跨平台库）
+- **方案 B**：为 OHOS 提供最小 SDL3 stub（只需满足重载 API 的符号），
+  同时用 OHOS 原生实现替换音频/输入的实际功能
+
+### 5.5 建议
+
+**倾向于方案 B + 逐步替换**：
+
+1. 先做最小 SDL3 头文件 + stub 库，让核心能编译、能跑 BIOS；
+2. 音频/输入的实际功能改用 OHOS 原生
+   （`libohaudio.so` / `libohgame_controller.z.so`），
+   这两个库在 OHOS sysroot 中**已确认存在**；
+3. 记录为技术债，后续如需要再考虑完整移植 SDL3。
+
+理由：阶段 2 的目标是"核心能加载、能跑 BIOS"。
+SDL 提供的是**音频与输入**，与 BIOS 启动无关；
+为一个与目标无关的依赖投入大型移植工作不划算。
+
+**但这需要用户确认** —— 因为方案 B 会偏离"完全保留上游功能"的目标。
