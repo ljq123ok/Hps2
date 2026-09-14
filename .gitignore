@@ -23,3 +23,6 @@ stage1-jitprobe/host-test/encode_check
 *.cer
 *.csr
 .signing/
+
+# release 签名私钥与证书 —— 绝不入库
+.release-signing/
