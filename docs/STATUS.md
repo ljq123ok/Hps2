@@ -8,9 +8,18 @@
 > **OpenHarmony-7.0.0.105 / API 26** / arm64-v8a / 形态 phone /
 > **HongMeng Kernel 1.13.0**（**非** Linux）。
 
-> 📌 **JIT 能否使用？** 见专文 `docs/jit-verdict.md` —— 结论：**尚未确认为可用**。
-> 四条候选路径中，A/B/D 证据偏向否定；**路径 C（RW→RX 分步映射，无需受限权限）
-> 是唯一有希望的路径，模拟器全部通过，但真机结果因签名阻塞仍是「未知」而非「失败」**。
+> 📌 **本项目 app 能否启用 JIT？** 见专文 `docs/jit-verdict.md`（已按 SELinux 策略源码修正）。
+> 结论：**有明确正面证据 + 一个未知闸门，仍未真机实证。**
+>
+> - ✅ **确凿**：`hap_domain.te:58` 有 `allow hap_domain self:process execmem;`，
+>   且 `domain.te:297` 把 `hap_domain` 排除在 execmem 禁令外 ——
+>   **我们 app 所在的域被 SELinux 明确授予了匿名可执行内存权限**。
+> - ⚠️ **未知**：真机多一道 HongMeng 专有 **XPM** 闸门（模拟器无此节点），
+>   公开策略中 `xpm:exec_anon_mem` **没有给 hap 的 allow**，
+>   但尚不能确定 XPM 是否真的拦截匿名 `mmap`。**必须真机实测。**
+> - ❌ **不变**：JITFort（`jitfort_mode`）是给 ArkTS JS 引擎的专用通道，三方无接口可调。
+>
+> ⚠️ 判据是**本 app 所在 SELinux 域的授权**，与设备上其它应用无关。
 
 > ⚠️ 真机 USB 在 2026-09-14 取证末尾已**物理断开**，需重新连接。
 

@@ -219,3 +219,24 @@ git clone --depth 1 https://github.com/openharmony/security_selinux_adapter.git
 grep -rn "execmem" --include="*.te" sepolicy/
 grep -rn "exec_anon_mem" --include="*.te" sepolicy/
 ```
+
+---
+
+## 8. 策略解读的独立交叉验证
+
+我对策略的解读**被一次独立观测所证实**：
+
+- **预测**：按 `hap_domain.te:58`（`allow hap_domain self:process execmem`），
+  `debug_hap` 域应被允许创建并执行匿名可执行内存。
+- **独立观测**：模拟器（OpenHarmony-6.1.1.125，同为
+  `security_selinux_adapter` 策略）上，探针应用运行于
+  `o:r:debug_hap:s0` 域（`SELinux = Enforcing`），且
+  **`mmap(RW)`→写→`mprotect(RX)`→执行 全流程成功，返回 123**。
+
+即：**策略文本预测的行为与实测行为一致**。这显著提高了
+"该条策略确实管匿名可执行内存"这一解读的可信度，
+而不是我对方便的字符串做的过度解读。
+
+**但仍须注意边界**：模拟器 **没有 XPM 节点**，
+所以该验证**只覆盖了 SELinux 这一层**，
+无法验证 XPM 层的行为 —— 那仍需真机实测。
