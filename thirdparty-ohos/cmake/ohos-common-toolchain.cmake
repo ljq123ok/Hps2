@@ -74,3 +74,20 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
 
 # 让 find_package 优先在 prefix 中查找
 list(APPEND CMAKE_PREFIX_PATH "${OHOS_EXTRA_PREFIX}")
+
+# --- OHOS 的架构专属库/头目录（关键，实测教训）---
+#
+# OHOS sysroot 把库放在带架构后缀的子目录里：
+#     usr/lib/aarch64-linux-ohos/libz.so      <- 实际位置
+#     usr/include/aarch64-linux-ohos/bits/    <- 架构专属头
+# 而 CMake 默认只找 <root>/usr/lib，于是即便 libz.so 就在那里也会报：
+#     Could NOT find ZLIB (missing: ZLIB_LIBRARY)
+# 这会连带让 find_package(PNG) 失败 —— FindPNG 把整个查找都包在
+# `if(ZLIB_FOUND)` 里，ZLIB 找不到就直接报
+#     Could NOT find PNG (missing: PNG_LIBRARY PNG_PNG_INCLUDE_DIR)
+# 看起来像 libpng 的问题，实际是 ZLIB。设置 CMAKE_LIBRARY_ARCHITECTURE
+# 让 CMake 自动带上该后缀子目录，一次性修好所有 find_library/find_package。
+# （与 upstream/ARMSX2/cmake/ohos.toolchain.cmake 的做法保持一致。）
+set(CMAKE_LIBRARY_ARCHITECTURE "aarch64-linux-ohos")
+list(APPEND CMAKE_LIBRARY_PATH "${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos")
+list(APPEND CMAKE_INCLUDE_PATH "${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos")
