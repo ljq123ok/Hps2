@@ -4,7 +4,21 @@
     // DevEco 加密后的十六进制串（AES-128-GCM，密钥材料在 ~/.ohos/config/material），
     // 无法在本机离线生成。因此 assembleHap 只产出未签名 HAP，再由 scripts/sign.sh
     // 调用官方 hap-sign-tool 完成签名。
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "<USER_HOME>/.ohos/config/default_stage1-jitprobe_xnLn-Xz1Rem9d46LLRq3aBGYVXLG9Dg3YCvS8VLmjv0=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "<REDACTED_SIGNING_SECRET>",
+          "profile": "<USER_HOME>/.ohos/config/default_stage1-jitprobe_xnLn-Xz1Rem9d46LLRq3aBGYVXLG9Dg3YCvS8VLmjv0=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "<USER_HOME>/.ohos/config/default_stage1-jitprobe_xnLn-Xz1Rem9d46LLRq3aBGYVXLG9Dg3YCvS8VLmjv0=.p12",
+          "storePassword": "<REDACTED_SIGNING_SECRET>"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",

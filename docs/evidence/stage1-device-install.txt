@@ -1,0 +1,2 @@
+[Info]App install path:<USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe/entry/build/default/outputs/default/entry-default-manualsigned.hap msg:install bundle successfully. 
+AppMod finish

@@ -1,242 +1,202 @@
-# JIT 能否使用？—— 聚焦本项目的结论（基于 SELinux 策略源码）
+# JIT 能否使用？—— **真机验证结论**
 
-**记录时间**：2026-09-14（第二版）
-**回答对象**：**本项目的 HAP**（`com.hps2.jitprobe`）能否在真机启用 JIT
-**证据来源**：`openharmony/security_selinux_adapter` 源码（clone 于 `upstream/sepolicy`）
-
-> **本版修正上一版。** 上一版从"公开 NDK 无 JITFort 接口"推出"JIT 大概率不可用"，
-> **不完整** —— 它只查了**用户态 API 层**，没查**内核/SELinux 授权层**。
-> 补查后，结论需要修正为「**有明确的正面证据 + 一个明确的未知风险点**」。
-
----
-
-## 0. 命题澄清
-
-正确的命题是：**我们这一个 app 能不能启用 JIT。**
-
-判据不是"别人有没有 JIT 权限"，而是**我们的 app 所在的 SELinux 域被授予了什么**。
-本项目 HAP 属于 `hap_domain`（详见 §2），所以下面的策略结论
-**直接适用于本项目**，与设备上其它应用无关。
+**记录时间**：2026-09-14（第三版，**基于真机实测**）
+**目标设备**：HUAWEI Pura X View（`VOL-AL00`）
+**设备系统**：OpenHarmony-7.0.0.105 / API 26 / arm64-v8a / **HongMeng Kernel 1.13.0**
+**本项目包名**：`com.hps2.jitprobe`（正式包名，已在 AGC 注册）
+**签名**：华为 AGC 签发，**type=debug**、`apl=normal`
 
 ---
 
 ## 1. 直接回答
 
-| 层 | 结论 | 性质 |
-|---|---|---|
-| **SELinux `execmem`** | ✅ **明确允许**（含我们的域） | **确凿策略证据** |
-| **XPM `exec_anon_mem`**（HongMeng 专有） | ⚠️ **是否存在拦截、是否放行，无法从开源策略确定** | **未知风险点** |
-
-> **净结论：仍待真机实测，但已从上一版的"偏向否定"变为"有正面证据、存一未知闸门"。**
-
----
-
-## 2. 正面证据：SELinux 明确授予 HAP `execmem`
-
-策略源码两条规则：
-
-```
-sepolicy/base/public/hap_domain.te:58
-    allow hap_domain self:process execmem;
-
-sepolicy/base/public/domain.te:297
-    neverallow { domain -appspawn -hap_domain -isolated_render
-                -rgm_violator_execmem -vpn_isolate_hap } self:process execmem;
-```
-
-**为什么这直接适用于本项目** —— `hap_domain` 是应用域超集属性，
-我们 app 无论哪种签名都在其中：
-
-```
-sepolicy/base/public/hap_domain.te:16-19, 28, 35
-    type normal_hap, domain;                 ← 正式签名应用 → 属于 hap_domain
-    type debug_hap,  domain, hap_domain;     ← 调试签名应用 → 属于 hap_domain
-    typeattribute normal_hap hap_domain;
-    typeattribute system_core_hap  hap_domain;
-    typeattribute system_basic_hap hap_domain;
-```
-
-**语义**：SELinux 的 `process:execmem` 管的正是
-**匿名可执行内存的创建与 `PROT_EXEC` 授予**（即 `mmap` + `mprotect` 让内存可执行）。
-
-- 第 58 行是**正向 allow** → 我们的域**被授予** JIT 所需的 LSM 权限；
-- 第 297 行是全局禁令，但 `-hap_domain` 把**我们整个应用域显式排除**在外。
-
-**结论**：**SELinux 层不阻止本项目做 JIT。**
-这与"公开 NDK 无 JITFort 接口"不矛盾 —— 那是 **API 层**缺封装，
-这里是 **LSM 层**允许，两者是不同层次。
-
-**这同时解释了模拟器为何跑通**：模拟器是标准 Linux，
-只有 SELinux 这一层，而这一层**放行**，所以 `mmap(RW)→`写→`mprotect(RX)`
-全流程成功、执行返回 `123`。
-
----
-
-## 3. 未知风险点：XPM（HongMeng 专有第二道闸门）
-
-真机存在 `/proc/sys/kernel/xpm/xpm_mode`（**模拟器完全没有此节点**）。
-策略中两条与代码执行直接相关的禁令：
-
-```
-sepolicy/base/public/domain.te:353-355
-neverallow { domain developer_only(`-debug_hap_attr -normal_hap -input_hap -input_debug_hap')
-            debug_only(`-su') -rgm_violator_exec_no_sign } self:xpm { exec_no_sign };
-neverallow { domain developer_only(`-debug_hap_attr -input_debug_hap')
-            debug_only(`-su') -isolated_render } self:xpm { exec_anon_mem };
-```
-
-`developer_only()` 宏（`glb_te_def.spt:65`）：
-
-```
-define(`developer_only', ifelse(build_with_developer, `enable', $1, ))
-```
-**这是编译期开关** —— 仅当固件以"开发者模式"构建时，括号内内容才生效。
-
-**这带来一个必须诚实说明的推论**：
-
-| 固件构建类型 | `exec_anon_mem` 禁令的豁免范围 |
-|---|---|
-| `build_with_developer = enable` | 除 `su`/`isolated_render` 外，**额外**豁免 `debug_hap_attr`、`input_debug_hap` |
-| `build_with_developer ≠ enable`（**商用固件大概率如此**） | 仅豁免 `su`、`isolated_render`；**任何 hap 域都不被豁免** |
-
-即：**"调试签名 app 有优势"这一说法，只在开发者模式构建的固件上成立**。
-华为商用固件很可能不是该构建，届时该豁免不适用。
-
-**但更关键的一点必须说清**：
-
-> **公开策略中 `xpm:exec_anon_mem` 的显式 `allow` 只有两处** ——
-> `su` 与 `isolated_render`。**没有任何一条给 hap 的 allow。**
+> ## ✅ **能。已在你的真机上验证通过。**
 >
-> 而 `neverallow` 的作用是**禁止策略作者写出 allow**。
-> 所以在开源这部分策略里，**不存在**授予 hap `exec_anon_mem` 的规则。
-
-**然而这仍不足以断定"真机会拒绝"，原因有三**：
-
-1. **不确定 XPM 是否真的拦截 `mmap`/`mprotect` 的匿名可执行内存**。
-   `xpm` 权限族（`exec_no_sign`、`exec_in_jitfort`、`exec_allow_ownerid`
-   等）看起来更像是**代码来源认证**机制（管"执行哪来的代码"），
-   未必等同于拦截匿名映射。**这一点无法从公开源码判定。**
-2. **华为厂商策略未开源**，可能在其私有部分另有规则。
-3. `su` 被授予 `exec_anon_mem` 说明该能力在设备上**确实可用**，
-   只是授权范围未知。
-
-**因此这是一个"存在闸门、走向未知"的局面 —— 必须真机实测，不能靠源码推断。**
+> `mmap(RW)` → 写入 AArch64 指令 → `mprotect(RX)` → 清指令缓存 → **执行，
+> 返回 123**，与期望值一致。**连跑 3 次结果完全一致，零 AVC 拒绝。**
+>
+> ⚠️ **但有一个适用范围必须说明**（§4）：本次验证用的是 **debug 签名**。
+> 正式发布签名的 JIT 可用性**尚未验证**，且证据显示两者可能不同。
 
 ---
 
-## 4. 三套机制分工（此前混淆的根源）
+## 2. 真机实测结果
 
-| 机制 | 作用域 | 模拟器 | 真机 | 对本项目的意义 |
-|---|---|---|---|---|
-| **SELinux `execmem`** | 标准 LSM | ✅ 有 | ✅ 有 | ✅ **允许**我们（§2） |
-| **XPM `exec_anon_mem`** | HongMeng 专有 | ❌ **无** | ✅ 有 | ⚠️ **第二道闸门，走向未知**（§3） |
-| **JITFort (`jitfort_mode`)** | ArkTS JS 引擎专用 | ❌ 无 | ✅ 有 | ❌ 三方无接口可调（结论不变） |
+证据文件：`docs/evidence/stage1-DEVICE-PASS.txt`
 
-**这解释了全部观测**：
+| # | 测试 | 真机结果 | 实测数据 |
+|---|---|---|---|
+| 1.1 | `mmap(RW)` | ✅ | addr=388336443392 |
+| 1.2 | `mprotect(RW→RX)` + icache flush | ✅ | 提交成功 |
+| **1.3** | **执行生成代码并校验返回值** | ✅ | **返回 123，期望 123** |
+| 2.1 | 重复执行 10000 次 | ✅ | sum=770000 |
+| 3.1 | 代码重建（RW→RX 往返 3 次） | ✅ | 11,222,3333 |
+| 4.1 | 跨线程执行 | ✅ | 4 线程 × 5000 次，失败 0 次 |
+| 5.1 | 释放后重建 | ✅ | 3 轮全部成功 |
+| 6.1 | `mmap(RWX)` 直接申请 | ✅ | 内核**允许** W+X |
+| 6.2 | `MAP_JIT`/FORT 标志探测 | ❌（**预期**） | **`EINVAL` 标志被拒绝** |
 
-- 模拟器跑通 → 只有 SELinux 层，且放行；
-- 真机未知 → **多一道 XPM**，无法外推；
-- NDK 无 JITFort API → 那是**给 JS 引擎的专用通道**，与"能否用 mmap 做 JIT"
-  是**两个独立问题**。
-
-上一版把第三个问题的答案错当成了对整题的答案。
-
----
-
-## 5. 决定性问题（唯一）
-
-**在真机 `debug_hap` 域下：**
+**运行环境**：
 
 ```
-mmap(PROT_READ|PROT_WRITE)  → 写入 AArch64 指令
-  → mprotect(PROT_READ|PROT_EXEC)  → __builtin___clear_cache + dsb ish; isb
-  → 执行并校验返回 123
+应用进程 SELinux 域 : o:r:debug_hap:s0:x53,x335,x512,x868,x1024
+平台事实            : arch=arm64;pagesize=4096;ohos=1;ptrbits=64
+AVC 拒绝            : 无（JIT 全程零 SELinux/XPM 拒绝）
+确定性              : 连跑 3 次 → PASS=8 FAIL=1 | basicReturn=123（完全一致）
 ```
-**是否成功？**
-
-- **成功** → JIT 可用（至少开发形态），可进阶段 2；
-- **失败** → 抓 AVC/XPM 拒绝记录，精确定位被哪一层拦下，
-  据此决定是否走 AGC 渠道。
-
-阶段 1 探针已覆盖该问题所需全部测试面（首次/重复/重建/跨线程/释放重建/
-候选路径对照），**只需在真机上跑一次**。
-
-**另需分别测两种签名**：
-1. **调试签名** → 开发期能否用 JIT；
-2. **正式签名**（需 AGC 发布证书）→ **产品能否用 JIT**。
-
-产品最终要上架，第 2 项是硬性前置；两者结论**可能不同**，不能只测其一。
 
 ---
 
-## 6. 阻塞：签名信任根（唯一待办）
+## 3. 关键结论
 
-| 签名方式 | 真机结果 |
+### 3.1 JIT 可用的路径已确认：路径 C（RW→RX 分步映射）
+
+**不需要任何受限权限、不需要 AGC 的 JIT ACL 审批。**
+
+核心事实：
+
+1. **代码内存申请、写入、提交、执行、重建全部成功**；
+2. **代码修补可行** —— RX→RW→改→RX 往返 3 次，结果正确
+   （这是 JIT 块链接与失效逻辑的前提）；
+3. **全程零 AVC 拒绝** —— SELinux 与 XPM 都没有拦截。
+
+这与从策略源码得出的预测**精确吻合**：
+
+```
+hap_domain.te:58   allow hap_domain self:process execmem;
+domain.te:297      neverallow { domain -appspawn -hap_domain ... } ... execmem;
+```
+
+→ 预测「`hap_domain` 被允许匿名可执行内存」，实测「`debug_hap` 域下成功」。
+**策略解读通过了真机验证。**
+
+### 3.2 JITFort 确认不可用（路径 A 关闭，但无影响）
+
+真机上 `MAP_JIT`/FORT 标志返回 **`EINVAL`（内核明确拒绝）**；
+而模拟器上是**被静默忽略**。
+
+| | 模拟器 | 真机 |
+|---|---|---|
+| 传入 FORT 标志 | 静默忽略（映射仍成功） | **`EINVAL` 明确拒绝** |
+
+真机内核**显式校验**该标志，与真机存在
+`/proc/sys/kernel/jitfort/jitfort_mode`（root-only）一致。
+
+**但这对我们无影响**：路径 C 用标准 `mmap` + `mprotect`，不依赖 JITFort。
+
+### 3.3 判据纠正（先前的一处错误）
+
+早期曾把「公开 NDK 无 JITFort 接口」当作「JIT 不可用」的证据 ——
+**这混淆了两个独立问题**：
+
+| 问题 | 答案 |
 |---|---|
-| 未签名 | `9568320 no signature file` |
-| SDK 内置 OpenHarmony 测试链（`verify-app` 自校验通过） | `9568257 fail to verify pkcs7 file` |
+| 能否调用 JITFort？（ArkTS JS 引擎专用接口） | ❌ 三方无接口（已确认） |
+| **能否用标准 mmap/mprotect 做自研 JIT？** | ✅ **能（真机已验证）** |
 
-```
-E HapVerify: it do not come from trusted root,
-  issuer: C=CN, O=OpenHarmony, ..., CN=OpenHarmony Application Root CA
-```
-
-真机只信任 **Huawei CBG** 签发链。**排除实验已证明签名流程无误** ——
-同一 HAP 装到模拟器成功，探针 `PASS=8 / FAIL=1`、返回 `123`。
-
-**需要**：为 `com.hps2.jitprobe` 签发华为 Profile（DevEco 自动签名最省事），
-并重新连接真机 USB（取证末尾已物理断开）。
+正确判据是**本 app 所在 SELinux 域的授权**，与其它应用、
+与 JITFort 是否存在**都无关**。
 
 ---
 
-## 7. 证据附录（可复核）
+## 4. ⚠️ 适用范围：本次验证的是 **debug 签名**
 
-```bash
-# 我们所属的域被授予 execmem
-upstream/sepolicy/sepolicy/base/public/hap_domain.te:58
-    allow hap_domain self:process execmem;
+**必须明确说明**，因为这直接影响产品形态：
 
-# 我们整个域被排除在 execmem 禁令之外
-upstream/sepolicy/sepolicy/base/public/domain.te:297
-    neverallow { domain -appspawn -hap_domain ... } self:process execmem;
-
-# 我们属于 hap_domain（两种签名都算）
-upstream/sepolicy/sepolicy/base/public/hap_domain.te:16-19
-    type normal_hap, domain;
-    type debug_hap,  domain, hap_domain;
-    typeattribute normal_hap hap_domain;
-
-# XPM 两道闸门（无 hap 的 allow，只有 neverallow 及其豁免）
-upstream/sepolicy/sepolicy/base/public/domain.te:353-355
-
-# developer_only 是编译期宏
-upstream/sepolicy/sepolicy/base/public/glb_te_def.spt:65
+```
+profile type         : debug
+真机 appProvisionType: debug
+真机 debug 标志       : true
+apl                  : normal
 ```
 
-复现：
-```bash
-git clone --depth 1 https://github.com/openharmony/security_selinux_adapter.git
-grep -rn "execmem" --include="*.te" sepolicy/
-grep -rn "exec_anon_mem" --include="*.te" sepolicy/
+### 4.1 为什么正式签名可能不同
+
+SELinux 策略中两处 neverallow 的豁免名单**不一致**：
+
 ```
+domain.te:354  neverallow { domain developer_only(`-debug_hap_attr -normal_hap ...') ... }
+                 self:xpm { exec_no_sign };
+                 ← normal_hap 被豁免
+
+domain.te:355  neverallow { domain developer_only(`-debug_hap_attr -input_debug_hap')
+                 debug_only(`-su') -isolated_render } self:xpm { exec_anon_mem };
+                 ← normal_hap 未在豁免名单中
+```
+
+即 `xpm:exec_anon_mem` 这一项，**`debug_hap` 被豁免而 `normal_hap` 没有**。
+
+### 4.2 但也有反面证据（应偏乐观）
+
+- `hap_domain.te:58` 的 `allow hap_domain self:process execmem` **同时覆盖
+  `normal_hap` 与 `debug_hap`**（`normal_hap` 通过 typeattribute 属于 `hap_domain`）；
+- 本次实测 `mmap(RWX)` 在 debug_hap 下**被允许**，且零 AVC ——
+  说明该设备的 XPM **并未**普遍拦截匿名可执行内存。
+
+### 4.3 结论：需单独验证正式签名
+
+| 签名形态 | 状态 |
+|---|---|
+| **debug 签名** | ✅ **已实测通过** |
+| **release 签名**（AGC 发布证书 + 发布 Profile） | ⚠️ **未验证，需单独测** |
+
+**这是阶段 2 之前必须补的一项** —— 产品最终要上架，release 签名是硬性要求。
+若 release 被拒，需立即走 AGC 渠道澄清，而不是等移植完成才发现。
 
 ---
 
-## 8. 策略解读的独立交叉验证
+## 5. 阶段关口判定
 
-我对策略的解读**被一次独立观测所证实**：
+| 关口 | 条件 | 判定 |
+|---|---|---|
+| 阶段 0 → 1 | 找到三方 HAP 可用的 JIT 路径，否则停止大规模移植 | 原判据（无 JITFort 接口）已被**路径 C 的可用性**推翻 |
+| **阶段 1 → 2** | **真机上受支持的 JIT 路径成功执行生成代码** | ✅ **通过**（返回 123） |
 
-- **预测**：按 `hap_domain.te:58`（`allow hap_domain self:process execmem`），
-  `debug_hap` 域应被允许创建并执行匿名可执行内存。
-- **独立观测**：模拟器（OpenHarmony-6.1.1.125，同为
-  `security_selinux_adapter` 策略）上，探针应用运行于
-  `o:r:debug_hap:s0` 域（`SELinux = Enforcing`），且
-  **`mmap(RW)`→写→`mprotect(RX)`→执行 全流程成功，返回 123**。
+→ **可以进入阶段 2。**
 
-即：**策略文本预测的行为与实测行为一致**。这显著提高了
-"该条策略确实管匿名可执行内存"这一解读的可信度，
-而不是我对方便的字符串做的过度解读。
+**建议并行前置**：开工移植的同时，尽快验证 release 签名下的 JIT（§4.3），
+以免产品形态被卡。
 
-**但仍须注意边界**：模拟器 **没有 XPM 节点**，
-所以该验证**只覆盖了 SELinux 这一层**，
-无法验证 XPM 层的行为 —— 那仍需真机实测。
+---
+
+## 6. 对阶段 3 的直接输入
+
+真机已确认的能力，阶段 3 实现 HarmonyOS 后端时可直接依赖：
+
+| 能力 | 状态 | 备注 |
+|---|---|---|
+| `mmap` 匿名 RW | ✅ | 标准接口 |
+| `mprotect` RW→RX | ✅ | **W^X 合规路径** |
+| `mprotect` RX→RW（回写） | ✅ | 代码修补必需 |
+| `__builtin___clear_cache` + `dsb ish; isb` | ✅ | 指令缓存同步有效 |
+| 跨线程执行 | ✅ | 4 线程并发无问题 |
+| `munmap` 后重建 | ✅ | 代码缓存释放/重建可行 |
+| `MAP_JIT`/FORT 标志 | ❌ | `EINVAL`，**不要用** |
+
+**与 ARMSX2 现有抽象的对应**：
+ARMSX2 已有 `HostSys::BeginCodeWrite/EndCodeWrite` 平台接口，
+其 iOS `JitMode::Legacy` 用的**正是 mprotect 往返** ——
+与本次真机实测**通过的路径完全同构**。
+
+→ 阶段 3 实现 HarmonyOS 后端时，可**照 iOS Legacy 模式实现**，
+而非发明新机制。**但注意**：mprotect 往返有性能代价，
+阶段 5 必须实测其对 PS2 模拟的影响（这是路径 C 的主要代价）。
+
+---
+
+## 7. 复现方法
+
+```bash
+# 前提：DevEco 已为本工程生成签名材料（File > Project Structure > Signing Configs）
+bash stage1-jitprobe/scripts/verify-on-device.sh
+```
+
+脚本自动完成：构建 → 签名 → 安装真机 → 启动 → 抓取结果与 AVC 记录。
+
+**签名材料**（由 DevEco AutoSign 生成，绑定 `com.hps2.jitprobe`）：
+
+```
+~/.ohos/config/default_stage1-jitprobe_*.p12 / .cer / .p7b
+```
+
+DevEco 口令解密工具：`stage1-jitprobe/scripts/devpwd.js`（已实测可用）。
