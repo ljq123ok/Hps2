@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "HPS2 JIT 探针主模块" },
+    { "name": "EntryAbility_desc", "value": "HPS2 JIT 探针" },
+    { "name": "EntryAbility_label", "value": "JIT 探针" }
+  ]
+}

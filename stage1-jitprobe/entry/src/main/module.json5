@@ -1,0 +1,70 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "label": "$string:EntryAbility_label",
+        "icon": "$media:app_icon",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ],
+    // ==========================================================================
+    // 受限权限声明（默认全部注释掉）
+    // ==========================================================================
+    // 依据《Requesting the JIT Profile for JSVM-API》注意事项 1：
+    //   "如果未申请权限证书但在配置文件中声明了该权限，应用安装将失败。"
+    // 因此在 AGC 批准 ACL 之前，**必须保持下面三项为注释状态**，
+    // 否则 HAP 连安装都会失败（而不是运行时报权限错误）。
+    //
+    // 阶段 0 结论（见 docs/feasibility.md）：JIT 相关权限均为 system_basic +
+    // system_grant，normal 级应用需通过 ACL 跨级别申请，且证书由 AGC 签发。
+    //
+    // 拿到 ACL 授权后，取消对应条目的注释，并使用授予的 Profile 重新签名。
+    "requestPermissions": [
+      // --- 候选 A：允许系统 JS 引擎申请带 MAP_FORT 的匿名可执行内存 ---
+      // 官方文档指向的 JIT 权限。注意：它授权的是「系统 JS 引擎」，
+      // 不是「任意原生代码自行 mmap」。本探针用于实测其对本 HAP 的实际效果。
+      //{
+      //  "name": "ohos.permission.kernel.ALLOW_EXECUTABLE_FORT_MEMORY"
+      //},
+      // --- 候选 B：允许调用 JITFort 接口更新 MAP_FORT 内存内容 ---
+      // 阶段 0 未在公开 NDK 中找到任何可调用的 JITFort 接口（无头文件、无导出符号），
+      // 保留此项仅用于验证「权限已授予时是否解锁了其它行为」。
+      //{
+      //  "name": "ohos.permission.kernel.ALLOW_USE_JITFORT_INTERFACE"
+      //},
+      // --- 候选 C：允许申请可写可执行匿名内存（W+X）---
+      // 文档明确限制：当前仅平板、2in1 设备应用可申请此权限。
+      // Pura X 属手机形态，预计不可用，本探针会实测并记录。
+      //{
+      //  "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY"
+      //}
+    ]
+  }
+}

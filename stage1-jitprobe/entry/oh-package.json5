@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "HPS2 JIT 探针主模块",
+  "main": "",
+  "author": "hps2",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

@@ -1,0 +1,40 @@
+{
+  "app": {
+    // 签名不在 hvigor 中配置：hvigor 的 SignHap 要求 storePassword/keyPassword 为
+    // DevEco 加密后的十六进制串（AES-128-GCM，密钥材料在 ~/.ohos/config/material），
+    // 无法在本机离线生成。因此 assembleHap 只产出未签名 HAP，再由 scripts/sign.sh
+    // 调用官方 hap-sign-tool 完成签名。
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        // 本机安装的 SDK 为 HarmonyOS 6.1.1 (API 24)。阶段 0 已确认目标真机为
+        // HarmonyOS 7.0.0 (API 26)，高于本机 SDK，属前向兼容。
+        // targetSdkVersion 取本机 SDK 最高级别；compatibleSdkVersion 取 6.0.0(20) 以覆盖 OS6/OS7。
+        "targetSdkVersion": "6.1.1(24)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry"
+    }
+  ]
+}

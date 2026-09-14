@@ -1,0 +1,25 @@
+# 构建产物
+**/build/
+**/.cxx/
+**/oh_modules/
+**/node_modules/
+**/.hvigor/
+**/.preview/
+*.hap
+*.har
+
+# 上游源码（按提交号可重现；不纳入本仓库历史）
+upstream/
+
+# 宿主测试二进制
+stage1-jitprobe/host-test/encode_check
+
+# macOS
+.DS_Store
+
+# 签名材料 —— 绝不入库
+*.p12
+*.p7b
+*.cer
+*.csr
+.signing/
