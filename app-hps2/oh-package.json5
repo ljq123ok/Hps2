@@ -1,6 +1,6 @@
 {
   "modelVersion": "5.0.0",
-  "description": "HPS2 阶段 1：HarmonyOS 真机 JIT 最小验证工程",
+  "description": "Hps2 — HarmonyOS PS2 模拟器",
   "dependencies": {},
   "devDependencies": {}
 }

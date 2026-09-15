@@ -116,3 +116,82 @@ app-hps2/
 - ⬜ N-API 桥接 + Host 实现
 - ⬜ 资源打包与路径适配
 - ⬜ 真机 BIOS 启动验证
+
+---
+
+## 6. ✅ HAP 构建成功（2026-09-15）
+
+```
+BUILD SUCCESSFUL in 24s 591ms
+```
+
+| 项目 | 结果 |
+|---|---|
+| HAP 体积 | 17.4 MB |
+| 内含 native 库 | `libs/arm64-v8a/libhps2core.so`，15.9 MB |
+| 架构 | `ELF 64-bit LSB shared object, ARM aarch64` |
+| 签名 | ✅ 用 `com.hps2.jitprobe` 的 debug 材料签名成功 |
+
+### 6.1 BIOS 加载方案（按用户要求）
+
+**BIOS 不内置、不打包、不分发** —— 用户自行准备，App 通过系统文件管理器加载。
+
+实现路径（API 已核实）：
+
+```
+@ohos.file.picker 的 DocumentViewPicker.select()
+  → 返回 URI 数组
+fs.copyFileSync(uri, sandboxPath)
+  → 复制进应用沙箱（核心需要 POSIX 路径，且外部 URI 授权是临时的）
+```
+
+UI 中显著位置标明"本应用不内置、不分发 BIOS"。
+
+**未申请任何受限权限** —— 走系统文件选择器不需要读取整个文件系统的权限。
+
+### 6.2 核心库形态
+
+`PCSX2` 在 `DISABLE_ADVANCE_SIMD` 下是 **OBJECT 库**（无 `.a`），
+外部工程无法链接。已在 fork 中新增 `PCSX2_CORE_STATIC` 聚合目标：
+
+```cmake
+if(OHOS)
+    add_library(PCSX2_CORE_STATIC STATIC $<TARGET_OBJECTS:PCSX2>)
+    ...
+endif()
+```
+
+**不修改 PCSX2 本身**，只打包它已产出的对象；且仅 OHOS 下创建。
+产物：`lib/libPCSX2core.a`，19.6 MB，319 个成员全部 aarch64。
+
+### 6.3 链接期依次补齐的依赖
+
+按报错顺序逐个补齐（非一次性猜测）：
+
+| 缺失 | 处理 |
+|---|---|
+| `common::*` 符号 | 加入 `libcommon.a` |
+| `Discord_*` / `cubeb_*` | 加入 `libdiscord-rpc.a` / `libcubeb.a` |
+| `SDL_*` | 加入 `libSDL3.a`（实际交叉编译版，非 stub）|
+| `pthread_setcanceltype` | 加入 SDL3 子代理留下的 `libohos_musl_compat.a` |
+
+### 6.4 构建期踩到的坑
+
+| 问题 | 根因 | 修正 |
+|---|---|---|
+| `thirdparty-ohos` 路径解析错 | `HPS2_REPO` 上溯 6 级，实际需 5 级 | 改为 5 级 |
+| `Host` 未声明 | 提取 Host 实现时只取了函数体，漏掉 include 区块 | 补 include |
+| `SimpleIni.h` 等找不到 | 3rdparty 的 include 路径未全加 | 补 12 个路径 |
+| `LocaleCircleConfirm` 未声明 | 该声明在 ImGui UI 头文件中 | 补 ImGui 头 |
+
+### 6.5 当前状态
+
+- ✅ HAP 构建 + 签名完成
+- ⬜ **真机安装**：USB 已物理断开，需重新连接
+- ⬜ 真机 BIOS 启动验证
+
+**下一步（需用户操作）**：
+1. 重新连接手机 USB 并授权调试
+2. 安装 HAP 后，在应用内点「选择 BIOS 文件」，
+   从文件管理器中选中自己合法拥有的 PS2 BIOS
+3. 点「启动核心」，观察各阶段状态

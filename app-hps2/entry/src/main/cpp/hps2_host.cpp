@@ -9,6 +9,60 @@
  *   ARMSX2 commit d7e8d01678107f066d6ec988ca178d80089bd9f5
  *   GPL-3.0+（与本项目一致）
  */
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "fmt/format.h"
+
+#include "common/Assertions.h"
+#include "common/Console.h"
+#include "common/CrashHandler.h"
+#include "common/Error.h"
+#include "common/FileSystem.h"
+#include "common/MemorySettingsInterface.h"
+#include "common/Path.h"
+#include "common/Perf.h"
+#include "common/ProgressCallback.h"
+#include "common/SettingsWrapper.h"
+#include "common/StringUtil.h"
+
+#include "pcsx2/PrecompiledHeader.h"
+#include "pcsx2/Achievements.h"
+#include "pcsx2/DebugTools/Debug.h"
+#include "pcsx2/GS/GS.h"
+#include "pcsx2/MTGS.h"
+#include "pcsx2/Host.h"
+#include "pcsx2/INISettingsInterface.h"
+#include "pcsx2/Input/InputManager.h"
+#include "pcsx2/VMManager.h"
+
+// 以下头文件声明了 Host 接口中与 UI 相关的成员
+// （LocaleCircleConfirm / RequestExitApplication / BeginTextInput /
+//  ShouldPreferHostFileSelector / OnCoverDownloaderOpenRequested 等）。
+// 这些方法由前端实现，但声明位于 ImGui UI 头文件中。
+#include "pcsx2/ImGui/FullscreenUI.h"
+#include "pcsx2/ImGui/ImGuiFullscreen.h"
+#include "pcsx2/ImGui/ImGuiManager.h"
+
+// 说明：eerunner 原始文件另含 <linux/perf_event.h> 等 Linux 专属头，
+// 那是其性能剖析功能所需，与本 Host 实现无关，故不引入。
+
+
 
 void Host::CommitBaseSettingChanges()
 {

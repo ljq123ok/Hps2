@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "Hps2 PS2 模拟器主模块" },
+    { "name": "EntryAbility_desc", "value": "Hps2" },
+    { "name": "EntryAbility_label", "value": "Hps2" }
+  ]
+}
