@@ -544,3 +544,113 @@ EXIT=0
 1. 将 PCSX2 OBJECT 库链接为可加载的 `.so`
 2. 建立最小 HAP（ArkTS + N-API）加载该 `.so`
 3. 用用户提供的 BIOS 完成可观察的启动流程
+
+---
+
+## 10. ✅ 完整可执行文件链接成功
+
+```
+[100%] Linking CXX executable ../bin/pcsx2-eerunner
+[100%] Built target pcsx2-eerunner
+EXIT=0
+```
+
+| 项目 | 结果 |
+|---|---|
+| 产物 | `bin/pcsx2-eerunner`，17 MB |
+| 文件类型 | `ELF 64-bit LSB pie executable, ARM aarch64` |
+| 解释器 | `/lib/ld-musl-aarch64.so.1`（OHOS musl）|
+| 动态依赖 | `libnet_http.so` / `libSDL3.so.0` / `libz.so` / `libc++_shared.so` / `libc.so` |
+
+**`libnet_http.so` 出现在依赖里** —— 直接证明我写的 OHOS 原生 HTTP 替代
+（`HTTPDownloaderOHOS.cpp`）确实被链接进去了，不是摆设。
+
+### 10.1 本轮解决的 3 个链接期障碍
+
+#### 障碍 A：`IOCtlSrc` 缺失（11 个符号）
+
+**根因**：`CDVDdiscReader.cpp` **无条件**引用 `IOCtlSrc`，而该接口只有三个
+平台实现，各自按条件加入构建：
+
+```cmake
+if(LINUX)   → CDVD/Linux/IOCtlSrc.cpp
+if(APPLE)   → CDVD/Darwin/IOCtlSrc.cpp
+if(WIN32)   → ...
+```
+
+我们的 OHOS 分支**刻意不设 LINUX**（避免 X11/D-Bus，与上游 Android 同思路），
+于是三个实现一个都没编入。
+
+**处理**：新增 `pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp`，提供"无光驱"实现。
+
+**为什么不移植 Linux 版**：它通过 `ioctl(CDROMREADTOCENTRY)` 读取**物理光驱**，
+OHOS 设备没有光驱、也提供不了这些 ioctl。游戏镜像走
+`FlatFileReader` / `ChdFileReader` 的**文件**路径，与光驱无关。
+
+#### 障碍 B：`Common::PlaySoundAsync` 缺失
+
+**根因**：我为 OHOS 排除了 aplay/gstreamer 路径（依赖外部 Linux 音频工具），
+但 UI 与成就代码仍引用该符号。
+
+**处理**：补 OHOS 实现（返回 `false`），语义为"无法播放提示音"。
+
+#### 障碍 C：`cpuinfo_isa` / `cpuinfo_arm_linux_init` 未定义
+
+**根因有两层**（这是本轮最隐蔽的一个）：
+
+```cmake
+# 1) 平台白名单不含 OHOS
+ELSEIF(NOT CMAKE_SYSTEM_NAME MATCHES "^(...|Linux|Android|FreeBSD|Emscripten)$")
+  SET(CPUINFO_SUPPORTED_PLATFORM FALSE)      # => 整个 ARM 后端被跳过
+```
+
+实测探针确认：
+
+```
+>>> CI_PROBE supported=[FALSE] proc=[aarch64] sys=[OHOS]
+```
+
+```cmake
+# 2) 源文件选择条件只认 Linux/Android
+IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
+  LIST(APPEND CPUINFO_SRCS src/arm/linux/init.c ...)   # 含 cpuinfo_isa 定义
+```
+
+**处理**：把 OHOS 加入平台白名单与源选择条件（共 9 处）。
+
+**验证方式（非盲目放开）**：逐个试编 `src/arm/linux/*.c`，
+确认 7 个文件在 OHOS 工具链下**全部可编译**：
+
+```
+init.c cpuinfo.c clusters.c chipset.c midr.c hwcap.c aarch64-isa.c
+→ 7/7 ✅ 可编译
+```
+
+**为什么不能简单地把 `CMAKE_SYSTEM_NAME` 设为 Linux**：
+那会让上游 `if(LINUX)` 成立，把 X11/D-Bus/udev 全部拉回来 ——
+正是本项目从第一步就在避免的。
+
+### 10.2 真机执行现状
+
+可执行文件已推送至真机（`/data/local/tmp/pcsx2-eerunner`），
+但 **shell 域执行被 SELinux 拒绝**：
+
+```
+$ /data/local/tmp/pcsx2-eerunner
+/bin/sh: ...: Permission denied
+$ ls -Z /data/local/tmp/pcsx2-eerunner
+u:object_r:data_local_tmp:s0
+```
+
+这与**阶段 1 探针遇到的限制完全相同**（详见
+`docs/evidence/stage1-device-jit-policy.txt`）。不是新问题。
+
+**正确路径是通过 HAP 加载** —— 应用域（`debug_hap`）才有执行权限，
+这正是阶段 1 已验证过的路径。
+
+### 10.3 下一步
+
+1. 建立 HAP 工程（ArkTS + N-API），native 层加载 PCSX2 核心
+2. Host 接口实现可直接复用 `pcsx2-eerunner/Main.cpp:216-525`
+   —— 该区块经核实**零 Linux 专属依赖**，是干净的
+3. 用用户提供的 BIOS 完成可观察的启动验证
