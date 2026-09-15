@@ -617,3 +617,54 @@ MONITOR: ee_pc=0x00252944 frame=4200
 
 `code_generation=1` 且四个重编译器全开，游戏负载下持续运行
 （230fps、无崩溃、无异常退出），说明 **JIT 在真实游戏代码路径上工作正常**。
+
+---
+
+## 6. 命名口径说明（避免混淆）
+
+本项目基于 **ARMSX2** 移植，而 ARMSX2 本身是 **PCSX2 的 fork**。
+由于该 fork **未重命名目录与构建目标**，代码里处处出现 `pcsx2`，
+容易造成"到底在改什么"的困惑。这里明确口径：
+
+### 6.1 事实
+
+```
+$ git remote -v
+origin  https://github.com/ARMSX2/ARMSX2.git
+```
+
+ARMSX2 README 首行：
+
+> **ARMSX2 — Native ARM64 JIT Fork of PCSX2**
+> ...based on PCSX2. The ARMSX2 team is eternally indebted to the PCSX2 project.
+
+### 6.2 命名对照（重要）
+
+| 代码中出现的名字 | 实际指代 |
+|---|---|
+| `pcsx2/` 目录 | **ARMSX2 的核心源码**（fork 后沿用上游目录名）|
+| `pcsx2-qt/` | ARMSX2 的 Qt 前端 |
+| `pcsx2-eerunner/`、`pcsx2-vurunner/`、`pcsx2-gsrunner/` | **ARMSX2 自有的**无头诊断工具 |
+| `pcsx2-sdl/`、`pcsx2-libretro/` | ARMSX2 的其他前端 |
+| CMake 目标 `PCSX2`、`PCSX2_FLAGS` | ARMSX2 核心的构建目标 |
+| `com.hps2.jitprobe` | 本移植项目的 HarmonyOS 应用包名 |
+
+### 6.3 本文档与提交信息的用词规范
+
+- ✅ **「ARMSX2 核心」** —— 指这个 fork 的核心代码
+- ✅ **「`pcsx2/` 目录」** —— 指路径时用真实目录名
+- ✅ **「上游 PCSX2」** —— 仅在对比 fork 与上游行为时使用
+- ❌ 不要用「PCSX2 核心」指代我们正在编译的代码 —— 那实际上是 ARMSX2
+
+**一个区分要点**：上游 PCSX2 在 ARM64 上**只有解释器**，其 JIT 重编译器
+（EE/IOP/VU0/VU1、vtlb fastmem）是 **x86-64 专属**。
+ARMSX2 这个 fork 存在的唯一目的就是补齐 ARM64 JIT。
+
+因此当构建输出出现：
+
+```
+-- ARM64 build: EE, IOP, and VU0/VU1 recompilers are all available.
+```
+
+这**正是 ARMSX2 的贡献**（上游不会有这行）。本项目"JIT 必须是性能路径"
+的验收要求，验的就是 ARMSX2 的 ARM64 重编译器。
