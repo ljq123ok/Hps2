@@ -264,8 +264,28 @@ void VMThreadMain() {
 		// 其 ARM 后端在阶段 2 已为本平台修复（平台白名单问题）。
 		if (cpuinfo_initialize()) {
 			const uint32_t clusters = cpuinfo_get_clusters_count();
-			LOGI("CHIP: clusters=%{public}u total_cores=%{public}u",
-				clusters, cpuinfo_get_cores_count());
+			const uint32_t procs = cpuinfo_get_processors_count();
+			const uint32_t cores = cpuinfo_get_cores_count();
+
+			// processor / core 计数对比是判断 SMT（超线程）的权威方法：
+			//   processors = 逻辑处理器（SMT 线程）
+			//   cores      = 物理核
+			// 二者相等 => 无 SMT。
+			// ARM 架构上公版核与 HiSilicon 自研核均不实现 SMT，
+			// 这里用实测数据确认，而非依赖该论断。
+			LOGI("CHIP: clusters=%{public}u logical_processors=%{public}u physical_cores=%{public}u smt=%{public}s",
+				clusters, procs, cores, (procs > cores) ? "YES" : "NO");
+
+			// 每个逻辑处理器的簇归属：用于确认 12 个"核"是 12 个独立物理核
+			// 还是 6 核 x 2 线程。若每个 processor 都对应不同 core，则无 SMT。
+			for (uint32_t pi = 0; pi < procs; ++pi) {
+				const cpuinfo_processor* pr = cpuinfo_get_processor(pi);
+				if (!pr)
+					continue;
+				LOGI("CHIP: proc[%{public}u] core_id=%{public}u cluster_idx=%{public}u",
+					pi, pr->core ? pr->core->core_id : 9999u,
+					pr->cluster ? pr->cluster->cluster_id : 9999u);
+			}
 			for (uint32_t ci = 0; ci < clusters; ++ci) {
 				const cpuinfo_cluster* cl = cpuinfo_get_cluster(ci);
 				if (!cl)
@@ -278,6 +298,86 @@ void VMThreadMain() {
 			}
 		} else {
 			LOGI("CHIP: cpuinfo_initialize() failed");
+		}
+
+		// ------------------------------------------------------------------
+		// SMT（超线程）判定
+		//
+		// 判定依据（Linux/OHOS 通用约定）：
+		//   /proc/cpuinfo 每个逻辑处理器块含：
+		//     "cpu cores" = 同一物理封装内的**物理核数**
+		//     "siblings"  = 同一物理封装内的**逻辑处理器数**
+		//   若 siblings > cpu cores => 存在 SMT（超线程）
+		//   若相等               => 无 SMT
+		//
+		// 这是内核给出的数字，不依赖 cpuinfo 库的微架构数据库
+		// （该库不认识本芯片：uarch=0/freq=0MHz，其 smt 推断不可信）。
+		//
+		// 同时打印每个处理器的 CPU part / implementer，用于核对
+		// 是否为 HiSilicon 自研核（MIDR 的 PartNum）。
+		// ------------------------------------------------------------------
+		{
+			auto cpuinfo_txt = FileSystem::ReadFileToString("/proc/cpuinfo");
+			if (!cpuinfo_txt.has_value()) {
+				LOGI("SMT: /proc/cpuinfo unreadable");
+			} else {
+				const std::string& t = cpuinfo_txt.value();
+				int nproc = 0, cores = -1, siblings = -1;
+				std::string impl, part;
+
+				// 逐行解析
+				size_t pos = 0;
+				while (pos < t.size()) {
+					size_t eol = t.find('\n', pos);
+					if (eol == std::string::npos)
+						eol = t.size();
+					std::string line = t.substr(pos, eol - pos);
+					pos = eol + 1;
+
+					auto val = [&](const char* key, std::string& out) {
+						const std::string k = std::string(key) + "\t: ";
+						const std::string k2 = std::string(key) + ": ";
+						size_t p1 = line.find(k);
+						if (p1 == 0) { out = line.substr(k.size()); return true; }
+						size_t p2 = line.find(k2);
+						if (p2 == 0) { out = line.substr(k2.size()); return true; }
+						return false;
+					};
+
+					std::string v;
+					if (val("processor", v)) {
+						++nproc;
+					} else if (val("cpu cores", v)) {
+						if (cores < 0) cores = std::atoi(v.c_str());
+					} else if (val("siblings", v)) {
+						if (siblings < 0) siblings = std::atoi(v.c_str());
+					} else if (val("CPU implementer", v)) {
+						if (impl.empty()) impl = v;
+					} else if (val("CPU part", v)) {
+						if (part.empty()) part = v;
+					}
+				}
+
+				const bool smt = (siblings > 0 && cores > 0 && siblings > cores);
+				LOGI("SMT: processors=%{public}d cpu_cores=%{public}d siblings=%{public}d => smt=%{public}s",
+					nproc, cores, siblings, smt ? "YES" : "NO");
+				LOGI("SMT: first CPU implementer=%{public}s part=%{public}s",
+					impl.c_str(), part.c_str());
+
+				// 打印 /proc/cpuinfo 的前 2 个处理器块原始内容，
+				// 便于人工核对字段名是否如预期（不同内核版本字段可能有差异）
+				size_t p = 0; int blocks = 0;
+				while (blocks < 2 && p < t.size()) {
+					size_t nxt = t.find("\n\n", p);
+					std::string blk = (nxt == std::string::npos) ? t.substr(p) : t.substr(p, nxt - p);
+					std::string joined;
+					for (char ch : blk) joined += (ch == '\n') ? '|' : ch;
+					LOGI("SMT: block[%{public}d]=%{public}s", blocks, joined.c_str());
+					++blocks;
+					if (nxt == std::string::npos) break;
+					p = nxt + 2;
+				}
+			}
 		}
 
 		LOGI("BACKEND: code_generation=%{public}d ee_rec=%{public}d iop_rec=%{public}d "
