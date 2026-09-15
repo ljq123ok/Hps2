@@ -43,12 +43,17 @@
 
 #define LOGI(...) OH_LOG_Print(LOG_APP, LOG_INFO,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) OH_LOG_Print(LOG_APP, LOG_WARN,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 
 #include "common/CrashHandler.h"
 #include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
+
+#include <native_window/external_window.h>
+
+#include "hps2_surface.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -60,6 +65,19 @@
 #include "R5900.h"   // cpuRegs（EE 程序计数器），用于进度监控
 #include "VMManager.h"
 #include "GS/GS.h"
+
+// ---------------------------------------------------------------------------
+// 渲染表面共享状态（声明见 hps2_surface.h）
+// 必须位于全局作用域：napi_init.cpp 与 hps2_host.cpp 都访问它。
+// ---------------------------------------------------------------------------
+namespace Hps2Surface {
+	std::mutex g_mutex;
+	void* g_window = nullptr;   // OHNativeWindow*
+	int g_width = 0;
+	int g_height = 0;
+	bool g_ready = false;
+	std::condition_variable g_cv;
+}
 
 namespace {
 
@@ -180,8 +198,26 @@ bool InitializeConfig() {
 	// 同时把 GS 设为同步执行（不建 MTGS 线程）、关闭 MTVU：
 	// 这两项都是 eerunner 在确定性/无头模式下的配置，可减少线程依赖。
 	// ---------------------------------------------------------------------
-	s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
-		static_cast<int>(GSRendererType::Null));
+	// 有渲染表面 => OpenGL 真正出画面；无表面 => Null（只验证核心逻辑）。
+	// 这样同一份代码既能做无头验证，也能真正显示游戏。
+	{
+		const Hps2Surface::Snapshot surf = Hps2Surface::Get();
+		if (surf.ready && surf.window != nullptr)
+		{
+			s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
+				static_cast<int>(GSRendererType::OGL));
+			LOGI("renderer=OpenGL surface=%{public}dx%{public}d", surf.width, surf.height);
+		}
+		else
+		{
+			s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
+				static_cast<int>(GSRendererType::Null));
+			LOGW("renderer=Null (frontend supplied no surface)");
+		}
+	}
+
+	// GS 同步在 CPU 线程上执行。异步 MTGS 需要独立的呈现线程，
+	// 现阶段保持同步更可控；画面稳定后再评估打开异步的收益。
 	s_settings_interface.SetBoolValue("EmuCore/GS", "SynchronousMTGS", true);
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", false);
 
@@ -526,6 +562,66 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	napi_value r; napi_create_int32(env, 1, &r); return r;
 }
 
+// setSurface(surfaceId: string, width: number, height: number) -> 1/0
+//
+// 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
+// OHNativeWindow* 交给 GS 作渲染目标。
+//
+// 为什么尺寸要一起传：我们走 surfaceId 路径，native 侧拿不到
+// OH_NativeXComponent 的 component 指针，因而无法调用
+// OH_NativeXComponent_GetXComponentSize()，尺寸只能由 ArkTS 侧提供。
+static napi_value NapiSetSurface(napi_env env, napi_callback_info info) {
+	size_t argc = 3;
+	napi_value argv[3] = {nullptr, nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	if (argc < 3) {
+		SetError("setSurface requires (surfaceId, width, height)");
+		napi_value r; napi_create_int32(env, 0, &r); return r;
+	}
+
+	size_t len = 0;
+	napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+	std::string sid;
+	sid.resize(len + 1);
+	napi_get_value_string_utf8(env, argv[0], sid.data(), len + 1, &len);
+	sid.resize(len);
+
+	int32_t w = 0, h = 0;
+	napi_get_value_int32(env, argv[1], &w);
+	napi_get_value_int32(env, argv[2], &h);
+
+	uint64_t surface_id = 0;
+	try {
+		surface_id = std::stoull(sid);
+	} catch (...) {
+		SetError("setSurface: surfaceId not numeric: " + sid);
+		napi_value r; napi_create_int32(env, 0, &r); return r;
+	}
+
+	LOGI("setSurface: id=%{public}llu %{public}dx%{public}d",
+		static_cast<unsigned long long>(surface_id), w, h);
+
+	OHNativeWindow* window = nullptr;
+	const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(surface_id, &window);
+	if (err != 0 || window == nullptr) {
+		SetError("OH_NativeWindow_CreateNativeWindowFromSurfaceId failed: " + std::to_string(err));
+		napi_value r; napi_create_int32(env, 0, &r); return r;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(Hps2Surface::g_mutex);
+		Hps2Surface::g_window = window;
+		Hps2Surface::g_width = w;
+		Hps2Surface::g_height = h;
+		Hps2Surface::g_ready = true;
+	}
+	Hps2Surface::g_cv.notify_all();
+
+	LOGI("setSurface: OHNativeWindow OK (%{public}p)", static_cast<void*>(window));
+	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
 static napi_value NapiStop(napi_env env, napi_callback_info info) {
 	g_vm_running.store(false);
 	if (g_vm_thread.joinable())
@@ -567,6 +663,7 @@ EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
 	napi_property_descriptor desc[] = {
 		{"startBios", nullptr, NapiStartBios, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 	};

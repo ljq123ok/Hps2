@@ -124,6 +124,9 @@ target_link_libraries(hps2core PUBLIC
     ${ARMSX2_BUILD_DIR}/3rdparty/soundtouch/libpcsx2-soundtouch.a
     ${ARMSX2_BUILD_DIR}/3rdparty/vixl/libvixl.a
     ${ARMSX2_BUILD_DIR}/3rdparty/freesurround/libfreesurround.a
+    # glad：GL/EGL 函数加载器。PCSX2 的 OpenGL 后端靠它
+    # 在运行时 dlopen("libEGL") 并装载 GLES 函数指针。
+    ${ARMSX2_BUILD_DIR}/3rdparty/glad/libglad.a
     ${ARMSX2_BUILD_DIR}/3rdparty/discord-rpc/libdiscord-rpc.a
     ${ARMSX2_BUILD_DIR}/3rdparty/cubeb/libcubeb.a
 )
@@ -153,4 +156,9 @@ target_link_libraries(hps2core PUBLIC
     net_http
     libace_napi.z.so
     libhilog_ndk.z.so
+    # OHOS 图形：EGL/GLES 由 glad 运行时 dlopen，但 native_window 的
+    # OH_NativeWindow_* 是直接调用的，需要链接期解析。
+    native_window
+    EGL
+    GLESv3
 )

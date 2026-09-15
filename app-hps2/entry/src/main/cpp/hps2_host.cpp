@@ -51,6 +51,8 @@
 #include "pcsx2/Input/InputManager.h"
 #include "pcsx2/VMManager.h"
 
+#include "hps2_surface.h"
+
 // 以下头文件声明了 Host 接口中与 UI 相关的成员
 // （LocaleCircleConfirm / RequestExitApplication / BeginTextInput /
 //  ShouldPreferHostFileSelector / OnCoverDownloaderOpenRequested 等）。
@@ -166,14 +168,41 @@ void Host::SetMouseLock(bool state)
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 {
-	// Headless — the Null renderer doesn't need a surface.
+	// [Hps2] 这是 GS 取得渲染窗口的唯一入口（GSDevice.cpp:474 调用）。
+	//
+	// 上游 eerunner 的版本固定返回 Surfaceless（它用 Null 渲染器、不需窗口），
+	// 我们最初直接沿用了那段实现 —— 后果是：即使 ArkTS 已经通过 setSurface()
+	// 交出了 OHNativeWindow，GS 也永远看不到它，画面不可能显示。
+	//
+	// 现在的行为：
+	//   前端有可用表面 → 返回 WindowInfo{type=OHOS}，GS 走 OpenGL 真正渲染；
+	//   前端没有表面   → 退回 Surfaceless，配合 Null 渲染器只验证核心逻辑。
+	const Hps2Surface::Snapshot surf = Hps2Surface::Get();
+
 	WindowInfo wi;
-	wi.type = WindowInfo::Type::Surfaceless;
+	if (surf.ready && surf.window != nullptr)
+	{
+		wi.type = WindowInfo::Type::OHOS;
+		wi.window_handle = surf.window;
+		wi.surface_width = static_cast<u32>(surf.width);
+		wi.surface_height = static_cast<u32>(surf.height);
+		wi.surface_scale = 1.0f;
+		Console.WriteLn("Host::AcquireRenderWindow: OHOS surface %ux%u (window=%p)",
+			wi.surface_width, wi.surface_height, surf.window);
+	}
+	else
+	{
+		wi.type = WindowInfo::Type::Surfaceless;
+		Console.WriteLn("Host::AcquireRenderWindow: no OHOS surface yet, returning Surfaceless");
+	}
+
 	return wi;
 }
 
 void Host::ReleaseRenderWindow()
 {
+	// 表面由 ArkTS 侧持有并管理生命周期（XComponent 的 onSurfaceDestroyed），
+	// 这里不需要释放 OHNativeWindow。
 }
 
 void Host::BeginPresentFrame()

@@ -36,6 +36,15 @@ struct Index {
   @State gamePath: string = '';
   @State gameName: string = '';
   @State picking: string = '';   // '' | 'bios' | 'game' —— 区分正在选哪个
+  @State surfaceReady: boolean = false;
+  @State surfaceSize: string = '';
+
+  // XComponent 控制器：其回调给出 surfaceId，我们转交 native 换取 OHNativeWindow
+  private xcController: XComponentController = new XComponentController();
+  // 用显式的 number 保存尺寸：SizeOptions 的字段是 Length 且可选，
+  // 直接读会得到 Length | undefined，无法传给需要 number 的 native 接口。
+  @State surfaceW: number = 0;
+  @State surfaceH: number = 0;
   @State statusStage: string = 'idle';
   @State statusError: string = '';
   @State statusRunning: boolean = false;
@@ -144,6 +153,49 @@ struct Index {
     // 递归确保父目录存在
     this.mkdirsFor(dir);
     fs.mkdirSync(dir);
+  }
+
+  /*
+   * 把 ArkUI XComponent 的 surface 交给 native 层。
+   *
+   * 为什么需要这一步：PCSX2/ARMSX2 的 GS 需要一个真实的渲染窗口才能
+   * 真正绘制（而不是把画面丢弃）。OHOS 上这个窗口是 OHNativeWindow，
+   * 只能由 ArkUI 提供 —— 拿到的途径是 XComponent 的 surfaceId。
+   *
+   * 数据流：
+   *   XComponent.surfaceId (string)
+   *     → hps2core.setSurface()           [native]
+   *     → OH_NativeWindow_CreateNativeWindowFromSurfaceId()
+   *     → OHNativeWindow*
+   *     → Host::AcquireRenderWindow() 返回 WindowInfo{type=OHOS}
+   *     → GLContextEGLOHOS 交给 EGL
+   *
+   * 尺寸必须在这里一起传：native 走的是 surfaceId 路径，
+   * 拿不到 XComponent 的 component 指针，无法调用
+   * OH_NativeXComponent_GetXComponentSize。
+   */
+  private pushSurface(w: number, h: number): void {
+    try {
+      const sid: string = this.xcController.getXComponentSurfaceId();
+      if (!sid || sid.length === 0) {
+        hilog.error(DOMAIN, TAG, 'getXComponentSurfaceId returned empty');
+        return;
+      }
+      const ok: number = hps2core.setSurface(sid, Math.round(w), Math.round(h));
+      hilog.info(DOMAIN, TAG,
+        'setSurface(sid=%{public}s, %{public}dx%{public}d) -> %{public}d', sid, w, h, ok);
+      if (ok === 1) {
+        this.surfaceReady = true;
+        this.surfaceSize = Math.round(w) + '×' + Math.round(h);
+      } else {
+        this.surfaceReady = false;
+        this.statusError = '渲染表面创建失败（见日志 HPS2_CORE）';
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'pushSurface failed: %{public}s', JSON.stringify(err));
+      this.surfaceReady = false;
+    }
   }
 
   // 通过系统文件管理器选择文件，并复制进应用沙箱。
@@ -315,8 +367,49 @@ struct Index {
   build() {
     Column() {
       Text('Hps2').fontSize(22).fontWeight(FontWeight.Bold).width('100%')
-      Text('HarmonyOS PS2 模拟器 · 阶段 2 核心接入验证')
-        .fontSize(11).fontColor('#6B7280').width('100%').margin({ top: 2, bottom: 14 })
+      Text('HarmonyOS PS2 模拟器')
+        .fontSize(11).fontColor('#6B7280').width('100%').margin({ top: 2, bottom: 10 })
+
+      // 游戏画面显示区。
+      // XComponent 的 surface 就是 GS 的渲染目标；native 侧通过
+      // setSurface() 把它交给 EGL/OpenGL。
+      Column() {
+        XComponent({
+          id: 'hps2_view',
+          type: XComponentType.SURFACE,
+          controller: this.xcController
+        })
+          .width('100%')
+          .height('100%')
+          .onLoad(() => {
+            hilog.info(DOMAIN, TAG, 'XComponent onLoad');
+            // onLoad 时 surface 已就绪，但尺寸可能还没定；
+            // onSurfaceChanged 会再给一次准确尺寸。
+            if (this.surfaceW > 0 && this.surfaceH > 0) {
+              this.pushSurface(this.surfaceW, this.surfaceH);
+            }
+          })
+          .onDestroy(() => {
+            hilog.info(DOMAIN, TAG, 'XComponent onDestroy');
+            this.surfaceReady = false;
+          })
+      }
+      .width('100%')
+      .aspectRatio(4 / 3)          // PS2 输出为 4:3
+      .backgroundColor('#000000')
+      .borderRadius(8)
+      .clip(true)
+      .margin({ bottom: 10 })
+      .onAreaChange((_, area) => {
+        // 布局尺寸确定后把 surface 尺寸同步给 native
+        const w = Number(area.width);
+        const h = Number(area.height);
+        this.surfaceW = w;
+        this.surfaceH = h;
+        if (w > 0 && h > 0) {
+          this.pushSurface(w, h);
+        }
+      })
 
       // BIOS 选择区
       Column() {
