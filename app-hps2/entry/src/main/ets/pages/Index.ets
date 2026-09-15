@@ -33,6 +33,9 @@ interface BootStatus {
 struct Index {
   @State biosPath: string = '';
   @State biosName: string = '';
+  @State gamePath: string = '';
+  @State gameName: string = '';
+  @State picking: string = '';   // '' | 'bios' | 'game' —— 区分正在选哪个
   @State statusStage: string = 'idle';
   @State statusError: string = '';
   @State statusRunning: boolean = false;
@@ -47,6 +50,9 @@ struct Index {
   private biosDir(): string {
     return this.dataRoot() + '/bios';
   }
+  private gameDir(): string {
+    return this.dataRoot() + '/games';
+  }
 
   aboutToAppear(): void {
     try {
@@ -57,6 +63,15 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'biosDir=%{public}s', dir);
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir bios dir failed: %{public}s', JSON.stringify(e));
+    }
+    try {
+      const gdir = this.gameDir();
+      if (!fs.accessSync(gdir)) {
+        fs.mkdirSync(gdir);
+      }
+      hilog.info(DOMAIN, TAG, 'gameDir=%{public}s', gdir);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'mkdir games dir failed: %{public}s', JSON.stringify(e));
     }
     // 核心要求 <AppRoot>/resources 存在（SetResourcesDirectory 会校验），
     // 首次启动时从 HAP 的 rawfile 解压出来。
@@ -131,52 +146,50 @@ struct Index {
     fs.mkdirSync(dir);
   }
 
-  // 通过系统文件管理器选择 BIOS，并复制进沙箱
-  private async chooseBios(): Promise<void> {
-    this.busy = true;
+  // 通过系统文件管理器选择文件，并复制进应用沙箱。
+  //
+  // 为什么必须复制而不是直接把 URI 交给核心：
+  //   核心（PCSX2）通过 POSIX 接口打开文件，需要真实文件系统路径；
+  //   而 picker 返回的 URI 授权是**临时**的，App 重启后失效，
+  //   模拟器却需要长期稳定访问。复制进沙箱后路径稳定且完全受控。
+  //
+  // 复制用 fd 方式：直接 copyFileSync(uri, path) 会报 ENOENT，
+  // 因为 URI 需先经文件系统解析成文件描述符。
+  private async pickAndCopy(kind: string, suffixes: Array<string>,
+                            destDir: string): Promise<string> {
+    this.picking = kind;
+    this.statusError = '';
     try {
       const ctx = getContext(this);
       const options = new picker.DocumentSelectOptions();
-      // PS2 BIOS 常见为 .bin / .rom / .BIN
-      options.fileSuffixFilters = ['.bin', '.BIN', '.rom', '.ROM', '.p2b'];
+      options.fileSuffixFilters = suffixes;
 
       const docPicker = new picker.DocumentViewPicker(ctx);
       const uris: Array<string> = await docPicker.select(options);
-
       if (!uris || uris.length === 0) {
-        hilog.info(DOMAIN, TAG, 'user cancelled BIOS selection');
-        this.busy = false;
-        return;
+        hilog.info(DOMAIN, TAG, 'user cancelled %{public}s selection', kind);
+        this.picking = '';
+        return '';
       }
 
       const srcUri = uris[0];
-      hilog.info(DOMAIN, TAG, 'selected uri=%{public}s', srcUri);
+      hilog.info(DOMAIN, TAG, 'selected %{public}s uri=%{public}s', kind, srcUri);
 
-      // 从 URI 末段取文件名（去掉可能的查询串）
       const clean = srcUri.split('?')[0];
       const segs = clean.split('/');
-      const fileName = decodeURIComponent(segs[segs.length - 1]) || 'bios.bin';
-      const destPath = this.biosDir() + '/' + fileName;
-      hilog.info(DOMAIN, TAG, 'dest path=%{public}s', destPath);
+      const fileName = decodeURIComponent(segs[segs.length - 1]) || (kind + '.bin');
+      const destPath = destDir + '/' + fileName;
+      hilog.info(DOMAIN, TAG, '%{public}s dest=%{public}s', kind, destPath);
 
-      // 用 fd 方式复制：先以只读打开源 URI 拿到 fd，再写入目标。
-      // 直接 copyFileSync(uri, path) 在某些 picker URI 上会报
-      // ENOENT（No such file or directory），因为 URI 需要先经
-      // 文件系统解析成 fd。fd 方式更稳。
       let srcFile: fs.File | null = null;
       let dstFile: fs.File | null = null;
       try {
         srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
-        hilog.info(DOMAIN, TAG, 'src fd=%{public}d', srcFile.fd);
-
-        // 目标：先删掉可能存在的旧文件，避免复制到自己的怪异情况
         if (fs.accessSync(destPath)) {
-          fs.unlinkSync(destPath);
+          fs.unlinkSync(destPath);   // 避免复制到自己
         }
         dstFile = fs.openSync(destPath,
           fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-        hilog.info(DOMAIN, TAG, 'dst fd=%{public}d', dstFile.fd);
-
         fs.copyFileSync(srcFile.fd, dstFile.fd);
       } finally {
         if (srcFile !== null) {
@@ -187,19 +200,45 @@ struct Index {
         }
       }
 
-      // 校验：PS2 BIOS 通常为 4MB
       const stat = fs.statSync(destPath);
-      hilog.info(DOMAIN, TAG, 'BIOS copied, size=%{public}d', stat.size);
-
-      this.biosPath = destPath;
-      this.biosName = fileName + ' (' + this.humanSize(stat.size) + ')';
-      this.statusError = '';
+      hilog.info(DOMAIN, TAG, '%{public}s copied, size=%{public}d', kind, stat.size);
+      this.picking = '';
+      return destPath + '|' + fileName + '|' + this.humanSize(stat.size);
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'chooseBios failed: %{public}s', JSON.stringify(err));
-      this.statusError = '选择 BIOS 失败：' + (err.message ? err.message : JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'pick %{public}s failed: %{public}s', kind, JSON.stringify(err));
+      this.statusError = '选择文件失败：' + (err.message ? err.message : JSON.stringify(err));
+      this.picking = '';
+      return '';
     }
-    this.busy = false;
+  }
+
+  private async chooseBios(): Promise<void> {
+    // PS2 BIOS 常见后缀：.bin / .rom，也有无后缀的
+    const r = await this.pickAndCopy('bios',
+      ['.bin', '.BIN', '.rom', '.ROM', '.p2b'], this.biosDir());
+    if (r.length > 0) {
+      const parts = r.split('|');
+      this.biosPath = parts[0];
+      this.biosName = parts[1] + ' (' + parts[2] + ')';
+    }
+  }
+
+  private async chooseGame(): Promise<void> {
+    // PS2 游戏镜像常见格式
+    const r = await this.pickAndCopy('game',
+      ['.iso', '.ISO', '.chd', '.CHD', '.bin', '.BIN', '.img', '.IMG', '.gz'],
+      this.gameDir());
+    if (r.length > 0) {
+      const parts = r.split('|');
+      this.gamePath = parts[0];
+      this.gameName = parts[1] + ' (' + parts[2] + ')';
+    }
+  }
+
+  private clearGame(): void {
+    this.gamePath = '';
+    this.gameName = '';
   }
 
   private humanSize(n: number): string {
@@ -219,7 +258,7 @@ struct Index {
     }
     this.statusError = '';
     try {
-      const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir());
+      const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), this.gamePath);
       hilog.info(DOMAIN, TAG, 'startBios returned %{public}d', ok);
       if (ok !== 1) {
         this.statusError = '核心启动被拒绝，详见日志（tag=HPS2_CORE）';
@@ -290,9 +329,34 @@ struct Index {
           .fontColor(this.biosName.length > 0 ? '#16A34A' : '#9CA3AF')
           .width('100%').margin({ top: 6, bottom: 10 })
 
-        Button(this.busy ? '处理中…' : '选择 BIOS 文件')
-          .width('100%').enabled(!this.busy)
+        Button(this.picking === 'bios' ? '处理中…' : '选择 BIOS 文件')
+          .width('100%').enabled(this.picking === '')
           .onClick(() => { this.chooseBios(); })
+      }
+      .width('100%').padding(14)
+      .backgroundColor('#FFFFFF').borderRadius(10)
+      .border({ width: 1, color: '#E5E7EB' })
+      .margin({ bottom: 12 })
+
+      // 游戏镜像选择（可选）
+      Column() {
+        Row() {
+          Text('游戏镜像（可选）').fontSize(14).fontWeight(FontWeight.Medium)
+          Blank()
+          if (this.gameName.length > 0) {
+            Text('清除')
+              .fontSize(12).fontColor('#2563EB')
+              .onClick(() => this.clearGame())
+          }
+        }.width('100%')
+        Text(this.gameName.length > 0 ? this.gameName : '未选择 —— 将只启动 BIOS')
+          .fontSize(12)
+          .fontColor(this.gameName.length > 0 ? '#16A34A' : '#9CA3AF')
+          .width('100%').margin({ top: 6, bottom: 10 })
+
+        Button(this.picking === 'game' ? '处理中…' : '选择游戏镜像')
+          .width('100%').enabled(this.picking === '')
+          .onClick(() => { this.chooseGame(); })
       }
       .width('100%').padding(14)
       .backgroundColor('#FFFFFF').borderRadius(10)
@@ -314,7 +378,7 @@ struct Index {
 
       // 运行控制
       Row() {
-        Button('启动核心')
+        Button(this.gamePath.length > 0 ? '启动游戏' : '启动 BIOS')
           .layoutWeight(1)
           .enabled(this.biosPath.length > 0 && !this.statusRunning)
           .onClick(() => this.startBoot())

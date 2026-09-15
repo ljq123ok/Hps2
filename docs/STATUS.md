@@ -558,3 +558,62 @@ BACKEND: code_generation=1 ee_rec=1 iop_rec=1 vu0_rec=1 vu1_rec=1 fastmem=1
 阶段 1 已验证真机支持 `mmap(RW) → mprotect(RX) → 执行动态代码`。
 本次验证的是**上半段**：ARMSX2 的 JIT 确实走在这条路上并成功分配了代码内存，
 且所有重编译器均启用。两段合起来构成本项目的核心可行性结论。
+
+---
+
+## 5. 阶段 3：真实游戏负载验证 —— ✅ 游戏成功加载并运行
+
+### 5.1 实测证据（真机，用户提供的游戏镜像）
+
+```
+game copied, size=2243332096        ← 2.24GB 完整复制（字节数与源文件一致）
+booting game image: .../PS2暴走山地自行车(汉化版v1.1).iso
+BACKEND: code_generation=1 ee_rec=1 iop_rec=1 vu0_rec=1 vu1_rec=1 fastmem=1
+MONITOR: ee_pc=0x0025e170 frame=755
+MONITOR: ee_pc=0x00254d58 frame=1652
+MONITOR: ee_pc=0x002041e8 frame=2307
+MONITOR: ee_pc=0x00246960 frame=2976
+MONITOR: ee_pc=0x0024ff10 frame=3582
+MONITOR: ee_pc=0x00252944 frame=4200
+```
+
+### 5.2 与 BIOS-only 的对照（这是关键判据）
+
+| 场景 | ee_pc 采样 | 解读 |
+|---|---|---|
+| **BIOS only**（阶段 2）| 5 个地址，其中 `0x81fc0` 重复出现 | 无盘等待循环 |
+| **游戏负载**（阶段 3）| **6 个采样 = 6 个不同地址** | 游戏代码大范围执行 |
+
+游戏路径下 `ee_pc` **不再停在 `0x81fc0`**，说明 BIOS 已跳过"请插入光盘"
+的等待循环，成功读取镜像并转入游戏代码。
+
+### 5.3 帧率对照
+
+| 场景 | 帧率 | 说明 |
+|---|---|---|
+| BIOS only | ~850 fps | 等待循环，负载极轻 |
+| **游戏负载** | **~230 fps** | 真实负载，约为 BIOS 场景的 27% |
+
+**230 fps 仍远高于 PS2 的 59.94fps**，但这是在 **Null 渲染器**
+（不绘制任何画面）下取得的 —— 即**只算 EE/IOP/VU 的 CPU 模拟**，
+图形管线完全未参与。
+
+### 5.4 图形管线状态（为何看不到画面）
+
+**"没有画面"是当前预期行为，不是故障。**
+
+渲染器为 `GSRendererType::Null`：
+- GS 会丢弃所有绘制命令
+- 但 BIOS 与游戏逻辑**正常执行**（上述 ee_pc/frame 证据）
+
+要看画面必须完成**阶段 4**：
+`OHNativeWindow` 取窗口 + Vulkan 后端（`vkCreateSurfaceOHOS`）+ `Renderer=Vulkan`。
+
+> 阶段 2 把渲染器设为 Null 是有原因的：HAP 若无窗口句柄，
+> GS 初始化会阻塞（这是实际踩到的坑）。因此图形必须与
+> "核心能否运行"分开验证 —— 现在这一步已经完成。
+
+### 5.5 JIT 在真实负载下的表现
+
+`code_generation=1` 且四个重编译器全开，游戏负载下持续运行
+（230fps、无崩溃、无异常退出），说明 **JIT 在真实游戏代码路径上工作正常**。

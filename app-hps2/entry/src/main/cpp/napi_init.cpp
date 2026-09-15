@@ -99,6 +99,7 @@ std::thread g_vm_thread;
 MemorySettingsInterface s_settings_interface;
 std::string s_data_root;
 std::string s_bios_dir;
+std::string s_game_path;   // 空 = 只启动 BIOS；非空 = 启动该游戏镜像
 
 void SetStage(BootStage s) {
 	g_stage.store(static_cast<int>(s));
@@ -198,7 +199,23 @@ void VMThreadMain() {
 	VMManager::ApplySettings();
 
 	VMBootParameters params;
-	params.source_type = CDVD_SourceType::NoDisc;
+	if (!s_game_path.empty())
+	{
+		// 与上游 GameList::FillBootParametersForEntry()（GameList.cpp:234-241）
+		// 对 PS2 光盘镜像的处理一致：
+		//   filename    = 镜像路径
+		//   source_type = Iso
+		//   elf_override = 空（必须是空，否则会被当成 ELF 覆盖启动）
+		params.filename = s_game_path;
+		params.source_type = CDVD_SourceType::Iso;
+		params.elf_override.clear();
+		LOGI("booting game image: %{public}s", s_game_path.c_str());
+	}
+	else
+	{
+		params.source_type = CDVD_SourceType::NoDisc;
+		LOGI("booting BIOS only (no game image)");
+	}
 
 	const VMBootResult res = VMManager::Initialize(params);
 	if (res != VMBootResult::StartupSuccess) {
@@ -350,8 +367,8 @@ void VMThreadMain() {
 }  // namespace
 
 static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
-	size_t argc = 2;
-	napi_value argv[2] = {nullptr, nullptr};
+	size_t argc = 3;
+	napi_value argv[3] = {nullptr, nullptr, nullptr};
 	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
 
 	auto getStr = [&](size_t i, std::string& out) -> bool {
@@ -365,10 +382,14 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	};
 
 	if (!getStr(0, s_data_root) || !getStr(1, s_bios_dir)) {
-		SetError("startBios requires (dataRoot, biosDir)");
+		SetError("startBios requires (dataRoot, biosDir, [gamePath])");
 		SetStage(BootStage::kFailed);
 		napi_value r; napi_create_int32(env, 0, &r); return r;
 	}
+
+	// 第三个参数可选：游戏镜像路径。不传或空字符串 => 只启动 BIOS。
+	s_game_path.clear();
+	getStr(2, s_game_path);
 
 	if (g_vm_running.load()) {
 		LOGI("already running");
