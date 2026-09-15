@@ -14,6 +14,8 @@
 import hilog from '@ohos.hilog';
 import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
+import resourceManager from '@ohos.resourceManager';
+import buffer from '@ohos.buffer';
 import hps2core from 'libhps2core.so';
 
 const DOMAIN = 0x3202;
@@ -47,7 +49,6 @@ struct Index {
   }
 
   aboutToAppear(): void {
-    // 确保 bios 目录存在
     try {
       const dir = this.biosDir();
       if (!fs.accessSync(dir)) {
@@ -57,14 +58,77 @@ struct Index {
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir bios dir failed: %{public}s', JSON.stringify(e));
     }
+    // 核心要求 <AppRoot>/resources 存在（SetResourcesDirectory 会校验），
+    // 首次启动时从 HAP 的 rawfile 解压出来。
+    this.ensureResources();
     this.refreshStatus();
   }
 
-  aboutToDisappear(): void {
-    if (this.timerId >= 0) {
-      clearInterval(this.timerId);
-      this.timerId = -1;
+  /*
+   * 把 HAP rawfile 中的 resources/ 解压到应用数据目录。
+   *
+   * 为什么需要：核心的 EmuFolders::SetResourcesDirectory()（见
+   * pcsx2/Pcsx2Config.cpp）在非 Apple 平台会去找 <AppRoot>/resources，
+   * 目录不存在就直接返回 false。HAP 内的 rawfile 不是普通文件路径，
+   * 核心读不到，必须先解压到真实文件系统。
+   *
+   * 实现方式：使用**构建期生成的清单**（rawfile_manifest.json）逐条解压，
+   * 而不是运行时递归遍历。原因：getRawFileList 是否返回子目录、
+   * 是否递归在文档中未明确，依赖它容易出错；清单是确定的。
+   *
+   * 幂等：以字体文件为标记，已解压则跳过。
+   */
+  private ensureResources(): void {
+    const resDir = this.dataRoot() + '/resources';
+    const marker = resDir + '/fonts/Roboto-Regular.ttf';
+    try {
+      if (fs.accessSync(marker)) {
+        hilog.info(DOMAIN, TAG, 'resources already extracted');
+        return;
+      }
+
+      hilog.info(DOMAIN, TAG, 'extracting resources to %{public}s', resDir);
+      const mgr = getContext(this).resourceManager;
+
+      const raw: Uint8Array = mgr.getRawFileContentSync('rawfile_manifest.json');
+      const text = buffer.from(raw.buffer).toString('utf-8');
+      const list: Array<string> = JSON.parse(text) as Array<string>;
+      hilog.info(DOMAIN, TAG, 'manifest entries=%{public}d', list.length);
+
+      let ok = 0;
+      for (const rel of list) {
+        // rel 形如 "resources/fonts/Roboto-Regular.ttf"
+        const dest = this.dataRoot() + '/' + rel;
+        this.mkdirsFor(dest);
+
+        const data: Uint8Array = mgr.getRawFileContentSync(rel);
+        const file = fs.openSync(dest,
+          fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        fs.writeSync(file.fd, data.buffer);
+        fs.closeSync(file);
+        ok++;
+      }
+      hilog.info(DOMAIN, TAG, 'extracted %{public}d/%{public}d files', ok, list.length);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'extract resources failed: %{public}s', JSON.stringify(err));
+      this.statusError = '解压资源失败：' + (err.message ? err.message : JSON.stringify(err));
     }
+  }
+
+  // 为目标文件路径逐级创建父目录
+  private mkdirsFor(filePath: string): void {
+    const idx = filePath.lastIndexOf('/');
+    if (idx <= 0) {
+      return;
+    }
+    const dir = filePath.substring(0, idx);
+    if (fs.accessSync(dir)) {
+      return;
+    }
+    // 递归确保父目录存在
+    this.mkdirsFor(dir);
+    fs.mkdirSync(dir);
   }
 
   // 通过系统文件管理器选择 BIOS，并复制进沙箱
@@ -86,13 +150,42 @@ struct Index {
       }
 
       const srcUri = uris[0];
-      // 从 URI 末段取文件名
-      const segs = srcUri.split('/');
-      const fileName = segs[segs.length - 1] || 'bios.bin';
-      const destPath = this.biosDir() + '/' + fileName;
+      hilog.info(DOMAIN, TAG, 'selected uri=%{public}s', srcUri);
 
-      hilog.info(DOMAIN, TAG, 'copying BIOS from uri to %{public}s', destPath);
-      fs.copyFileSync(srcUri, destPath);
+      // 从 URI 末段取文件名（去掉可能的查询串）
+      const clean = srcUri.split('?')[0];
+      const segs = clean.split('/');
+      const fileName = decodeURIComponent(segs[segs.length - 1]) || 'bios.bin';
+      const destPath = this.biosDir() + '/' + fileName;
+      hilog.info(DOMAIN, TAG, 'dest path=%{public}s', destPath);
+
+      // 用 fd 方式复制：先以只读打开源 URI 拿到 fd，再写入目标。
+      // 直接 copyFileSync(uri, path) 在某些 picker URI 上会报
+      // ENOENT（No such file or directory），因为 URI 需要先经
+      // 文件系统解析成 fd。fd 方式更稳。
+      let srcFile: fs.File | null = null;
+      let dstFile: fs.File | null = null;
+      try {
+        srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
+        hilog.info(DOMAIN, TAG, 'src fd=%{public}d', srcFile.fd);
+
+        // 目标：先删掉可能存在的旧文件，避免复制到自己的怪异情况
+        if (fs.accessSync(destPath)) {
+          fs.unlinkSync(destPath);
+        }
+        dstFile = fs.openSync(destPath,
+          fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        hilog.info(DOMAIN, TAG, 'dst fd=%{public}d', dstFile.fd);
+
+        fs.copyFileSync(srcFile.fd, dstFile.fd);
+      } finally {
+        if (srcFile !== null) {
+          fs.closeSync(srcFile);
+        }
+        if (dstFile !== null) {
+          fs.closeSync(dstFile);
+        }
+      }
 
       // 校验：PS2 BIOS 通常为 4MB
       const stat = fs.statSync(destPath);

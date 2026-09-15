@@ -11,13 +11,14 @@
  *   → 字体 → settings 层 → LoadStartupSettings
  *   → SysMemory::ReserveMemory()
  *   → [CPU 线程] CPUThreadInitialize → ApplySettings → VMManager::Initialize
- *   → FrameAdvance 循环
+ *   → VMManager::Execute() 执行循环
  *
  * 为什么照搬移动端而不是 Qt：移动端（Android/iOS）与 HAP 同为沙箱环境，
  * 路径模型一致；Qt 桌面版的目录推导在沙箱下不成立。
  *
- * 图形后端：eerunner 默认 GSRendererType::Null，即不初始化图形栈。
- * 阶段 2 只验证 BIOS 启动，与图形解耦，故沿用 Null 渲染器，
+ * 图形后端：显式设为 GSRendererType::Null（见 InitializeConfig 内的注释）。
+ * 默认的 Auto 会让 GS 去初始化真实图形后端，而 HAP 无可用窗口时会卡住。
+ * 阶段 2 只验证 BIOS 启动，与图形解耦，故用 Null 渲染器，
  * 无需 OHNativeWindow / Vulkan。
  *
  * 线程模型：VM 运行在独立线程（与上游一致），N-API 只负责启停与状态查询。
@@ -54,6 +55,7 @@
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
 #include "VMManager.h"
+#include "GS/GS.h"
 
 namespace {
 
@@ -157,6 +159,27 @@ bool InitializeConfig() {
 	if (!s_bios_dir.empty())
 		s_settings_interface.SetStringValue("Folders", "Bios", s_bios_dir.c_str());
 
+	// ---------------------------------------------------------------------
+	// 无头启动配置（照搬 pcsx2-eerunner/Main.cpp:1027-1055）
+	//
+	// 关键：GS 渲染器必须显式设为 Null。
+	// 默认的 Auto 会让 GS 去初始化真实的图形后端，而 HAP 此时没有可用窗口，
+	// GS 线程会卡在创建 device/context 上 —— 表现为进程存活、CPU 0%、
+	// 启动停在 starting-thread。这正是先前卡住的原因。
+	//
+	// 注意（上游注释原文）：Null 渲染器**并非自足** ——
+	//   GS's GetAPIForRenderer() has no Null case, so it falls through to
+	//   GetPreferredRenderer() for the HOST device API.
+	// 即设备 API 仍会被选择。若后续 GS 阶段仍卡，需在此进一步处理。
+	//
+	// 同时把 GS 设为同步执行（不建 MTGS 线程）、关闭 MTVU：
+	// 这两项都是 eerunner 在确定性/无头模式下的配置，可减少线程依赖。
+	// ---------------------------------------------------------------------
+	s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
+		static_cast<int>(GSRendererType::Null));
+	s_settings_interface.SetBoolValue("EmuCore/GS", "SynchronousMTGS", true);
+	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", false);
+
 	VMManager::Internal::LoadStartupSettings();
 	return true;
 }
@@ -181,19 +204,59 @@ void VMThreadMain() {
 		return;
 	}
 
-	LOGI("BIOS boot succeeded; entering frame loop");
+	LOGI("VM initialized; entering execution loop");
 	SetStage(BootStage::kRunning);
 	VMManager::SetLimiterMode(LimiterModeType::Unlimited);
 
-	int frames = 0;
+	// ---------------------------------------------------------------------
+	// 真正的执行循环
+	//
+	// 注意（这是个易错点，先前的实现就错在这里）：
+	//   VMManager::FrameAdvance(n) **不执行任何帧** ——
+	//   它只是设置 s_frame_advance_count 并 SetState(Running)，
+	//   是给"单步调试"用的计数器（见 VMManager.cpp:2536）。
+	//   用它写 while 循环只会空转。
+	//
+	//   真正的执行入口是 VMManager::Execute() → Cpu->Execute()，
+	//   它会**一直执行到被要求停止**（见 Qt 前端 QtHost.cpp:410）。
+	//
+	// 因此这里的模型是：
+	//   反复调用 Execute()，每次它会跑一段并在状态改变时返回；
+	//   只要状态仍是 Running 就继续，直到我们要求停止。
+	// ---------------------------------------------------------------------
+	LOGI("entering Execute loop");
+
+	// 循环模型（与 Qt 前端 QtHost.cpp:404-410 一致）：
+	// VMManager::Execute() 是**长跑**——上游注释原文：
+	//   "Executes code until a break is signaled. Execution can be paused or
+	//    suspended via thread-style signals ... a signal causes the Execute
+	//    call to return at the nearest state check"
+	// （见 pcsx2/R5900.h:416-421）
+	// 因此它只在状态变化（暂停/停止/复位）时返回，不是每帧返回。
+	// 外层 while 负责在它返回后重新进入，直到我们要求停止。
+	//
+	// 为便于外部验证"确实在模拟"，每次 Execute() 返回都记录状态与
+	// 返回序号；只要 CPU 有持续占用且不返回，就说明在执行 PS2 代码。
+	int execute_calls = 0;
 	while (g_vm_running.load()) {
-		VMManager::FrameAdvance(1);
-		if ((++frames % 600) == 0)
-			LOGI("VM alive: %{public}d frames advanced", frames);
+		const VMState before = VMManager::GetState();
+		if (before == VMState::Stopping || before == VMState::Shutdown) {
+			LOGI("VM state=%{public}d, leaving Execute loop", static_cast<int>(before));
+			break;
+		}
+
+		LOGI("Execute() call #%{public}d, state=%{public}d", execute_calls + 1,
+			static_cast<int>(before));
+		VMManager::Execute();
+		execute_calls++;
+
+		LOGI("Execute() returned (call #%{public}d), state=%{public}d", execute_calls,
+			static_cast<int>(VMManager::GetState()));
 	}
+	LOGI("Execute loop ended after %{public}d calls", execute_calls);
 
 	VMManager::Internal::CPUThreadShutdown();
-	LOGI("VM thread exited after %{public}d frames", frames);
+	LOGI("VM thread exited");
 }
 
 }  // namespace
