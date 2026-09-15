@@ -56,6 +56,7 @@
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
 #include "PerformanceMetrics.h"
+#include "cpuinfo.h"      // 芯片拓扑探测
 #include "R5900.h"   // cpuRegs（EE 程序计数器），用于进度监控
 #include "VMManager.h"
 #include "GS/GS.h"
@@ -241,6 +242,27 @@ void VMThreadMain() {
 		//   code_generation = JIT 代码内存是否分配成功（SysMemory::HasCodeMemory）
 		//   ee_rec / iop_rec / vu0_rec / vu1_rec = 各重编译器是否启用
 		//   fastmem = 快速内存访问是否启用
+		// 芯片拓扑上报：这是判断"该用几个核、怎么并行"的事实依据，
+		// 而不是从网页规格表推测。数据来自已链接的 cpuinfo 库，
+		// 其 ARM 后端在阶段 2 已为本平台修复（平台白名单问题）。
+		if (cpuinfo_initialize()) {
+			const uint32_t clusters = cpuinfo_get_clusters_count();
+			LOGI("CHIP: clusters=%{public}u total_cores=%{public}u",
+				clusters, cpuinfo_get_cores_count());
+			for (uint32_t ci = 0; ci < clusters; ++ci) {
+				const cpuinfo_cluster* cl = cpuinfo_get_cluster(ci);
+				if (!cl)
+					continue;
+				LOGI("CHIP: cluster[%{public}u] cores=%{public}u freq=%{public}lluMHz "
+				     "uarch=%{public}u midr=0x%{public}08x",
+					ci, cl->core_count,
+					static_cast<unsigned long long>(cl->frequency / 1000000ull),
+					static_cast<unsigned>(cl->uarch), cl->midr);
+			}
+		} else {
+			LOGI("CHIP: cpuinfo_initialize() failed");
+		}
+
 		LOGI("BACKEND: code_generation=%{public}d ee_rec=%{public}d iop_rec=%{public}d "
 		     "vu0_rec=%{public}d vu1_rec=%{public}d fastmem=%{public}d",
 			SysMemory::HasCodeMemory() ? 1 : 0,
