@@ -435,3 +435,84 @@ Linux/Windows/Darwin 三套（`common/{Linux,Windows,Darwin}`），
 其 Linux 后端的若干行为依赖 Linux 特定语义。**HarmonyOS 内核虽与 Linux
 高度相似，但不能假定 `mmap`/`mprotect` 语义完全一致** ——
 阶段 3 实现 HarmonyOS 后端时必须逐项实测，**不可直接用 Linux 后端顶替**。
+
+---
+
+## 4. 阶段 2：ARMSX2 核心接入 —— ✅ 达成
+
+### 4.1 验收结论（真机实测，三项指标同时成立）
+
+```
+MONITOR: ee_pc=0x0020b06c  frame=1685   vm_state=2
+MONITOR: ee_pc=0x00272c80  frame=4280   vm_state=2
+MONITOR: ee_pc=0x00081fc0  frame=6883   vm_state=2
+MONITOR: ee_pc=0x00081fc0  frame=9474   vm_state=2
+MONITOR: ee_pc=0x00081fc0  frame=12069  vm_state=2
+MONITOR: ee_pc=0x00081fc0  frame=14674  vm_state=2
+```
+
+| 指标 | 观测 | 含义 |
+|---|---|---|
+| `frame` | 1685 → 14674 稳定推进 | 帧在生成，非死锁 |
+| `ee_pc` | `0x20b06c` → `0x272c80` → `0x81fc0` | **EE 在执行 PS2 代码** |
+| `vm_state` | 恒为 2 (Running) | 保持运行态 |
+
+实测帧率 ≈ **721 fps（12 倍实时）**。
+
+`ee_pc` 后期稳定在 `0x81fc0`（主内存内）符合**无光盘时的 BIOS 等待循环**预期：
+BIOS 自检 → logo → 检查光驱 → 无盘则循环等待。
+**帧数持续增长证明不是死锁。**
+
+### 4.2 图形后端说明（重要）
+
+**BIOS 本身有画面**（PS2 开机动画），但当前**看不到**，因为渲染器为
+`GSRendererType::Null`。这是阶段 2 的**刻意选择**：
+
+1. 阶段 2 的验收目标是"核心能跑起来"，图形属于阶段 4
+2. 更实际的原因：HAP 尚无窗口句柄，GS 初始化会阻塞
+   （这是实际踩到的坑，见 §5）
+
+因此 GS 把画面丢弃，但 **BIOS 逻辑正常执行**。要看画面需完成阶段 4：
+`OHNativeWindow` + Vulkan 后端（`vkCreateSurfaceOHOS`）+ `Renderer=Vulkan`。
+
+### 4.3 本轮修复的问题清单
+
+| # | 问题 | 根因 | 性质 |
+|---|---|---|---|
+| 1 | `SetResourcesDirectory failed` | `<AppRoot>/resources` 不存在 | 缺失资源打包 |
+| 2 | fd 复制报 ENOENT | 直接传 picker URI，需先解析成 fd | **我的 bug** |
+| 3 | `Page size mismatch` | 上游对 ARM64 硬编码 16KB，真机为 4KB | 上游 Apple 假设 |
+| 4 | `CPUThreadInitialize failed` | 沙箱 HAP 无 `/dev/shm`，`shm_open` 失败 | 平台差异 |
+| 5 | 卡在 `starting-thread`（CPU 0%） | **注释写了 Null 渲染器但未实际设置** | **我的 bug** |
+| 6 | 误报"running=成功" | **`FrameAdvance()` 不执行帧**，是空转 | **我的 bug** |
+| 7 | `Execute()` 每 1-2ms 返回 | **忘记 `SetPaused(false)`**，VM 处于暂停态 | **我的 bug** |
+
+**问题 5/6/7 都是我的实现错误**，且都不是靠"界面显示成功"发现的，
+而是靠日志中的客观数据（CPU 占用、`state=3`、返回频率）定位。
+
+### 4.4 方法论教训（已写入本项目规程）
+
+**界面文字与日志"存在"都不是成功证据。** 判定"真在运行"必须用：
+
+| 判据 | 假阳性特征 | 真实特征 |
+|---|---|---|
+| CPU 占用 | 0%（阻塞）| 持续占用 |
+| **EE 程序计数器** | 不变 | **变化** |
+| 帧计数 | 异常速率（同一毫秒数亿）| 合理速率 |
+| `Execute()` 返回 | 高频返回（~666/秒）| 长跑不返回 |
+
+**CPU 占用率不足以区分"空转"与"真执行"** —— 本项目已因此误判两次。
+**EE 的 PC 变化才是不可伪造的证据。**
+
+### 4.5 待办
+
+- ⬜ 确认 JIT 后端状态（`@@CPU_BACKEND@@` 探针已加，待设备重连验证）
+- ⬜ 阶段 3：JIT 完整接入 + 游戏镜像加载验证
+- ⬜ 阶段 4：Vulkan + OHNativeWindow 出画面
+- ⬜ 阶段 5：性能优化（当前 721fps 偏低，Null 渲染器下本应更高）
+
+### 4.6 资产合规
+
+BIOS 与游戏镜像**均不内置、不打包、不分发**。
+用户经系统文件管理器（`DocumentViewPicker`）选择后复制进应用沙箱。
+应用**未申请任何受限权限**。

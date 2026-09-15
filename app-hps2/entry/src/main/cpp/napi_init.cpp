@@ -30,6 +30,7 @@
 #include <hilog/log.h>
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -54,6 +55,8 @@
 #include "Host.h"
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
+#include "PerformanceMetrics.h"
+#include "R5900.h"   // cpuRegs（EE 程序计数器），用于进度监控
 #include "VMManager.h"
 #include "GS/GS.h"
 
@@ -204,9 +207,57 @@ void VMThreadMain() {
 		return;
 	}
 
-	LOGI("VM initialized; entering execution loop");
+	LOGI("VM initialized; resuming execution");
 	SetStage(BootStage::kRunning);
 	VMManager::SetLimiterMode(LimiterModeType::Unlimited);
+
+	// ---------------------------------------------------------------------
+	// 关键：解除暂停
+	//
+	// VMManager::Initialize() 在 hwReset() 之后会**主动**把状态设为 Paused
+	// （VMManager.cpp:1812）。这是设计行为 —— VM 初始化完成但处于
+	// "就绪未运行"状态，等前端决定何时开始。
+	//
+	// 若不解除，VMManager::Execute() 会因为状态是 Paused 而立刻返回，
+	// 表现为：阶段显示 running、CPU 有少量占用、但 Execute() 每 1-2ms
+	// 就返回一次（实测已调用 2 万多次），**实际没有执行任何 PS2 代码**。
+	//
+	// Qt 前端在 VM 启动后同样会调 SetPaused(false)（QtHost.cpp:826）。
+	// eerunner 则是刻意保持 Paused，因为它的诊断模式需要单步控制 ——
+	// 我们的场景不同，要让它真正跑起来。
+	// ---------------------------------------------------------------------
+	VMManager::SetPaused(false);
+	LOGI("resumed; VM state=%{public}d", static_cast<int>(VMManager::GetState()));
+
+	// 独立监控线程：周期采样 EE 的程序计数器与帧号。
+	//
+	// 为什么需要它：CPU 占用率只能区分"有活动"与"完全阻塞"，
+	// **无法区分"空转"与"真正执行 PS2 代码"**（本项目已因此在
+	// FrameAdvance 空转和 Paused 未恢复两种情况下误判过两次）。
+	// EE 的 PC 变化才是真在执行 PS2 指令的直接证据。
+	std::thread monitor([]() {
+		// 一次性上报后端状态：这是判断 JIT 是否真正启用的权威依据。
+		// 字段含义（对应 VMManager.cpp:483 的 @@CPU_BACKEND@@ 自报）：
+		//   code_generation = JIT 代码内存是否分配成功（SysMemory::HasCodeMemory）
+		//   ee_rec / iop_rec / vu0_rec / vu1_rec = 各重编译器是否启用
+		//   fastmem = 快速内存访问是否启用
+		LOGI("BACKEND: code_generation=%{public}d ee_rec=%{public}d iop_rec=%{public}d "
+		     "vu0_rec=%{public}d vu1_rec=%{public}d fastmem=%{public}d",
+			SysMemory::HasCodeMemory() ? 1 : 0,
+			EmuConfig.Cpu.Recompiler.EnableEE ? 1 : 0,
+			EmuConfig.Cpu.Recompiler.EnableIOP ? 1 : 0,
+			EmuConfig.Cpu.Recompiler.EnableVU0 ? 1 : 0,
+			EmuConfig.Cpu.Recompiler.EnableVU1 ? 1 : 0,
+			EmuConfig.Cpu.Recompiler.EnableFastmem ? 1 : 0);
+
+		for (int i = 0; i < 6; ++i) {
+			std::this_thread::sleep_for(std::chrono::seconds(3));
+			LOGI("MONITOR: ee_pc=0x%{public}08x frame=%{public}llu vm_state=%{public}d",
+				cpuRegs.pc,
+				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()),
+				static_cast<int>(VMManager::GetState()));
+		}
+	});
 
 	// ---------------------------------------------------------------------
 	// 真正的执行循环
@@ -238,6 +289,7 @@ void VMThreadMain() {
 	// 为便于外部验证"确实在模拟"，每次 Execute() 返回都记录状态与
 	// 返回序号；只要 CPU 有持续占用且不返回，就说明在执行 PS2 代码。
 	int execute_calls = 0;
+	VMState last_state = VMState::Shutdown;
 	while (g_vm_running.load()) {
 		const VMState before = VMManager::GetState();
 		if (before == VMState::Stopping || before == VMState::Shutdown) {
@@ -245,15 +297,29 @@ void VMThreadMain() {
 			break;
 		}
 
-		LOGI("Execute() call #%{public}d, state=%{public}d", execute_calls + 1,
-			static_cast<int>(before));
+		// 只在状态变化时报一次，避免高频刷屏。
+		// 正常运行时状态恒为 Running，Execute() 会长时间不返回；
+		// 若它频繁返回（且状态是 Paused），说明 VM 未被恢复。
+		if (before != last_state) {
+			LOGI("state -> %{public}d (Execute call #%{public}d)",
+				static_cast<int>(before), execute_calls + 1);
+			last_state = before;
+		}
+
 		VMManager::Execute();
 		execute_calls++;
 
-		LOGI("Execute() returned (call #%{public}d), state=%{public}d", execute_calls,
-			static_cast<int>(VMManager::GetState()));
+		// 每 5000 次返回报一次存活，正常应极少触发（Execute 是长跑）。
+		if ((execute_calls % 5000) == 0) {
+			LOGI("WARN: Execute returned %{public}d times, state=%{public}d "
+			     "(频繁返回通常意味着 VM 处于 Paused)",
+				execute_calls, static_cast<int>(VMManager::GetState()));
+		}
 	}
 	LOGI("Execute loop ended after %{public}d calls", execute_calls);
+
+	if (monitor.joinable())
+		monitor.join();
 
 	VMManager::Internal::CPUThreadShutdown();
 	LOGI("VM thread exited");
