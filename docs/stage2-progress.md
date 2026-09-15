@@ -368,3 +368,179 @@ f:
 | ARMSX2 是否用 SME | ❌ 不使用（仅 VIXL 标准 AArch64） |
 | OHOS 编译目标是否需 SME | ❌ 不需要 |
 | **对本项目影响** | **无** |
+
+---
+
+## 8. 核心整体编译：进展与一个新发现的重大障碍
+
+### 8.1 ✅ ARMSX2 首次为 OHOS 完整配置成功
+
+```
+-- ARM64 build: EE, IOP, and VU0/VU1 recompilers are all available.
+-- Configuring done (12.0s)
+-- Generating done (0.6s)
+EXIT=0
+```
+
+配置阶段解决的问题（每个都实测暴露）：
+
+| 问题 | 处理 |
+|---|---|
+| CURL 缺失 | 新增 `HTTPDownloaderOHOS.cpp`（OHOS 原生 `net_http`）|
+| PCAP 缺失 | 按 iOS 同法：排除 `pcap_io.cpp` + 复用 `AndroidPcapStubs.cpp` |
+| Qt6 缺失 | `-DENABLE_QT_UI=OFF`（桌面 UI，非核心需要）|
+| Wayland scanner | `-DWAYLAND_API=OFF -DX11_API=OFF` |
+
+### 8.2 编译推进：51% → 54% → 现处于 `pcsx2/` 核心阶段
+
+`common` 库已**完整编译通过**。过程中修复：
+
+**修复 A：`std::lexicographical_compare_three_way` 缺失**
+
+已实测确认（非推测）：
+
+```bash
+# OHOS：编译失败
+error: no member named 'lexicographical_compare_three_way' in namespace 'std'
+# 宿主 macOS：编译通过
+HOST EXIT=0
+```
+
+处理：新增 `common/HarmonyOS/ohos_libcxx_compat.h` 提供等价实现。
+算法语义已在宿主上单测验证（7 个用例含空区间/前缀关系全部 PASS）。
+
+**修复 B：`LnxMisc.cpp` 的 D-Bus 依赖**
+
+上游用 `#if !defined(__ANDROID__)` 守卫 D-Bus，OHOS 不在其中，
+故 `#include <dbus/dbus.h>` 被编入 → 找不到头文件。
+
+处理：把守卫扩展为 `!(__ANDROID__ || __OHOS__)`，
+并一并排除 `PlaySoundAsync` 的 aplay/gstreamer 路径
+（依赖外部 Linux 音频工具，OHOS 上无意义）。
+
+### 8.3 🔴 新发现的重大障碍：OHOS libc++ 的 three-way comparison 支持不完整
+
+**实测的系统性排查结果**：
+
+| 类型 | OHOS `operator<=>` | 宿主 macOS |
+|---|---|---|
+| `std::pair` | ✅ | ✅ |
+| `std::tuple` | ✅ | ✅ |
+| **`std::vector`** | ❌ | ✅ |
+| **`std::string`** | ❌ | ✅ |
+| **`std::array`** | ❌ | ✅ |
+| **`std::optional`** | ❌ | ✅ |
+
+**根因**：
+
+```
+$ grep -c "operator<=>" <OHOS libcxx>/vector
+0                      # 完全没有
+_LIBCPP_VERSION 15004  # LLVM 15
+```
+
+OHOS 的 libc++ **基本没有 three-way comparison 支持**，
+但 `<compare>` 头文件存在、`<=>` 运算符本身可用 ——
+是一个**割裂的中间状态**。
+
+**影响**：任何使用 `operator<=> = default` 且成员含
+`vector`/`string`/`array`/`optional` 的结构体，其 `<=>` 会被
+隐式删除，触发编译错误。典型如 `pcsx2/Config.h:1395`：
+
+```
+note: defaulted 'operator<=>' is implicitly deleted because there is no
+      viable three-way comparison function for member 'SymbolSources'
+      std::vector<DebugSymbolSource> SymbolSources;
+```
+
+### 8.4 两条可选路线
+
+| 路线 | 做法 | 评价 |
+|---|---|---|
+| **A. 补全 libc++** | 在我们的 compat 头中为 `vector`/`string`/`array`/`optional` 等补 `operator<=>` | 侵入性强，需特化标准库类型，风险高 |
+| **B. 在调用点改用手写比较** | 对使用了 `= default` 的 `<=>` 的结构体，改为显式实现 `operator<=>`（用 `std::lexicographical_compare` 或手写） | 改动点有限（仅 `Config.h` 等少数处），风险低 |
+
+**倾向 B**：先统计实际受影响的位置数量再决定。
+若只有少数几处（如 `Config.h`），手写比较最稳妥；
+若遍布全工程，则必须走 A。
+
+> ⚠️ 当前**尚未达成**"核心整体编译通过"。
+> 本节的 8.3 是刚暴露的新障碍，需先解决才能继续。
+
+---
+
+## 9. ✅ 核心编译通过（阶段 2 关键里程碑）
+
+```
+$ cmake --build . --target PCSX2 --parallel 8
+[100%] Built target PCSX2
+EXIT=0
+```
+
+### 9.1 验证结果（非"看起来成功"）
+
+| 项目 | 结果 |
+|---|---|
+| 目标文件总数 | **318** |
+| 架构验证 | **318/318 全部 ARM aarch64，零例外** |
+| `iR5900`（EE 重编译器） | 12 个目标文件 |
+| `iR3000`（IOP 重编译器） | 2 个 |
+| `microVU`（VU 重编译器） | 2 个 |
+| `arm64`（VIXL 后端） | 23 个 |
+
+`PCSX2` 是 **OBJECT library**（`add_library(PCSX2 OBJECT)`），
+不产出 `.a`，这是上游设计，非构建失败。
+
+### 9.2 本轮解决的 6 个真实障碍
+
+每个都有**最小复现**，不是猜测：
+
+| # | 障碍 | 根因 | 处理 |
+|---|---|---|---|
+| 1 | `lexicographical_compare_three_way` 缺失 | OHOS libc++ 15004 无此函数 | compat 头补等价实现（宿主单测 7 用例）|
+| 2 | **three-way comparison 支持不完整** | `vector`/`string`/`array`/`optional` 全无 `operator<=>` | compat 头为 4 类补齐 |
+| 3 | `make_unique_for_overwrite` 缺失 | 同上（C++20） | compat 头补齐（3 种形式）|
+| 4 | `ranges::{all_of,equal,stable_sort}` 缺失 | 同上 | compat 头补齐（range + iterator 双形式）|
+| 5 | `preserve_all` 调用约定 | **clang 15 后端不支持**，但 `__has_attribute` 返回 true | 加 clang ≥17 版本门 |
+| 6 | lambda 捕获结构化绑定 | **C++20 特性，clang 16 才实现** | 2 处改为具名变量 |
+
+**障碍 2–4 的注入方式**：通过 `pcsx2/PrecompiledHeader.h`（PCH 强制包含）
+注入 compat 头，确保**所有**调用点都能拿到，而不是逐个文件加 include。
+这一决定避免了漏改（实测有 5/6 个文件不直接包含 `HeapArray.h`）。
+
+### 9.3 障碍 5 的证据（最有价值的一条）
+
+```bash
+$ cat t.cpp
+__attribute__((preserve_all)) int f(int a){ return a+1; }
+
+$ clang++ --target=aarch64-linux-ohos ... -c t.cpp     # OHOS clang 15.0.4
+fatal error: error in backend: Unsupported calling convention.
+
+$ clang++ -c t.cpp                                      # 宿主 clang 21
+EXIT=0
+```
+
+上游代码 `EeFpuModel.h` 的判断是：
+
+```c
+#if defined(__has_attribute) && __has_attribute(preserve_all) && !defined(_MSC_VER)
+```
+
+`__has_attribute` 在 clang 15 上返回 **true**，但后端无法生成 ——
+**属性存在性检查 ≠ 后端支持**。上游只挡了 `_MSC_VER`，漏了旧版 clang。
+
+### 9.4 ⚠️ 已知遗留（记录为技术债，非静默降级）
+
+| 项目 | 影响 | 计划 |
+|---|---|---|
+| `EEFPU_MODEL_CALL` 回退为宽 spill | EE FPU 调用点性能略降 | 阶段 5 实测；升级 clang≥17 可自动恢复 |
+| `HTTPDownloaderOHOS` 的 POST 未实现 | 返回失败而非静默当 GET | 当前 PCSX2 路径均为 GET，不影响 |
+
+**这两项都已在代码注释与提交信息中明确标注**，不隐藏。
+
+### 9.5 下一步
+
+1. 将 PCSX2 OBJECT 库链接为可加载的 `.so`
+2. 建立最小 HAP（ArkTS + N-API）加载该 `.so`
+3. 用用户提供的 BIOS 完成可观察的启动流程
