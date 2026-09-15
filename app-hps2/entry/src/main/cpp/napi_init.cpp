@@ -317,11 +317,22 @@ void VMThreadMain() {
 		// 是否为 HiSilicon 自研核（MIDR 的 PartNum）。
 		// ------------------------------------------------------------------
 		{
-			auto cpuinfo_txt = FileSystem::ReadFileToString("/proc/cpuinfo");
-			if (!cpuinfo_txt.has_value()) {
-				LOGI("SMT: /proc/cpuinfo unreadable");
+			// 注意：不能用 FileSystem::ReadFileToString 读 procfs ——
+			// 该函数按 st_size 分配缓冲，而 procfs 的 st_size **恒为 0**，
+			// 因此会读到空串（这正是上一次探测 processors=0 的原因，
+			// 不是权限问题）。procfs 必须流式读取。
+			std::string t;
+			if (std::FILE* fp = std::fopen("/proc/cpuinfo", "r")) {
+				char buf[4096];
+				while (std::fgets(buf, sizeof(buf), fp) != nullptr)
+					t += buf;
+				std::fclose(fp);
+			}
+
+			if (t.empty()) {
+				LOGI("SMT: /proc/cpuinfo empty or unreadable");
 			} else {
-				const std::string& t = cpuinfo_txt.value();
+				LOGI("SMT: cpuinfo size=%{public}zu bytes", t.size());
 				int nproc = 0, cores = -1, siblings = -1;
 				std::string impl, part;
 
