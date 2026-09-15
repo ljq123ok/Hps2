@@ -160,3 +160,87 @@ protected:
 | 1 | OpenGL ES 路径（无 shaderc 依赖）| 无 |
 | 2 | shaderc 交叉编译 | 无（源码可获取）|
 | 3 | Vulkan 路径 | 依赖步 2 |
+
+---
+
+## 8. 实施进展（OpenGL 路径）
+
+### 8.1 ✅ 已完成：整条链路已打通并构建成功
+
+```
+XComponent(SURFACE)                          [ArkTS]
+  → controller.getXComponentSurfaceId()
+  → hps2core.setSurface(sid, w, h)           [ArkTS → native]
+  → OH_NativeWindow_CreateNativeWindowFromSurfaceId()
+  → OHNativeWindow*  存入 Hps2Surface 共享状态
+  → Host::AcquireRenderWindow() → WindowInfo{type=OHOS}
+  → GLContextEGLOHOS::GetNativeWindow()      [交给 EGL]
+  → GSDeviceOGL 渲染 → XComponent 显示
+```
+
+**构建验证**：
+
+| 项 | 结果 |
+|---|---|
+| `libhps2core.so` | 21 MB，构建成功 |
+| 动态依赖 | 含 **`libEGL.so` / `libGLESv3.so` / `libnative_window.so`** |
+| 符号 | `gladLoadGLES2` / `OH_NativeWindow_CreateNativeWindowFromSurfaceId` / `GLContextEGLOHOS` 均已链接 |
+| HAP | 28 MB，签名成功 |
+
+### 8.2 本轮修复的三个关键问题
+
+#### A. `Host::AcquireRenderWindow` 返回 Surfaceless（**画面不可能出现的根因**）
+
+我们从 eerunner 复制 Host 实现时，连同它的无头版本一起拿了过来：
+
+```cpp
+std::optional<WindowInfo> Host::AcquireRenderWindow(bool) {
+    // Headless — the Null renderer doesn't need a surface.
+    WindowInfo wi; wi.type = WindowInfo::Type::Surfaceless; return wi;
+}
+```
+
+而这是 GS 取得渲染窗口的**唯一入口**（`GSDevice.cpp:474` 调用）。
+后果：即使 ArkTS 已经交出了 `OHNativeWindow`，**GS 也永远看不到它**。
+
+已改为按表面有无返回 `OHOS` / `Surfaceless`。
+
+#### B. `EGLNativeWindowType` 在 OHOS 被定义成整数
+
+`3rdparty/glad/include/EGL/eglplatform.h` 有 `__ANDROID__` 分支但**没有 OHOS 分支**，
+导致 OHOS 落到通用 `__unix__` 分支：
+
+```c
+typedef khronos_uintptr_t EGLNativeWindowType;   /* 整数！ */
+```
+
+后果：
+1. `static_cast<EGLNativeWindowType>(OHNativeWindow*)` 编译失败
+2. **更危险**：在窗口本就是指针的平台上会**静默截断指针**
+
+已按 sysroot 自身 `EGL/eglplatform.h` 的 `OHOS_PLATFORM` 定义对齐（指针）。
+
+#### C. EGL display 未预绑定
+
+Android 有 `eglGetDisplay()` 预绑定步骤，OHOS 不在该 `#if` 内，
+会先尝试 `EGL_MESA_platform_surfaceless`（OHOS 的 libEGL 不提供此扩展），
+再走 fallback —— 能工作，但会打印无意义告警并做一次无用查找。
+已把该分支扩展到 OHOS。
+
+### 8.3 ⏸ 待真机验证
+
+HAP 已构建并签名（`/tmp/hps2-core-signed.hap`），但**设备 USB 处于 Offline**，
+无法安装。待设备恢复后：
+
+1. 安装并启动
+2. 观察 `setSurface` / `Host::AcquireRenderWindow: OHOS surface` 日志
+3. 选 BIOS + 游戏 → 启动 → 确认画面
+
+### 8.4 预期风险（提前列出，便于快速定位）
+
+| 风险 | 观察点 |
+|---|---|
+| OHOS GLES 驱动不支持所需 GL 版本/E扩展 | `GLContextEGL` 的版本协商日志 |
+| EGL 配置不含 `EGL_NATIVE_VISUAL_ID` | `GLContextEGLOHOS` 的告警 |
+| 窗口尺寸与 XComponent 不一致 | `AcquireRenderWindow` 打印的 w×h |
+| GS 首次真正渲染时崩溃 | native crash 日志 |
