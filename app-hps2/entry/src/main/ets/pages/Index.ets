@@ -395,8 +395,8 @@ struct Index {
           })
       }
       .width('100%')
-      .aspectRatio(4 / 3)          // PS2 输出为 4:3
-      .backgroundColor('#000000')
+      .layoutWeight(2)             // 画面占 2 份、控制区占 1 份，
+      .backgroundColor('#000000')  // 保证「启动游戏」按钮始终可见
       .borderRadius(8)
       .clip(true)
       .margin({ bottom: 10 })
@@ -469,34 +469,43 @@ struct Index {
       .border({ width: 1, color: '#FDE68A' })
       .margin({ bottom: 12 })
 
-      // 运行控制
-      Row() {
-        Button(this.gamePath.length > 0 ? '启动游戏' : '启动 BIOS')
-          .layoutWeight(1)
-          .enabled(this.biosPath.length > 0 && !this.statusRunning)
-          .onClick(() => this.startBoot())
-        Blank().width(10)
-        Button('停止')
-          .layoutWeight(1)
-          .enabled(this.statusRunning)
-          .onClick(() => this.stopBoot())
-      }
-      .width('100%').margin({ bottom: 12 })
-
-      this.statusView()
-
-      if (this.statusError.length > 0) {
+      // 控制区放进 Scroll：小屏或横屏时也能滚到按钮，
+      // 避免「启动游戏」被挤出可视区域（真机上出现过）。
+      Scroll() {
         Column() {
-          Text('错误').fontSize(12).fontWeight(FontWeight.Medium).width('100%')
-          Text(this.statusError).fontSize(11).fontColor('#DC2626').width('100%').margin({ top: 4 })
-        }
-        .width('100%').padding(12)
-        .backgroundColor('#FEF2F2').borderRadius(8)
-        .border({ width: 1, color: '#FECACA' })
-        .margin({ top: 12 })
-      }
+          // 运行控制
+          Row() {
+                Button(this.gamePath.length > 0 ? '启动游戏' : '启动 BIOS')
+              .layoutWeight(1)
+              .enabled(this.biosPath.length > 0 && !this.statusRunning)
+              .onClick(() => this.startBoot())
+            Blank().width(10)
+            Button('停止')
+              .layoutWeight(1)
+              .enabled(this.statusRunning)
+              .onClick(() => this.stopBoot())
+          }
+          .width('100%').margin({ bottom: 12 })
 
-      Blank().layoutWeight(1)
+          this.statusView()
+
+          if (this.statusError.length > 0) {
+            Column() {
+              Text('错误').fontSize(12).fontWeight(FontWeight.Medium).width('100%')
+              Text(this.statusError).fontSize(11).fontColor('#DC2626').width('100%').margin({ top: 4 })
+            }
+            .width('100%').padding(12)
+            .backgroundColor('#FEF2F2').borderRadius(8)
+            .border({ width: 1, color: '#FECACA' })
+            .margin({ top: 12, bottom: 12 })
+          }
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Auto)
+      .align(Alignment.Top)
     }
     .width('100%').height('100%').padding(16)
     .backgroundColor('#F9FAFB')

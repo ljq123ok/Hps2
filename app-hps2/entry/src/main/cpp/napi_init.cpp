@@ -47,6 +47,7 @@
 
 #include "common/CrashHandler.h"
 #include "common/Error.h"
+#include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
@@ -172,6 +173,23 @@ bool InitializeConfig() {
 		fi.is_emoji_font = false;
 		fonts.push_back(fi);
 		ImGuiManager::SetFonts(std::move(fonts));
+	}
+
+	// ---------------------------------------------------------------------
+	// 把核心的 Console 输出写到应用沙箱文件。
+	//
+	// 为什么必须这么做：核心的 Console 走 stdout，而 HAP 里的 stdout
+	// 不进入 hilog —— 之前 GS 初始化失败时我们只看到
+	// "VMManager::Initialize failed (result=1)"，完全看不到底层原因。
+	// 上游提供了 Log::SetFileOutputLevel()，直接把日志写成文件更可靠。
+	// 阶段 4 调试图形栈时这是必需的诊断手段。
+	// ---------------------------------------------------------------------
+	{
+		const std::string log_path = Path::Combine(s_data_root, "emulog.txt");
+		if (Log::SetFileOutputLevel(LOGLEVEL_TRACE, log_path))
+			LOGI("core log -> %{public}s", log_path.c_str());
+		else
+			LOGW("failed to open core log at %{public}s", log_path.c_str());
 	}
 
 	SetStage(BootStage::kSettingsLayer);
@@ -303,17 +321,13 @@ void VMThreadMain() {
 			const uint32_t procs = cpuinfo_get_processors_count();
 			const uint32_t cores = cpuinfo_get_cores_count();
 
-			// processor / core 计数对比是判断 SMT（超线程）的权威方法：
-			//   processors = 逻辑处理器（SMT 线程）
-			//   cores      = 物理核
-			// 二者相等 => 无 SMT。
-			// ARM 架构上公版核与 HiSilicon 自研核均不实现 SMT，
-			// 这里用实测数据确认，而非依赖该论断。
+			// cpuinfo 能给出处理器/物理核/簇的布局，但本设备内核没有
+			// 暴露可用于确认 SMT 的 siblings/cpu cores 拓扑字段；因此
+			// 不能用 processors == cores 推导“无 SMT”。
 			LOGI("CHIP: clusters=%{public}u logical_processors=%{public}u physical_cores=%{public}u smt=%{public}s",
-				clusters, procs, cores, (procs > cores) ? "YES" : "NO");
+				clusters, procs, cores, "UNKNOWN");
 
-			// 每个逻辑处理器的簇归属：用于确认 12 个"核"是 12 个独立物理核
-			// 还是 6 核 x 2 线程。若每个 processor 都对应不同 core，则无 SMT。
+			// 每个逻辑处理器的簇归属：用于记录异构簇布局；不据此判定 SMT。
 			for (uint32_t pi = 0; pi < procs; ++pi) {
 				const cpuinfo_processor* pr = cpuinfo_get_processor(pi);
 				if (!pr)
@@ -405,9 +419,10 @@ void VMThreadMain() {
 					}
 				}
 
-				const bool smt = (siblings > 0 && cores > 0 && siblings > cores);
+				const char* smt_state = (siblings > 0 && cores > 0) ?
+					((siblings > cores) ? "YES" : "NO") : "UNKNOWN";
 				LOGI("SMT: processors=%{public}d cpu_cores=%{public}d siblings=%{public}d => smt=%{public}s",
-					nproc, cores, siblings, smt ? "YES" : "NO");
+					nproc, cores, siblings, smt_state);
 				LOGI("SMT: first CPU implementer=%{public}s part=%{public}s",
 					impl.c_str(), part.c_str());
 
