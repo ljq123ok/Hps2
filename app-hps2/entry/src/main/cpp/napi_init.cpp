@@ -55,6 +55,7 @@
 #include <native_window/external_window.h>
 
 #include "hps2_surface.h"
+#include "hps2_vpad.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -741,6 +742,66 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	napi_value r; napi_create_int32(env, 1, &r); return r;
 }
 
+// ---------------------------------------------------------------------------
+// 虚拟手柄 N-API
+//
+// 供 ArkUI 的虚拟按键调用。把屏幕触控表达为 SDL 虚拟手柄，
+// 经 SDLInputSource 进入 PCSX2 的 Pad —— 与真实手柄同一条路径。
+// ---------------------------------------------------------------------------
+
+// initVirtualPad() -> 1 成功 / 0 失败
+static napi_value NapiInitVirtualPad(napi_env env, napi_callback_info info) {
+	const bool ok = Hps2VPad::Initialize();
+	if (!ok) {
+		SetError("virtual pad initialization failed (见 HPS2_VPAD 日志)");
+		napi_value r; napi_create_int32(env, 0, &r); return r;
+	}
+	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
+// mapVirtualPad(port) -> 1/0  为手柄端口做自动按键映射
+static napi_value NapiMapVirtualPad(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	int32_t port = 0;
+	if (argc >= 1)
+		napi_get_value_int32(env, argv[0], &port);
+	const bool ok = Hps2VPad::MapToPadPort(port);
+	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
+}
+
+// setButton(button, pressed) —— button 为 SDL_GAMEPAD_BUTTON_*
+static napi_value NapiVpadButton(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t button = 0;
+	bool pressed = false;
+	if (argc >= 2) {
+		napi_get_value_int32(env, argv[0], &button);
+		napi_get_value_bool(env, argv[1], &pressed);
+	}
+	Hps2VPad::SetButton(button, pressed);
+	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
+// setAxis(axis, value) —— axis 为 SDL_GAMEPAD_AXIS_*，value -32768..32767
+static napi_value NapiVpadAxis(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t axis = 0, value = 0;
+	if (argc >= 2) {
+		napi_get_value_int32(env, argv[0], &axis);
+		napi_get_value_int32(env, argv[1], &value);
+	}
+	Hps2VPad::SetAxis(axis, value);
+	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
 // setSurface(surfaceId: string, width: number, height: number) -> 1/0
 //
 // 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
@@ -874,6 +935,10 @@ static napi_value Init(napi_env env, napi_value exports) {
 	napi_property_descriptor desc[] = {
 		{"startBios", nullptr, NapiStartBios, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"initVirtualPad", nullptr, NapiInitVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"mapVirtualPad", nullptr, NapiMapVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"vpadButton", nullptr, NapiVpadButton, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"vpadAxis", nullptr, NapiVpadAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},

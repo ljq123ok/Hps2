@@ -71,6 +71,8 @@ include_directories(
     ${ARMSX2_ROOT}/3rdparty/ccc/src
     ${ARMSX2_ROOT}/3rdparty/libzip/lib
     ${TP_PREFIX}/include
+    # SDL3 头文件（虚拟手柄需要 SDL_joystick.h）
+    ${TP_PREFIX}/include/SDL3
     ${CMAKE_CURRENT_SOURCE_DIR}/types/libhps2core
 )
 
@@ -98,6 +100,7 @@ add_library(hps2core SHARED
     napi_init.cpp
     hps2_host.cpp
     hps2_jitcheck.cpp
+    hps2_vpad.cpp
 )
 
 # 核心静态库（整体链接，避免部分符号缺失）

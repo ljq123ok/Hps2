@@ -17,6 +17,7 @@ import picker from '@ohos.file.picker';
 import resourceManager from '@ohos.resourceManager';
 import buffer from '@ohos.buffer';
 import hps2core from 'libhps2core.so';
+import { VirtualPad } from '../components/VirtualPad';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -391,6 +392,13 @@ struct Index {
       if (ok !== 1) {
         this.statusError = '核心启动被拒绝，详见日志（tag=HPS2_CORE）';
       }
+      // 启动成功后准备虚拟手柄。
+      //
+      // 顺序很重要：必须等 VM 起来后再做自动映射，
+      // 因为 Pad::MapController 需要在输入源已初始化的前提下执行
+      // （与上游 FullscreenUI 的流程一致）。
+      this.setupVirtualPad();
+
       // 启动后刷新一次 JIT 状态：native 的硬门禁可能刚判过一次。
       this.syncJitFromStatus();
       this.startPolling();
@@ -421,6 +429,38 @@ struct Index {
       }
     } catch (e) {
       // 状态解析失败不刷屏
+    }
+  }
+
+  /*
+   * 准备虚拟手柄：挂载 SDL 虚拟手柄 + 为手柄端口 0 做自动映射。
+   *
+   * 为什么需要自动映射：PCSX2 的 Pad 没有内置按键绑定表
+   * （Pad::SetDefaultControllerConfig 只设置手柄类型，不生成按键绑定），
+   * 绑定必须由前端提供。上游的现成做法是用通用映射自动绑定：
+   *   Pad::MapController(si, port, InputManager::GetGenericBindingMapping(device));
+   * 见 FullscreenUI_Settings.cpp:1581。
+   *
+   * native 侧已封装为 initVirtualPad() / mapVirtualPad(port)。
+   */
+  private setupVirtualPad(): void {
+    try {
+      const init: number = hps2core.initVirtualPad();
+      hilog.info(DOMAIN, TAG, 'initVirtualPad -> %{public}d', init);
+      if (init !== 1) {
+        this.statusError = '虚拟手柄初始化失败（见 HPS2_VPAD 日志）';
+        return;
+      }
+      // 端口 0 = 1P
+      const mapped: number = hps2core.mapVirtualPad(0);
+      hilog.info(DOMAIN, TAG, 'mapVirtualPad(0) -> %{public}d', mapped);
+      if (mapped !== 1) {
+        this.statusError = '虚拟手柄按键映射失败（见 HPS2_VPAD 日志）';
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setupVirtualPad failed: %{public}s', JSON.stringify(err));
+      this.statusError = '虚拟手柄准备失败：' + err.message;
     }
   }
 
@@ -522,7 +562,7 @@ struct Index {
       // 游戏画面显示区。
       // XComponent 的 surface 就是 GS 的渲染目标；native 侧通过
       // setSurface() 把它交给 EGL/OpenGL。
-      Column() {
+      Stack() {
         XComponent({
           id: 'hps2_view',
           type: XComponentType.SURFACE,
@@ -542,6 +582,12 @@ struct Index {
             hilog.info(DOMAIN, TAG, 'XComponent onDestroy');
             this.surfaceReady = false;
           })
+
+        // 虚拟手柄叠加在画面上。
+        // 只在核心运行中显示 —— 未运行时不需要按键，也避免遮住设置界面。
+        if (this.statusRunning) {
+          VirtualPad()
+        }
       }
       .width('100%')
       .layoutWeight(2)             // 画面占 2 份、控制区占 1 份，
