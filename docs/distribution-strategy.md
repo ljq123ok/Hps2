@@ -128,3 +128,105 @@ endif()
 
 **不先写代码的原因**：如果 release 签名下 JIT 其实可用，
 或者降级路径根本走不通，那实现方向就要变。先把前提搞清楚。
+
+---
+
+## 7. 验证结果（进行中）：降级路径的关键障碍已定位
+
+### 7.1 🔴 确认：非 Apple 平台**没有**解释器逃生门
+
+读 `pcsx2/Memory.cpp` 的代码分支结构，这是决定性发现：
+
+| 平台分支 | 代码内存分配失败时的行为 |
+|---|---|
+| **Apple/iOS** | `DarwinMisc::iPSX2_FORCE_EE_INTERP=1` 时 `s_code_memory = nullptr` **并继续**——有逃生门 |
+| **非 Apple（含 OHOS）** | `return false` —— **直接失败，无逃生门** |
+
+具体位置（`Memory.cpp` 非 Apple 的 `#else` 分支）：
+
+```cpp
+if (!(s_code_mapping_area = SharedMemoryMappingArea::Create(...)))
+{
+    Host::ReportErrorAsync("Error", "Failed to map code memory.");
+    ReleaseMemoryMap();
+    return false;                    // ← 失败即中止
+}
+if ((s_code_memory = s_code_mapping_area->Map(...)) == nullptr)
+{
+    Host::ReportErrorAsync("Error", "Failed to allocate code memory.");
+    ReleaseMemoryMap();
+    return false;                    // ← 我们上次实测遇到的正是这里
+}
+```
+
+### 7.2 🔴 由此确定：上游的"降级"逻辑**根本走不到**
+
+上游确实有切解释器的代码，但它位于**更靠后的位置**：
+
+```
+VMManager::Initialize()
+  └─ VMManager::Internal::CPUThreadInitialize()      (VMManager.cpp:438)
+       ├─ SysMemory::Allocate()                      (:469)
+       │    └─ AllocateMemoryMap()                   (Memory.cpp:100)
+       │         └─ code memory 分配 → 失败 → return false   ★ 在这里就断了
+       │    ⇒ CPUThreadInitialize 返回 false，VM 起不来
+       └─ …（走不到）
+  └─ UpdateCPUImplementations()                      (:3002 附近，把 EnableEE 等置 false)
+       ↑ 这段"切解释器"的代码永远执行不到
+```
+
+**结论：所谓"上游会自动降级"是一个不成立的假设。**
+非 Apple 平台上，代码内存失败 = 启动失败，与 JIT 是否可用无关。
+
+这解释了本次实测现象：`ReportErrorAsync: Error: Failed to allocate code memory.`
+→ `Failed to allocate VM memory.` → `CPUThreadInitialize failed`。
+
+### 7.3 ✅ 有利的一面：上游的**下游**代码已为解释器做好准备
+
+`vtlb_Core_Alloc()`（`vtlb.cpp:1387`）已有分支：
+
+```cpp
+if (!SysMemory::HasCodeMemory())
+{
+    // Interpreter execution never emits fastmem accesses. Avoid reserving a
+    // 4 GB virtual address range that cannot improve the no-JIT backend.
+    vtlbdata.fastmem_base = 0;
+    EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+    Console.WriteLn("Fastmem disabled: executable code memory is unavailable");
+}
+```
+
+**即：一旦能跨过 code memory 那一关，后面的解释器路径是通的**
+（上游已按无代码内存的情况处理了 fastmem 与 vtlb）。
+
+### 7.4 验证方法（已实现，待设备验证）
+
+在 `Memory.cpp` 非 Apple 分支加入与 iOS 同构的逃生门：
+
+```cpp
+const bool skip_code_memory = (std::getenv("HPS2_FORCE_INTERP") != nullptr);
+if (skip_code_memory) { s_code_memory = nullptr; }   // 解释器模式
+else if (!(s_code_mapping_area = ...)) { return false; }
+else if ((s_code_memory = ...->Map(...)) == nullptr) { return false; }
+```
+
+同时让 JIT 门禁在验证模式下**不阻止启动**（`RunJitStartupCheck`），
+否则降级路径同样到不了。
+
+**触发方式用文件标记**（应用域无法通过 hdc 接收环境变量）：
+```
+hdc shell "touch /data/storage/el2/base/haps/entry/files/FORCE_INTERP"
+```
+
+### 7.5 待验证的两个问题
+
+1. **跨过 code memory 后，VM 能否真正启动？**
+   —— 代码层面有依据（§7.3），但**必须实测**。
+2. **解释器模式的实际性能是多少？**
+   —— PS2 全解释器（EE/IOP/VU0/VU1 全禁用重编译器）通常只有个位数帧率。
+   实测后才能如实告知用户"商店版能玩到什么程度"。
+
+> ⚠️ **本节的实现是"验证用开关注入"，不是最终设计。**
+> 正式商店包会改为编译期宏 `HPS2_STORE_BUILD`，
+> 并且**必须把降级状态明确告知用户** —— 上游只打一行 Warning 静默切换，
+> 对用户而言会误以为"模拟器很慢"而不是"JIT 不可用导致降级"。

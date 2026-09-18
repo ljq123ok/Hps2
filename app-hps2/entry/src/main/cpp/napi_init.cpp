@@ -30,6 +30,7 @@
 #include <hilog/log.h>
 
 #include <atomic>
+#include <cstdlib>   // getenv/setenv
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -182,6 +183,28 @@ bool RunJitStartupCheck() {
 
 	LOGE("JIT_SELFCHECK=unavailable stage=%{public}s errno=%{public}d msg=%{public}s",
 		r.stage_name.c_str(), r.errno_value, r.message.c_str());
+
+	// ---------------------------------------------------------------------
+	// 【临时验证分支】降级模式：JIT 不可用时**不阻止启动**，放行到解释器路径。
+	//
+	// 目的：验证"商店包无法使用 JIT 时自动降级"这条路能否真正跑起来 ——
+	// 包括两个此前未验证的环节：
+	//   1) 环境变量 HPS2_FORCE_INTERP 能否让 Memory.cpp 跳过 code memory 分配
+	//   2) 跳过之后 CPUThreadInitialize 是否还能成功、VM 能否启动
+	//
+	// 触发条件：FORCE_INTERP 标记文件存在（由 InitializeConfig 设置环境变量）。
+	//
+	// 注意：这是**验证用**分支。正式的商店包会改为编译期宏
+	// （HPS2_STORE_BUILD），且必须把降级状态**明确告知用户**，
+	// 而不是像上游那样静默切换（上游只打一行 Warning）。
+	// ---------------------------------------------------------------------
+	if (std::getenv("HPS2_FORCE_INTERP") != nullptr) {
+		LOGW("JIT unavailable, but HPS2_FORCE_INTERP is set -> "
+		     "NOT blocking boot; falling through to interpreter path (VERIFICATION MODE)");
+		SetJitState(r);
+		return true;
+	}
+
 	SetError("JIT 不可用（阶段 " + r.stage_name + "，errno=" +
 		std::to_string(r.errno_value) + "）：" + r.message + " " + r.action);
 	return false;
@@ -218,6 +241,36 @@ bool RevalidateJitAlive() {
 }
 
 bool InitializeConfig() {
+	// ---------------------------------------------------------------------
+	// 【临时验证开关】强制解释器模式
+	//
+	// 目的：验证"商店包无法使用 JIT 时自动降级"这条路径**能否真正跑起来**。
+	//
+	// 背景：非 Apple 平台在 code memory 分配失败时直接 return false
+	// （Memory.cpp），导致 CPUThreadInitialize 失败、VM 根本起不来 ——
+	// 上游那段"切解释器"的降级逻辑（VMManager::UpdateCPUImplementations）
+	// 因此永远走不到。所以在改设计前必须先确认降级路径的可达性。
+	//
+	// 真机无法通过 hdc 给应用域传环境变量，故在此显式设置。
+	// 待验证结论确定后，本开关会被正式的编译期宏（HPS2_STORE_BUILD）替代。
+	//
+	// 注意：这是"验证用"的开关注入，不是最终设计。
+	// ---------------------------------------------------------------------
+	// 触发方式用**文件标记**而非环境变量：应用域无法通过 hdc 接收环境变量，
+	// 而文件可以在设备上随时创建/删除，无需重新构建即可反复切换测试。
+	//
+	// 用法：
+	//   开启  hdc shell "touch /data/storage/el2/base/haps/entry/files/FORCE_INTERP"
+	//   关闭  hdc shell "rm /data/storage/el2/base/haps/entry/files/FORCE_INTERP"
+	{
+		const std::string marker = Path::Combine(s_data_root, "FORCE_INTERP");
+		if (FileSystem::FileExists(marker.c_str()))
+		{
+			setenv("HPS2_FORCE_INTERP", "1", 1);
+			LOGI("TEST: FORCE_INTERP marker present -> interpreter-only boot path");
+		}
+	}
+
 	EmuFolders::AppRoot = s_data_root;
 	EmuFolders::DataRoot = s_data_root;
 
