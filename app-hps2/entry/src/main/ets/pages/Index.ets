@@ -26,6 +26,21 @@ interface BootStatus {
   stageName: string;
   running: boolean;
   error: string;
+  jitAvailable: boolean;
+  jitStage: string;
+  jitErrno: number;
+  jitMessage: string;
+  jitAction: string;
+}
+
+/** JIT 自检结果（对应 native 的 checkJit()，见 libhps2core/index.d.ts） */
+interface JitCheckResult {
+  available: boolean;
+  stage: number;
+  stageName: string;
+  errno: number;
+  message: string;
+  action: string;
 }
 
 @Entry
@@ -49,6 +64,17 @@ struct Index {
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State busy: boolean = false;
+
+  // ---- JIT 能力状态（产品决策：不降级，不可用则阻止启动）----
+  // jitChecked 区分"还没查"与"查了但不可用"：
+  // 前者不该显示红色警告，后者必须明确告诉用户不能启动。
+  @State jitChecked: boolean = false;
+  @State jitAvailable: boolean = false;
+  @State jitMessage: string = '';
+  @State jitAction: string = '';
+  @State jitStage: string = '';
+  @State jitErrno: number = 0;
+  @State jitChecking: boolean = false;
 
   private timerId: number = -1;
 
@@ -86,6 +112,47 @@ struct Index {
     // 首次启动时从 HAP 的 rawfile 解压出来。
     this.ensureResources();
     this.refreshStatus();
+
+    // 启动前先查 JIT 能力：让用户在选 BIOS 之前就知道能不能跑，
+    // 而不是点了启动才发现失败。
+    this.checkJit();
+  }
+
+  /*
+   * JIT 能力自检。
+   *
+   * 为什么放在 UI 层做一次：native 侧在 startBios() 里也有硬门禁（权威判据），
+   * 但那次失败对用户来说太晚 —— 用户已经选好 BIOS、点过启动。
+   * 这里提前查一次，把结论和建议直接摆在界面上。
+   *
+   * 注意：这是**一次真实的**自检（会申请页并执行代码），不是缓存查询，
+   * 因此不放在高频刷新的轮询里。
+   */
+  private checkJit(): void {
+    this.jitChecking = true;
+    try {
+      const raw: string = hps2core.checkJit();
+      const r = JSON.parse(raw) as JitCheckResult;
+      this.jitAvailable = r.available;
+      this.jitMessage = r.message;
+      this.jitAction = r.action;
+      this.jitStage = r.stageName;
+      this.jitErrno = r.errno;
+      this.jitChecked = true;
+      hilog.info(DOMAIN, TAG, 'checkJit available=%{public}d stage=%{public}s errno=%{public}d',
+        r.available ? 1 : 0, r.stageName, r.errno);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'checkJit failed: %{public}s', err.message);
+      // 自检本身抛异常 => 视为不可用（不静默放过）
+      this.jitAvailable = false;
+      this.jitChecked = true;
+      this.jitMessage = 'JIT 自检调用失败：' + err.message;
+      this.jitAction = '请重启应用后重试；若仍失败，请反馈此结果。';
+      this.jitStage = 'call-failed';
+    } finally {
+      this.jitChecking = false;
+    }
   }
 
   /*
@@ -308,6 +375,15 @@ struct Index {
       this.statusError = '请先选择 BIOS 文件';
       return;
     }
+
+    // JIT 硬门禁（UI 侧前置）：不可用时不发起启动。
+    // native 侧还有一道权威门禁，这里是为了给出即时、明确的反馈。
+    // 刻意**不做降级**：不提供"用解释器模式继续"之类的选项。
+    if (this.jitChecked && !this.jitAvailable) {
+      this.statusError = `JIT 不可用，已拒绝启动。${this.jitMessage} ${this.jitAction}`;
+      return;
+    }
+
     this.statusError = '';
     try {
       const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), this.gamePath);
@@ -315,11 +391,36 @@ struct Index {
       if (ok !== 1) {
         this.statusError = '核心启动被拒绝，详见日志（tag=HPS2_CORE）';
       }
+      // 启动后刷新一次 JIT 状态：native 的硬门禁可能刚判过一次。
+      this.syncJitFromStatus();
       this.startPolling();
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'startBios exception: %{public}s', err.message);
       this.statusError = '调用核心失败：' + err.message;
+    }
+  }
+
+  /**
+   * 从 getStatus() 同步 JIT 状态。
+   *
+   * 为什么需要：运行期看门狗发现 JIT 失效时会停机并写入 jitMessage，
+   * UI 必须把它显示出来（否则用户只看到"未运行"，不知道原因）。
+   */
+  private syncJitFromStatus(): void {
+    try {
+      const raw: string = hps2core.getStatus();
+      const st = JSON.parse(raw) as BootStatus;
+      if (st.jitStage) {
+        this.jitChecked = true;
+        this.jitAvailable = st.jitAvailable;
+        this.jitMessage = st.jitMessage;
+        this.jitAction = st.jitAction;
+        this.jitStage = st.jitStage;
+        this.jitErrno = st.jitErrno;
+      }
+    } catch (e) {
+      // 状态解析失败不刷屏
     }
   }
 
@@ -349,6 +450,54 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'stop failed: %{public}s', JSON.stringify(e));
     }
     this.refreshStatus();
+  }
+
+  /*
+   * JIT 能力状态面板。
+   *
+   * 为什么必须在界面上显著展示：本产品**不做降级** —— JIT 不可用时
+   * 应用无法运行（PS2 模拟在解释器下没有意义）。因此用户必须在启动前
+   * 就知道当前能不能跑、不能跑该怎么办，而不是点了启动收到一个失败。
+   */
+  @Builder
+  jitView() {
+    Column() {
+      Row() {
+        Text('JIT 状态')
+          .fontSize(12).fontColor('#374151').fontWeight(FontWeight.Medium)
+        Blank()
+        if (this.jitChecking) {
+          Text('检测中…').fontSize(11).fontColor('#6B7280')
+        } else if (!this.jitChecked) {
+          Text('未检测').fontSize(11).fontColor('#9CA3AF')
+        } else {
+          Text(this.jitAvailable ? '可用' : '不可用')
+            .fontSize(11)
+            .fontColor(this.jitAvailable ? '#16A34A' : '#DC2626')
+        }
+      }
+      .width('100%')
+
+      // 不可用时给出原因 + 可操作建议（这是本面板的核心价值）
+      if (this.jitChecked && !this.jitAvailable) {
+        Text(this.jitMessage)
+          .fontSize(11).fontColor('#B91C1C').width('100%').margin({ top: 4 })
+        Text(this.jitAction)
+          .fontSize(11).fontColor('#374151').width('100%').margin({ top: 2 })
+        Text(`诊断：阶段=${this.jitStage} errno=${this.jitErrno}`)
+          .fontSize(10).fontColor('#6B7280').width('100%').margin({ top: 2 })
+      }
+
+      // 可用时也显示依据，便于用户核对（与阶段 1 真机证据同一判据）
+      if (this.jitChecked && this.jitAvailable) {
+        Text('已通过「申请 → 写入 → 提交可执行 → 执行并校验」完整往返')
+          .fontSize(10).fontColor('#6B7280').width('100%').margin({ top: 4 })
+      }
+    }
+    .width('100%').padding(12)
+    .backgroundColor(this.jitChecked && !this.jitAvailable ? '#FEF2F2' : '#F3F4F6')
+    .borderRadius(8)
+    .margin({ bottom: 8 })
   }
 
   @Builder
@@ -473,11 +622,17 @@ struct Index {
       // 避免「启动游戏」被挤出可视区域（真机上出现过）。
       Scroll() {
         Column() {
+          // JIT 能力状态：放在启动按钮之前 —— 用户先看到"能不能跑"，再决定启动
+          this.jitView()
+
           // 运行控制
           Row() {
                 Button(this.gamePath.length > 0 ? '启动游戏' : '启动 BIOS')
               .layoutWeight(1)
-              .enabled(this.biosPath.length > 0 && !this.statusRunning)
+              // JIT 不可用时禁用启动按钮：产品决策是不降级，
+              // 因此这里不给"用解释器凑合跑"的入口。
+              .enabled(this.biosPath.length > 0 && !this.statusRunning
+                && !(this.jitChecked && !this.jitAvailable))
               .onClick(() => this.startBoot())
             Blank().width(10)
             Button('停止')

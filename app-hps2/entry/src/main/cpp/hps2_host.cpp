@@ -53,6 +53,8 @@
 
 #include "hps2_surface.h"
 
+#include <native_window/external_window.h>
+
 // 以下头文件声明了 Host 接口中与 UI 相关的成员
 // （LocaleCircleConfirm / RequestExitApplication / BeginTextInput /
 //  ShouldPreferHostFileSelector / OnCoverDownloaderOpenRequested 等）。
@@ -184,11 +186,54 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 	{
 		wi.type = WindowInfo::Type::OHOS;
 		wi.window_handle = surf.window;
-		wi.surface_width = static_cast<u32>(surf.width);
-		wi.surface_height = static_cast<u32>(surf.height);
+
+		// ------------------------------------------------------------------
+		// 尺寸以**窗口缓冲区的实测值**为准，而不是前端上报值。
+		//
+		// 原因：GS 用 surface_width/height 建立视口、scissor 与正交投影
+		// （GSDeviceOGL.cpp:3390），必须与 EGL 实际的缓冲区尺寸一致。
+		//
+		// ArkTS 的 onAreaChange 返回 **vp（虚拟像素）**，而 OHNativeWindow
+		// 的缓冲区是**物理像素**（本机缩放约 2.6x）。前端按 vp 上报时
+		// 408x158 对应真实缓冲区约 1071x414 —— 视口小于缓冲区会让画面
+		// 挤在左下角（OpenGL 视口原点在左下角），真机症状正是如此。
+		//
+		// 直接查询缓冲区尺寸可避开 vp/px 换算的正确性假设，
+		// 无论前端上报什么单位、缩放如何变化，都以硬件事实为准。
+		//
+		// 注意 OHOS 文档写明 GET_BUFFER_GEOMETRY 的输出顺序是
+		//   [out] int32_t *height, [out] int32_t *width
+		// 与直觉相反（Android 是 getWidth/getHeight），故此处按文档传参。
+		// ------------------------------------------------------------------
+		int32_t buf_h = 0, buf_w = 0;
+		const int32_t geo_err = OH_NativeWindow_NativeWindowHandleOpt(
+			static_cast<OHNativeWindow*>(surf.window), GET_BUFFER_GEOMETRY, &buf_h, &buf_w);
+
+		if (geo_err == 0 && buf_w > 0 && buf_h > 0)
+		{
+			wi.surface_width = static_cast<u32>(buf_w);
+			wi.surface_height = static_cast<u32>(buf_h);
+			Console.WriteLn("Host::AcquireRenderWindow: OHOS surface %dx%d (from native buffer; "
+			                "frontend reported %dx%d; window=%p)",
+				buf_w, buf_h, surf.width, surf.height, surf.window);
+
+			if (buf_w != surf.width || buf_h != surf.height)
+			{
+				Console.WriteLn("Host::AcquireRenderWindow: frontend size differs from the native "
+				                "buffer (likely vp vs px); using the native value for the viewport");
+			}
+		}
+		else
+		{
+			// 查询失败则退回前端上报值，并明确记录，避免静默使用可疑数据
+			wi.surface_width = static_cast<u32>(surf.width);
+			wi.surface_height = static_cast<u32>(surf.height);
+			Console.Warning("Host::AcquireRenderWindow: GET_BUFFER_GEOMETRY failed (%d); "
+			                "falling back to frontend size %ux%u",
+				geo_err, wi.surface_width, wi.surface_height);
+		}
+
 		wi.surface_scale = 1.0f;
-		Console.WriteLn("Host::AcquireRenderWindow: OHOS surface %ux%u (window=%p)",
-			wi.surface_width, wi.surface_height, surf.window);
 	}
 	else
 	{

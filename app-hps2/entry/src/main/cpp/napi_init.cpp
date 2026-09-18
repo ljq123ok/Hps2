@@ -63,9 +63,11 @@
 #include "Memory.h"
 #include "PerformanceMetrics.h"
 #include "cpuinfo.h"      // 芯片拓扑探测
-#include "R5900.h"   // cpuRegs（EE 程序计数器），用于进度监控
+#include "R5900.h"   // cpuRegs（EE 程序计数器）+ Cpu/intCpu（判定是否被静默降级）
 #include "VMManager.h"
 #include "GS/GS.h"
+
+#include "hps2_jitcheck.h"   // JIT 能力自检（启动前 + 运行期复检，不降级）
 
 // ---------------------------------------------------------------------------
 // 渲染表面共享状态（声明见 hps2_surface.h）
@@ -120,6 +122,19 @@ std::string s_data_root;
 std::string s_bios_dir;
 std::string s_game_path;   // 空 = 只启动 BIOS；非空 = 启动该游戏镜像
 
+// ---------------------------------------------------------------------------
+// JIT 能力状态（自检 + 运行期复检）
+//
+// 产品决策：**不做降级**。JIT 不可用时阻止启动并给出可操作建议，
+// 而不是让 VMManager 静默切到解释器跑幻灯片。
+// ---------------------------------------------------------------------------
+std::atomic<bool> g_jit_available{false};
+std::mutex g_jit_mutex;
+std::string g_jit_message;   // 面向用户的说明
+std::string g_jit_action;    // 面向用户的操作建议
+std::string g_jit_stage;     // 失败阶段名
+int g_jit_errno = 0;
+
 void SetStage(BootStage s) {
 	g_stage.store(static_cast<int>(s));
 	LOGI("BOOT_STAGE=%{public}s", StageName(s));
@@ -131,6 +146,74 @@ void SetError(const std::string& msg) {
 		g_last_error = msg;
 	}
 	LOGE("BOOT_ERROR=%{public}s", msg.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// JIT 状态读写
+// ---------------------------------------------------------------------------
+void SetJitState(const Hps2JitCheck::Result& r) {
+	{
+		std::lock_guard<std::mutex> lock(g_jit_mutex);
+		g_jit_message = r.message;
+		g_jit_action = r.action;
+		g_jit_stage = r.stage_name;
+		g_jit_errno = r.errno_value;
+	}
+	g_jit_available.store(r.available);
+}
+
+// 线程安全地读取面向用户的 JIT 说明（看门狗需要把它写进错误信息）。
+std::string GetJitMessage() {
+	std::lock_guard<std::mutex> lock(g_jit_mutex);
+	return g_jit_message;
+}
+
+// 启动前自检。这是唯一的"能不能启动"判据。
+// 返回 false 时已把原因写入 JIT 状态与 last_error，UI 可直接展示。
+bool RunJitStartupCheck() {
+	const Hps2JitCheck::Result r = Hps2JitCheck::RunStartupCheck();
+	SetJitState(r);
+
+	if (r.available) {
+		LOGI("JIT_SELFCHECK=available");
+		return true;
+	}
+
+	LOGE("JIT_SELFCHECK=unavailable stage=%{public}s errno=%{public}d msg=%{public}s",
+		r.stage_name.c_str(), r.errno_value, r.message.c_str());
+	SetError("JIT 不可用（阶段 " + r.stage_name + "，errno=" +
+		std::to_string(r.errno_value) + "）：" + r.message + " " + r.action);
+	return false;
+}
+
+// 运行期复检：JIT 可用性不是静态属性（见 docs/jit-regression.md 的回归现象）。
+// 发现能力消失时返回 false —— 调用方应停机并报告，而不是让核心切解释器。
+//
+// 注意：复检只用 Hps2JitCheck 自有的暂存页，**不触碰核心的 JIT 代码内存**
+// （核心 arena 正在被活跃使用，写入探针指令会破坏已编译代码）。
+bool RevalidateJitAlive() {
+	// 先看核心自己是否还持有代码内存。若代码内存都没了，
+	// VMManager 已经处于"静默降级"路径上，无需再做页级复检。
+	if (!SysMemory::HasCodeMemory()) {
+		Hps2JitCheck::Result r;
+		r.available = false;
+		r.stage = Hps2JitCheck::Stage::kRevalidate;
+		r.stage_name = Hps2JitCheck::StageName(r.stage);
+		r.message = "JIT 代码内存已丢失（核心已退回解释器）";
+		r.action = "请重启手机后重试。";
+		SetJitState(r);
+		LOGE("JIT_REVALIDATE=failed reason=no-code-memory");
+		return false;
+	}
+
+	Hps2JitCheck::Result r = Hps2JitCheck::RevalidateAlive();
+	SetJitState(r);
+
+	if (!r.available) {
+		LOGE("JIT_REVALIDATE=failed stage=%{public}s errno=%{public}d msg=%{public}s",
+			r.stage_name.c_str(), r.errno_value, r.message.c_str());
+	}
+	return r.available;
 }
 
 bool InitializeConfig() {
@@ -278,6 +361,42 @@ void VMThreadMain() {
 		SetStage(BootStage::kFailed);
 		return;
 	}
+
+	// ---------------------------------------------------------------------
+	// 重编译器断言（拦截上游的"静默降级到解释器"）
+	//
+	// 上游 VMManager::UpdateCPUImplementations()（VMManager.cpp:2957）在
+	// HasCodeMemory() 为假时会**不报错地**把 Cpu 指向 intCpu 解释器：
+	//     Cpu = CHECK_EEREC ? &recCpu : &intCpu;
+	// 这会让 VM "成功启动"却以解释器运行 —— 用户看到的是能跑但极慢。
+	// 产品决策不降级，因此这里把该情况升级为**启动失败**。
+	//
+	// 判据用符号身份比较（Cpu == &intCpu），而非配置项：
+	// 配置项只反映"用户想要什么"，符号身份才反映"实际选了谁"。
+	// ---------------------------------------------------------------------
+	if (!SysMemory::HasCodeMemory() || Cpu == &intCpu) {
+		SetError("JIT 未生效：核心已静默退回解释器（PS2 模拟在解释器下不可用，已拒绝启动）");
+		LOGE("JIT_ASSERT=failed has_code_memory=%{public}d cpu_is_interp=%{public}d",
+			SysMemory::HasCodeMemory() ? 1 : 0, (Cpu == &intCpu) ? 1 : 0);
+
+		// 记录到 JIT 状态，让 UI 能展示原因
+		{
+			Hps2JitCheck::Result jr;
+			jr.stage = Hps2JitCheck::Stage::kRevalidate;
+			jr.stage_name = Hps2JitCheck::StageName(jr.stage);
+			jr.message = "核心已退回解释器（JIT 未生效）";
+			jr.action = "请重启手机后重试；若仍失败，请反馈此结果。";
+			SetJitState(jr);
+		}
+
+		g_vm_running.store(false);
+		VMManager::Internal::CPUThreadShutdown();
+		SetStage(BootStage::kFailed);
+		return;
+	}
+
+	LOGI("JIT_ASSERT=passed cpu_is_recompiler=%{public}d",
+		(Cpu == &recCpu) ? 1 : 0);
 
 	LOGI("VM initialized; resuming execution");
 	SetStage(BootStage::kRunning);
@@ -458,6 +577,37 @@ void VMThreadMain() {
 				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()),
 				static_cast<int>(VMManager::GetState()));
 		}
+
+		// ---------------------------------------------------------------
+		// 运行期 JIT 看门狗（产品决策：不降级）
+		//
+		// 为什么必须有：JIT 可用性**不是设备的静态属性** —— 实测同一个
+		// HAP 文件在运行 2 小时后出现所有 PROT_EXEC 请求返回 EINVAL
+		// （见 docs/jit-regression.md）。若能力在游戏中途消失，继续跑
+		// 只会崩溃或产出错误结果，而不是"变慢"。
+		//
+		// 处理方式：复检失败 => 主动停机并报告。
+		// **不切解释器** —— 那正是本模块要拦截的静默降级。
+		// ---------------------------------------------------------------
+		int watchdog_tick = 0;
+		while (g_vm_running.load()) {
+			std::this_thread::sleep_for(std::chrono::seconds(3));
+			++watchdog_tick;
+
+			// 每 10 次采样（约 30 秒）复检一次，避免高频 mprotect 影响模拟性能。
+			if ((watchdog_tick % 10) != 0)
+				continue;
+
+			if (!RevalidateJitAlive()) {
+				LOGE("JIT_WATCHDOG=revoked 已停止模拟（不回退解释器）");
+				SetError("JIT 能力在运行中失效，已停止模拟：" + GetJitMessage());
+				g_vm_running.store(false);
+				VMManager::SetPaused(true);
+				SetStage(BootStage::kFailed);
+				break;
+			}
+			LOGI("JIT_WATCHDOG=alive tick=%{public}d", watchdog_tick);
+		}
 	});
 
 	// ---------------------------------------------------------------------
@@ -560,6 +710,20 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 
 	LOGI("startBios dataRoot=%{public}s biosDir=%{public}s",
 	     s_data_root.c_str(), s_bios_dir.c_str());
+
+	// ---------------------------------------------------------------------
+	// JIT 硬门禁（产品决策：不降级）
+	//
+	// 必须在做任何重量级初始化**之前**判定：不可用时直接拒绝启动，
+	// 并给出可操作建议。理由：
+	//   - PS2 模拟器离开 JIT 就是幻灯片，降级没有产品意义；
+	//   - 上游在 HasCodeMemory() 为假时会**静默**切到解释器，
+	//     那会让用户以为"能跑"却得到不可用的性能 —— 必须显式拦截。
+	// ---------------------------------------------------------------------
+	if (!RunJitStartupCheck()) {
+		SetStage(BootStage::kFailed);
+		napi_value r; napi_create_int32(env, 0, &r); return r;
+	}
 
 	SetStage(BootStage::kSettingFolders);
 	if (!InitializeConfig()) {
@@ -667,11 +831,42 @@ static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
 	json += "\"stage\":" + std::to_string(stage);
 	json += ",\"stageName\":\"" + std::string(StageName(static_cast<BootStage>(stage))) + "\"";
 	json += ",\"running\":" + std::string(g_vm_running.load() ? "true" : "false");
-	json += ",\"error\":\"" + esc(err) + "\"}";
+	json += ",\"error\":\"" + esc(err) + "\"";
+
+	// JIT 状态一并上报：UI 需要在不启动的情况下也能显示"当前是否可用"。
+	{
+		std::lock_guard<std::mutex> lock(g_jit_mutex);
+		json += ",\"jitAvailable\":" + std::string(g_jit_available.load() ? "true" : "false");
+		json += ",\"jitStage\":\"" + esc(g_jit_stage) + "\"";
+		json += ",\"jitErrno\":" + std::to_string(g_jit_errno);
+		json += ",\"jitMessage\":\"" + esc(g_jit_message) + "\"";
+		json += ",\"jitAction\":\"" + esc(g_jit_action) + "\"";
+	}
+	json += "}";
 
 	napi_value r;
 	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &r);
 	return r;
+}
+
+// checkJit() -> JSON
+//
+// 独立暴露 JIT 自检，供 UI 在**启动之前**（用户还在选 BIOS 时）就能查询，
+// 让用户不必先点启动才发现 JIT 不可用。
+//
+// 语义：这是一次**完整**的自检（会重新申请页并执行代码），不是缓存查询。
+// 返回 { available, stage, stageName, errno, message, action }
+static napi_value NapiCheckJit(napi_env env, napi_callback_info info) {
+	const Hps2JitCheck::Result r = Hps2JitCheck::RunStartupCheck();
+	SetJitState(r);
+
+	LOGI("JIT_CHECK_EXPLICIT available=%{public}d stage=%{public}s errno=%{public}d",
+		r.available ? 1 : 0, r.stage_name.c_str(), r.errno_value);
+
+	const std::string json = Hps2JitCheck::ToJson(r);
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
 }
 
 EXTERN_C_START
@@ -681,6 +876,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},
 	};
 	napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 	return exports;

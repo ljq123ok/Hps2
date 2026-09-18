@@ -97,6 +97,7 @@ add_compile_definitions(
 add_library(hps2core SHARED
     napi_init.cpp
     hps2_host.cpp
+    hps2_jitcheck.cpp
 )
 
 # 核心静态库（整体链接，避免部分符号缺失）
