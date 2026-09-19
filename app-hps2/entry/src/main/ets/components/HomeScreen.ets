@@ -45,10 +45,10 @@ export struct HomeScreen {
       Row() {
         Text(icon).fontSize(18).width(28)
         Column({ space: 2 }) {
-          Text(title).fontSize(15).fontColor(Theme.textPri).fontWeight(FontWeight.Medium)
+          Text(title).fontSize(15).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
           Text(hasValue ? value : hint)
             .fontSize(12)
-            .fontColor(hasValue ? Theme.ok : Theme.textDim)
+            .fontColor(hasValue ? Theme.ok() : Theme.textDim())
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
@@ -58,7 +58,7 @@ export struct HomeScreen {
         if (hasValue && onClear) {
           Text('清除')
             .fontSize(12)
-            .fontColor(Theme.accentHi)
+            .fontColor(Theme.accentHi())
             .padding(6)
             .onClick(() => { if (onClear) onClear(); })
         }
@@ -69,69 +69,69 @@ export struct HomeScreen {
         .width('100%')
         .height(40)
         .fontSize(14)
-        .backgroundColor(Theme.accent)
+        .backgroundColor(Theme.accent())
         .borderRadius(Theme.radiusSm)
         .onClick(onTap)
     }
     .width('100%')
     .padding(Theme.pad)
-    .backgroundColor(Theme.bgCard)
+    .backgroundColor(Theme.bgCard())
     .borderRadius(Theme.radius)
-    .border({ width: 1, color: Theme.border })
+    .border({ width: 1, color: Theme.border() })
   }
 
   @Builder
   jitCard() {
     Column({ space: 8 }) {
       Row() {
-        Text('JIT 状态').fontSize(14).fontColor(Theme.textPri).fontWeight(FontWeight.Medium)
+        Text('JIT 状态').fontSize(14).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
         Blank()
         if (!this.jitChecked) {
-          Text('未检测').fontSize(12).fontColor(Theme.textDim)
+          Text('未检测').fontSize(12).fontColor(Theme.textDim())
         } else {
           Text(this.jitAvailable ? '可用' : '不可用')
             .fontSize(13)
             .fontWeight(FontWeight.Medium)
-            .fontColor(this.jitAvailable ? Theme.ok : Theme.err)
+            .fontColor(this.jitAvailable ? Theme.ok() : Theme.err())
         }
       }
       .width('100%')
 
       if (this.jitChecked && !this.jitAvailable) {
         Text(this.jitMessage)
-          .fontSize(12).fontColor(Theme.err).width('100%')
+          .fontSize(12).fontColor(Theme.err()).width('100%')
         Text(this.jitAction)
-          .fontSize(11).fontColor(Theme.textSec).width('100%')
+          .fontSize(11).fontColor(Theme.textSec()).width('100%')
         Text(`诊断：阶段=${this.jitStage} errno=${this.jitErrno}`)
-          .fontSize(11).fontColor(Theme.textDim).width('100%')
+          .fontSize(11).fontColor(Theme.textDim()).width('100%')
         // 本项目实测：JIT 不可用有两种成因，处置不同
         // （见 docs/jit-regression.md 与 docs/jit-state-pollution.md）
         Text('提示：若曾用其它签名安装过本应用，请先完全卸载再重装。')
-          .fontSize(11).fontColor(Theme.warn).width('100%')
+          .fontSize(11).fontColor(Theme.warn()).width('100%')
       } else if (this.jitChecked) {
         Text('已通过「申请 → 写入 → 提交可执行 → 执行并校验」完整往返')
-          .fontSize(11).fontColor(Theme.textSec).width('100%')
+          .fontSize(11).fontColor(Theme.textSec()).width('100%')
       } else {
         Text('尚未检测。JIT 是 PS2 模拟的性能前提。')
-          .fontSize(11).fontColor(Theme.textSec).width('100%')
+          .fontSize(11).fontColor(Theme.textSec()).width('100%')
       }
 
       if (!this.jitChecked || !this.jitAvailable) {
         Button('重新检测')
           .width('100%').height(34).fontSize(13)
-          .backgroundColor(Theme.bgCardHi)
-          .fontColor(Theme.textPri)
+          .backgroundColor(Theme.bgCardHi())
+          .fontColor(Theme.textPri())
           .borderRadius(Theme.radiusSm)
           .onClick(() => { if (this.onCheckJit) this.onCheckJit(); })
       }
     }
     .width('100%')
     .padding(Theme.pad)
-    .backgroundColor(this.jitChecked && !this.jitAvailable ? '#2A1518' : Theme.bgCard)
+    .backgroundColor(this.jitChecked && !this.jitAvailable ? '#2A1518' : Theme.bgCard())
     .borderRadius(Theme.radius)
     .border({
       width: 1,
-      color: this.jitChecked && !this.jitAvailable ? '#5B2A2F' : Theme.border
+      color: this.jitChecked && !this.jitAvailable ? '#5B2A2F' : Theme.border()
     })
   }
 
@@ -143,10 +143,10 @@ export struct HomeScreen {
           Text('Hps2')
             .fontSize(26)
             .fontWeight(FontWeight.Bold)
-            .fontColor(Theme.textPri)
+            .fontColor(Theme.textPri())
           Text('PS2 模拟器')
             .fontSize(12)
-            .fontColor(Theme.textDim)
+            .fontColor(Theme.textDim())
         }
         .alignItems(HorizontalAlign.Start)
 
@@ -154,8 +154,8 @@ export struct HomeScreen {
 
         Button('⚙')
           .width(40).height(40).fontSize(18)
-          .backgroundColor(Theme.bgCard)
-          .fontColor(Theme.textSec)
+          .backgroundColor(Theme.bgCard())
+          .fontColor(Theme.textSec())
           .borderRadius(20)
           .onClick(() => { if (this.onOpenSettings) this.onOpenSettings(); })
       }
@@ -186,36 +186,36 @@ export struct HomeScreen {
             .height(52)
             .fontSize(17)
             .fontWeight(FontWeight.Medium)
-            .backgroundColor(this.biosName.length > 0 ? Theme.accent : Theme.bgCardHi)
-            .fontColor(this.biosName.length > 0 ? '#FFFFFF' : Theme.textDim)
+            .backgroundColor(this.biosName.length > 0 ? Theme.accent() : Theme.bgCardHi())
+            .fontColor(this.biosName.length > 0 ? '#FFFFFF' : Theme.textDim())
             .borderRadius(Theme.radius)
             .enabled(this.biosName.length > 0 && !this.busy)
             .onClick(() => { if (this.onStart) this.onStart(); })
 
           if (this.statusError.length > 0) {
             Column({ space: 6 }) {
-              Text('错误').fontSize(13).fontColor(Theme.err).fontWeight(FontWeight.Medium)
-              Text(this.statusError).fontSize(12).fontColor(Theme.err)
+              Text('错误').fontSize(13).fontColor(Theme.err()).fontWeight(FontWeight.Medium)
+              Text(this.statusError).fontSize(12).fontColor(Theme.err())
             }
             .width('100%')
             .padding(Theme.pad)
-            .backgroundColor('#2A1518')
+            .backgroundColor(Theme.panelErrBg())
             .borderRadius(Theme.radius)
-            .border({ width: 1, color: '#5B2A2F' })
+            .border({ width: 1, color: Theme.panelErrBd() })
           }
 
           // ---- 法律声明 ----
           Column({ space: 6 }) {
-            Text('⚠ 关于 BIOS').fontSize(12).fontColor(Theme.warn).width('100%')
+            Text('⚠ 关于 BIOS').fontSize(12).fontColor(Theme.warn()).width('100%')
             Text('本应用不内置、不分发 BIOS。请使用你自行合法拥有的 PS2 BIOS 文件。\n' +
                  '应用只读取你主动选择的文件，并复制到应用私有目录中使用。')
-              .fontSize(11).fontColor(Theme.textSec).width('100%')
+              .fontSize(11).fontColor(Theme.textSec()).width('100%')
           }
           .width('100%')
           .padding(Theme.pad)
-          .backgroundColor('#2A2416')
+          .backgroundColor(Theme.panelWarnBg())
           .borderRadius(Theme.radius)
-          .border({ width: 1, color: '#5B4A1F' })
+          .border({ width: 1, color: Theme.panelWarnBd() })
 
           Blank().height(20)
         }
@@ -236,7 +236,7 @@ export struct HomeScreen {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Theme.bgBase)
+    .backgroundColor(Theme.bgBase())
   }
 
   // 占位：启动中的显示由父组件通过 statusStage 传达

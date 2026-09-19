@@ -2,83 +2,83 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#F5F6F8"
+      "value": "#0B0F17"
     },
     {
       "name": "hps2_bg_deep",
-      "value": "#F0F2F5"
+      "value": "#0B0F17"
     },
     {
       "name": "hps2_bg_base",
-      "value": "#F5F6F8"
-    },
-    {
-      "name": "hps2_bg_card",
-      "value": "#FFFFFF"
-    },
-    {
-      "name": "hps2_bg_card_hi",
-      "value": "#EEF1F6"
-    },
-    {
-      "name": "hps2_bg_glass",
-      "value": "#E6FFFFFF"
-    },
-    {
-      "name": "hps2_text_pri",
       "value": "#111827"
     },
     {
-      "name": "hps2_text_sec",
-      "value": "#4B5563"
+      "name": "hps2_bg_card",
+      "value": "#1B2233"
     },
     {
-      "name": "hps2_text_dim",
+      "name": "hps2_bg_card_hi",
+      "value": "#232C41"
+    },
+    {
+      "name": "hps2_bg_glass",
+      "value": "#26FFFFFF"
+    },
+    {
+      "name": "hps2_text_pri",
+      "value": "#F9FAFB"
+    },
+    {
+      "name": "hps2_text_sec",
       "value": "#9CA3AF"
     },
     {
+      "name": "hps2_text_dim",
+      "value": "#6B7280"
+    },
+    {
       "name": "hps2_accent",
-      "value": "#2563EB"
+      "value": "#3B82F6"
     },
     {
       "name": "hps2_accent_hi",
-      "value": "#1D4ED8"
+      "value": "#60A5FA"
     },
     {
       "name": "hps2_ok",
-      "value": "#15803D"
+      "value": "#22C55E"
     },
     {
       "name": "hps2_warn",
-      "value": "#B45309"
+      "value": "#F59E0B"
     },
     {
       "name": "hps2_err",
-      "value": "#DC2626"
+      "value": "#EF4444"
     },
     {
       "name": "hps2_border",
-      "value": "#D8DEE9"
+      "value": "#2A3548"
     },
     {
       "name": "hps2_border_hi",
-      "value": "#B9C2D0"
+      "value": "#3B4A63"
     },
     {
       "name": "hps2_panel_warn_bg",
-      "value": "#FEF6E7"
+      "value": "#2A2416"
     },
     {
       "name": "hps2_panel_warn_bd",
-      "value": "#F3D9A4"
+      "value": "#5B4A1F"
     },
     {
       "name": "hps2_panel_err_bg",
-      "value": "#FDECEC"
+      "value": "#2A1518"
     },
     {
       "name": "hps2_panel_err_bd",
-      "value": "#F3B9B9"
+      "value": "#5B2A2F"
     },
     {
       "name": "hps2_pad_btn_bg",
@@ -90,11 +90,11 @@
     },
     {
       "name": "hps2_overlay_scrim",
-      "value": "#66000000"
+      "value": "#B3000000"
     },
     {
       "name": "hps2_overlay_chip",
-      "value": "#B3000000"
+      "value": "#99000000"
     },
     {
       "name": "hps2_game_letterbox",

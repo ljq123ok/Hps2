@@ -25,10 +25,10 @@ export struct StatusBar {
       Circle()
         .width(8)
         .height(8)
-        .fill(ok ? Theme.ok : (this.jitChecked ? Theme.err : Theme.textDim))
+        .fill(ok ? Theme.ok() : (this.jitChecked ? Theme.err() : Theme.textDim()))
       Text(label)
         .fontSize(12)
-        .fontColor(ok ? Theme.textSec : Theme.textDim)
+        .fontColor(ok ? Theme.textSec() : Theme.textDim())
     }
   }
 
@@ -41,10 +41,10 @@ export struct StatusBar {
         Row({ space: 6 }) {
           Circle()
             .width(8).height(8)
-            .fill(this.jitAvailable ? Theme.ok : Theme.err)
+            .fill(this.jitAvailable ? Theme.ok() : Theme.err())
           Text(this.jitAvailable ? 'JIT: 可用' : 'JIT: 不可用')
             .fontSize(12)
-            .fontColor(this.jitAvailable ? Theme.ok : Theme.err)
+            .fontColor(this.jitAvailable ? Theme.ok() : Theme.err())
         }
       }
 
@@ -58,13 +58,13 @@ export struct StatusBar {
         if (this.running) {
           Text('运行中')
             .fontSize(12)
-            .fontColor(Theme.accentHi)
+            .fontColor(Theme.accentHi())
         }
       }
     }
     .width('100%')
     .padding({ left: Theme.pad, right: Theme.pad, top: 10, bottom: 10 })
-    .backgroundColor(Theme.bgCard)
-    .border({ width: { top: 1 }, color: Theme.border })
+    .backgroundColor(Theme.bgCard())
+    .border({ width: { top: 1 }, color: Theme.border() })
   }
 }

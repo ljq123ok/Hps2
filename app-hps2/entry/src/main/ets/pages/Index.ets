@@ -542,72 +542,6 @@ struct Index {
    * 应用无法运行（PS2 模拟在解释器下没有意义）。因此用户必须在启动前
    * 就知道当前能不能跑、不能跑该怎么办，而不是点了启动收到一个失败。
    */
-  @Builder
-  jitView() {
-    Column() {
-      Row() {
-        Text('JIT 状态')
-          .fontSize(12).fontColor('#374151').fontWeight(FontWeight.Medium)
-        Blank()
-        if (this.jitChecking) {
-          Text('检测中…').fontSize(11).fontColor('#6B7280')
-        } else if (!this.jitChecked) {
-          Text('未检测').fontSize(11).fontColor('#9CA3AF')
-        } else {
-          Text(this.jitAvailable ? '可用' : '不可用')
-            .fontSize(11)
-            .fontColor(this.jitAvailable ? '#16A34A' : '#DC2626')
-        }
-      }
-      .width('100%')
-
-      // 不可用时给出原因 + 可操作建议（这是本面板的核心价值）
-      if (this.jitChecked && !this.jitAvailable) {
-        Text(this.jitMessage)
-          .fontSize(11).fontColor('#B91C1C').width('100%').margin({ top: 4 })
-        Text(this.jitAction)
-          .fontSize(11).fontColor('#374151').width('100%').margin({ top: 2 })
-        Text(`诊断：阶段=${this.jitStage} errno=${this.jitErrno}`)
-          .fontSize(10).fontColor('#6B7280').width('100%').margin({ top: 2 })
-      }
-
-      // 可用时也显示依据，便于用户核对（与阶段 1 真机证据同一判据）
-      if (this.jitChecked && this.jitAvailable) {
-        Text('已通过「申请 → 写入 → 提交可执行 → 执行并校验」完整往返')
-          .fontSize(10).fontColor('#6B7280').width('100%').margin({ top: 4 })
-      }
-    }
-    .width('100%').padding(12)
-    .backgroundColor(this.jitChecked && !this.jitAvailable ? '#FEF2F2' : '#F3F4F6')
-    .borderRadius(8)
-    .margin({ bottom: 8 })
-  }
-
-  @Builder
-  statusView() {
-    Column() {
-      Text(`阶段：${this.statusStage}`)
-        .fontSize(13).fontColor('#374151').width('100%')
-      Text(this.statusRunning ? '运行中' : '未运行')
-        .fontSize(11).fontColor(this.statusRunning ? '#16A34A' : '#9CA3AF')
-        .width('100%').margin({ top: 2 })
-    }
-    .width('100%').padding(12)
-    .backgroundColor('#F3F4F6').borderRadius(8)
-  }
-
-  // =========================================================================
-  // UI：两态切换
-  //
-  // 旧版把「设置」与「游玩」挤在同一屏，还要容纳小小的游戏画面 ——
-  // 用户反馈「不可游玩」。新版按设计稿拆成两个独立页面：
-  //
-  //   viewMode = 'home'  → HomeScreen   （选 BIOS / 选游戏 / 看 JIT 状态）
-  //   viewMode = 'game'  → GameScreen   （全屏画面 + 虚拟按键，无设置项干扰）
-  //
-  // 切换由 viewMode 驱动，业务逻辑（startBoot/stopBoot/pickAndCopy 等）
-  // 全部保持不变。
-  // =========================================================================
 
   build() {
     Stack() {
@@ -648,22 +582,22 @@ struct Index {
           Row({ space: 10 }) {
             Text(this.statusRunning ? `运行中` : this.statusStage)
               .fontSize(11)
-              .fontColor(this.statusRunning ? Theme.ok : Theme.textSec)
+              .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
               .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-              .backgroundColor('#99000000')
+              .backgroundColor(Theme.overlayChip())
               .borderRadius(14)
 
             Button('按键')
               .height(30).fontSize(12)
-              .backgroundColor('#99000000')
-              .fontColor(this.showPad ? Theme.accentHi : Theme.textSec)
+              .backgroundColor(Theme.overlayChip())
+              .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
               .borderRadius(15)
               .onClick(() => { this.showPad = !this.showPad; })
 
             Button('返回')
               .height(30).fontSize(12)
-              .backgroundColor('#99000000')
-              .fontColor(Theme.textPri)
+              .backgroundColor(Theme.overlayChip())
+              .fontColor(Theme.textPri())
               .borderRadius(15)
               .onClick(() => { this.stopBoot(); this.viewMode = 'home'; })
           }
@@ -678,21 +612,21 @@ struct Index {
         Column() {
           Column({ space: Theme.gap }) {
             Row() {
-              Text('设置').fontSize(17).fontColor(Theme.textPri).fontWeight(FontWeight.Medium)
+              Text('设置').fontSize(17).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
               Blank()
               Button('关闭')
                 .height(30).fontSize(13)
-                .backgroundColor(Theme.bgCardHi)
-                .fontColor(Theme.textPri)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
                 .borderRadius(15)
                 .onClick(() => { this.showSettings = false; })
             }
             .width('100%')
 
             Column({ space: 10 }) {
-              Text('虚拟按键').fontSize(14).fontColor(Theme.textPri).width('100%')
+              Text('虚拟按键').fontSize(14).fontColor(Theme.textPri()).width('100%')
               Row() {
-                Text('显示虚拟按键').fontSize(13).fontColor(Theme.textSec)
+                Text('显示虚拟按键').fontSize(13).fontColor(Theme.textSec())
                 Blank()
                 Toggle({ type: ToggleType.Switch, isOn: this.showPad })
                   .onChange((on: boolean) => { this.showPad = on; })
@@ -701,23 +635,23 @@ struct Index {
             }
             .width('100%')
             .padding(Theme.pad)
-            .backgroundColor(Theme.bgCard)
+            .backgroundColor(Theme.bgCard())
             .borderRadius(Theme.radius)
-            .border({ width: 1, color: Theme.border })
+            .border({ width: 1, color: Theme.border() })
 
             // ---- 画面比例 ----
             Column({ space: 10 }) {
-              Text('画面比例').fontSize(14).fontColor(Theme.textPri).width('100%')
+              Text('画面比例').fontSize(14).fontColor(Theme.textPri()).width('100%')
               Text('PS2 原生为 4:3。横屏时拉伸不明显，竖屏拉伸较明显。')
-                .fontSize(11).fontColor(Theme.textDim).width('100%')
+                .fontSize(11).fontColor(Theme.textDim()).width('100%')
 
               ForEach([0, 1, 2, 3], (m: number) => {
                 Row() {
                   Text(this.aspectLabel(m)).fontSize(13)
-                    .fontColor(this.aspectMode === m ? Theme.accentHi : Theme.textSec)
+                    .fontColor(this.aspectMode === m ? Theme.accentHi() : Theme.textSec())
                     .layoutWeight(1)
                   if (this.aspectMode === m) {
-                    Text('✓').fontSize(14).fontColor(Theme.accentHi)
+                    Text('✓').fontSize(14).fontColor(Theme.accentHi())
                   }
                 }
                 .width('100%')
@@ -727,31 +661,31 @@ struct Index {
             }
             .width('100%')
             .padding(Theme.pad)
-            .backgroundColor(Theme.bgCard)
+            .backgroundColor(Theme.bgCard())
             .borderRadius(Theme.radius)
-            .border({ width: 1, color: Theme.border })
+            .border({ width: 1, color: Theme.border() })
 
             Text('提示：接入手柄后建议关闭虚拟按键，避免遮挡画面。')
-              .fontSize(11).fontColor(Theme.textDim).width('100%')
+              .fontSize(11).fontColor(Theme.textDim()).width('100%')
 
             Blank()
           }
           .width('85%')
           .height('70%')
           .padding(Theme.pad)
-          .backgroundColor(Theme.bgBase)
+          .backgroundColor(Theme.bgBase())
           .borderRadius(Theme.radius)
-          .border({ width: 1, color: Theme.borderHi })
+          .border({ width: 1, color: Theme.borderHi() })
         }
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Center)
-        .backgroundColor('#B3000000')
+        .backgroundColor(Theme.overlayScrim())
         .onClick(() => { this.showSettings = false; })
       }
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Theme.bgBase)
+    .backgroundColor(Theme.bgBase())
   }
 }

@@ -90,7 +90,7 @@ export struct GameScreen {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#000000')
+        .backgroundColor(Theme.letterbox())
 
       XComponent({
         id: 'hps2_view',
