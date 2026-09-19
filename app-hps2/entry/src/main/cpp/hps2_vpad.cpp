@@ -58,9 +58,34 @@ namespace Hps2VPad
 			return false;
 		}
 
-		// 设备名格式由 SDLInputSource 定义：SDL-<player_id>
-		// （SDLInputSource.cpp:1693 `device.starts_with("SDL-")`）
-		const std::string device = "SDL-" + std::to_string(static_cast<int>(s_joystick_id));
+		// 设备名格式为 "SDL-<player_id>"，注意是 **player index** 而非
+		// SDL instance id —— 两者是不同的概念，很容易搞错（我最初就搞错了）。
+		//
+		// 依据：SDLInputSource::GetGenericBindingMapping 里
+		//   （SDLInputSource.cpp:1696-1701）
+		//     const std::optional<s32> player_id = FromChars<s32>(device.substr(4));
+		//     GetControllerDataForPlayerId(player_id.value());
+		// 它按 **player id** 查表，函数名也写明了 PlayerId。
+		//
+		// 实测对照（真机日志）：
+		//   SDLInputSource: Opened gamepad 1 (instance id 1, player id 0)
+		// 即 instance id=1 而 player id=0。
+		// 我原先用 instance id 拼出 "SDL-1"，查不到 player id 0，映射因而失败：
+		//   virtual pad mapping FAILED for port 0 (device=SDL-1)
+		//
+		// Player index 由 SDL 分配，需向 SDL 查询而不是自己推算。
+		int player_index = SDL_GetJoystickPlayerIndex(s_joystick);
+		if (player_index < 0)
+		{
+			// 未分配 player index 时，SDL3 的 JoinGamepad 也未把它们纳入
+			// 球籍，无法映射。明确报出而不是静默用错值。
+			VLOGE("MapToPadPort: SDL_GetJoystickPlayerIndex returned %{public}d "
+			      "(instance id %{public}d) — cannot build a device name",
+				player_index, static_cast<int>(s_joystick_id));
+			return false;
+		}
+
+		const std::string device = "SDL-" + std::to_string(player_index);
 
 		// 直接调用，只取 settings 锁 —— 与上游 SetupWizardDialog.cpp:567 的做法
 		// 完全一致（那里也是 `auto lock = Host::GetSettingsLock();`
