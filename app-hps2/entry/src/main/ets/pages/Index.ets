@@ -21,6 +21,8 @@ import { Theme } from '../common/Theme';
 import { HomeScreen } from '../components/HomeScreen';
 import { GameScreen } from '../components/GameScreen';
 import { StatusBar } from '../components/StatusBar';
+import { Immersive } from '../common/Immersive';
+import common from '@ohos.app.ability.common';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -431,6 +433,9 @@ struct Index {
       // 虚拟手柄也挂上了，但界面仍停在首页 —— 用户看到的是"点了没反应"。
       // 现在按 startBios 的返回值决定是否切页。
       this.viewMode = 'game';
+      // 进入游玩页：隐藏系统导航条等系统栏，让画面占满全屏。
+      // （用户反馈：全屏时下方的小横条不隐藏，既遮挡画面也易误触。）
+      this.setImmersive(true);
 
       // 启动后刷新一次 JIT 状态：native 的硬门禁可能刚判过一次。
       this.syncJitFromStatus();
@@ -539,6 +544,23 @@ struct Index {
     }
   }
 
+  /**
+   * 开关沉浸式全屏（隐藏/恢复系统栏）。
+   *
+   * 用户反馈「全屏时下方的小横条不会隐藏」—— 那是系统导航条。
+   * 实现见 common/Immersive.ets；此处只负责在模式切换时调用。
+   */
+  private setImmersive(enable: boolean): void {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      Immersive.set(enable, ctx);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setImmersive(%{public}d) failed: %{public}s',
+        enable ? 1 : 0, err.message);
+    }
+  }
+
   private stopBoot(): void {
     try {
       hps2core.stop();
@@ -635,7 +657,12 @@ struct Index {
             .backgroundColor(Theme.overlayChip())
             .fontColor(Theme.textPri())
             .borderRadius(15)
-            .onClick(() => { this.stopBoot(); this.viewMode = 'home'; })
+            .onClick(() => {
+                this.stopBoot();
+                this.viewMode = 'home';
+                // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
+                this.setImmersive(false);
+              })
         }
         .padding(10)
         .align(Alignment.TopEnd)
