@@ -39,6 +39,13 @@ export struct GameScreen {
    * （参考 PPSSPP 1.20：横竖屏的触控布局应各自独立设置）。
    */
   @State landscape: boolean = false;
+  /**
+   * XComponent 的实测宽高（vp）。
+   * 虚拟按键按这两个值计算绝对坐标 —— 必须用**实测值**而非硬编码，
+   * 否则不同机型/方向下按键位置会偏。
+   */
+  @State vpW: number = 440;
+  @State vpH: number = 674;
 
   /**
    * 把 XComponent 的 surfaceId 交给 native，换取 OHNativeWindow。
@@ -77,6 +84,8 @@ export struct GameScreen {
   private notifyResize(w: number, h: number): void {
     const orientation = w > h ? 2 : 1;
     this.landscape = (orientation === 2);
+    this.vpW = w;
+    this.vpH = h;
     try {
       const ok: number = hps2core.notifyResize(Math.round(w), Math.round(h));
       if (orientation !== this.lastOrientation) {
@@ -116,7 +125,7 @@ export struct GameScreen {
       // 虚拟按键：仅在游玩中显示。
       // 参考设计稿，按键半透明，尽量不遮挡画面。
       if (this.playing && this.showPad) {
-        VirtualPad({ landscape: this.landscape })
+        VirtualPad({ landscape: this.landscape, vpW: this.vpW, vpH: this.vpH })
       }
     }
     .width('100%')
