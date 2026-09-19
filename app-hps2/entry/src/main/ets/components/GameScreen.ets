@@ -33,6 +33,12 @@ export struct GameScreen {
   private xcController: XComponentController = new XComponentController();
   /** 上次已知的方向（用于识别旋转）。0=未知 1=竖屏 2=横屏 */
   private lastOrientation: number = 0;
+  /**
+   * 当前是否横屏。虚拟按键按此切换布局 ——
+   * 竖屏与横屏的可视空间差异很大，用同一套布局必然溢出或挤在一起
+   * （参考 PPSSPP 1.20：横竖屏的触控布局应各自独立设置）。
+   */
+  @State landscape: boolean = false;
 
   /**
    * 把 XComponent 的 surfaceId 交给 native，换取 OHNativeWindow。
@@ -70,6 +76,7 @@ export struct GameScreen {
    */
   private notifyResize(w: number, h: number): void {
     const orientation = w > h ? 2 : 1;
+    this.landscape = (orientation === 2);
     try {
       const ok: number = hps2core.notifyResize(Math.round(w), Math.round(h));
       if (orientation !== this.lastOrientation) {
@@ -109,7 +116,7 @@ export struct GameScreen {
       // 虚拟按键：仅在游玩中显示。
       // 参考设计稿，按键半透明，尽量不遮挡画面。
       if (this.playing && this.showPad) {
-        VirtualPad()
+        VirtualPad({ landscape: this.landscape })
       }
     }
     .width('100%')
