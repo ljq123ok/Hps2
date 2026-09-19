@@ -57,6 +57,7 @@
 
 #include "hps2_surface.h"
 #include "hps2_vpad.h"
+#include "hps2_video.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -878,6 +879,53 @@ static napi_value NapiVpadAxis(napi_env env, napi_callback_info info) {
 	napi_value r; napi_create_int32(env, 1, &r); return r;
 }
 
+// ---------------------------------------------------------------------------
+// 画面显示 N-API（宽高比 + 旋转适配）
+//
+// 供 ArkUI 在以下时机调用：
+//   - 用户改变「画面比例」设置时 → setAspectMode
+//   - 屏幕方向变化 / surface 尺寸变化时 → notifyResize
+// ---------------------------------------------------------------------------
+
+// setAspectMode(mode) -> 1/0
+//   mode: 0=自动 1=保持4:3 2=铺满 3=宽屏16:9
+static napi_value NapiSetAspectMode(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t mode = 0;
+	if (argc >= 1)
+		napi_get_value_int32(env, argv[0], &mode);
+
+	const bool ok = Hps2Video::SetAspectMode(static_cast<Hps2Video::AspectMode>(mode));
+	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
+}
+
+// getAspectMode() -> number
+static napi_value NapiGetAspectMode(napi_env env, napi_callback_info info) {
+	napi_value r;
+	napi_create_int32(env, static_cast<int32_t>(Hps2Video::GetAspectMode()), &r);
+	return r;
+}
+
+// notifyResize(width, height) -> 1/0
+// 屏幕方向变化后必须调用 —— 仅改 surface 尺寸不够，
+// GS 的正交投影是用 WindowInfo 尺寸算的（见 hps2_video.h 的说明）。
+static napi_value NapiNotifyResize(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t w = 0, h = 0;
+	if (argc >= 2) {
+		napi_get_value_int32(env, argv[0], &w);
+		napi_get_value_int32(env, argv[1], &h);
+	}
+	const bool ok = Hps2Video::NotifyResize(static_cast<unsigned int>(w), static_cast<unsigned int>(h));
+	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
+}
+
 // setSurface(surfaceId: string, width: number, height: number) -> 1/0
 //
 // 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
@@ -1015,6 +1063,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"mapVirtualPad", nullptr, NapiMapVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"vpadButton", nullptr, NapiVpadButton, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"vpadAxis", nullptr, NapiVpadAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setAspectMode", nullptr, NapiSetAspectMode, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"getAspectMode", nullptr, NapiGetAspectMode, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"notifyResize", nullptr, NapiNotifyResize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -22,6 +22,11 @@
         "startWindowIcon": "$media:app_icon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        // 横竖屏都要支持（用户要求）。
+        // "auto_rotation" 让系统按传感器自动旋转；虚拟按键布局会随方向调整
+        // （参考 PPSSPP 1.20 的经验：横竖屏的触控布局应各自独立，而不是把
+        //   横屏布局压缩进竖屏）。
+        "orientation": "auto_rotation",
         "skills": [
           {
             "entities": [

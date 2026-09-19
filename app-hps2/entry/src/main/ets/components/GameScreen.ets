@@ -31,6 +31,8 @@ export struct GameScreen {
   onSurfaceSize?: (w: number, h: number) => void;
 
   private xcController: XComponentController = new XComponentController();
+  /** 上次已知的方向（用于识别旋转）。0=未知 1=竖屏 2=横屏 */
+  private lastOrientation: number = 0;
 
   /**
    * 把 XComponent 的 surfaceId 交给 native，换取 OHNativeWindow。
@@ -51,6 +53,34 @@ export struct GameScreen {
         sid, Math.round(w), Math.round(h), ok);
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'pushSurface failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /**
+   * 通知 native 新的窗口尺寸。
+   *
+   * 为什么不能只 pushSurface：
+   *   GS 的视口与正交投影是用 WindowInfo.surface_width/height 计算的
+   *   （GSDeviceOGL.cpp:3390）。旋转后若只改 surface 尺寸而不让 GS 知道，
+   *   画面会错位或只占一角 —— 这正是本项目踩过的坑
+   *   （见 docs/stage4-resolution-issue.md）。
+   *
+   * native 侧会调 MTGS::ResizeDisplayWindow + UpdateDisplayWindow，
+   * 并在方向变化时（自动模式下）切换宽高比。
+   */
+  private notifyResize(w: number, h: number): void {
+    const orientation = w > h ? 2 : 1;
+    try {
+      const ok: number = hps2core.notifyResize(Math.round(w), Math.round(h));
+      if (orientation !== this.lastOrientation) {
+        hilog.info(DOMAIN, TAG,
+          'orientation changed: %{public}s -> notifyResize(%{public}dx%{public}d) = %{public}d',
+          this.lastOrientation === 0 ? 'unknown' : (this.lastOrientation === 2 ? 'landscape' : 'portrait'),
+          Math.round(w), Math.round(h), ok);
+        this.lastOrientation = orientation;
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'notifyResize failed: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -92,6 +122,7 @@ export struct GameScreen {
         if (this.onSurfaceSize) {
           this.onSurfaceSize(w, h);
         }
+        this.notifyResize(w, h);
       }
     })
   }

@@ -87,6 +87,8 @@ struct Index {
   @State showPad: boolean = true;
   /** 设置弹层 */
   @State showSettings: boolean = false;
+  /** 画面比例：0=自动 1=保持4:3 2=铺满 3=宽屏16:9 */
+  @State aspectMode: number = 0;
 
   private timerId: number = -1;
 
@@ -102,6 +104,12 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    // 让 native 侧与 UI 的初始比例一致（默认「自动」）。
+    try {
+      this.aspectMode = hps2core.getAspectMode();
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'getAspectMode failed');
+    }
     try {
       const dir = this.biosDir();
       if (!fs.accessSync(dir)) {
@@ -491,6 +499,33 @@ struct Index {
     }
   }
 
+  /** 画面比例选项的显示名 */
+  private aspectLabel(m: number): string {
+    if (m === 0) return '自动（横屏铺满 / 竖屏 4:3）';
+    if (m === 1) return '保持 4:3（不变形）';
+    if (m === 2) return '铺满屏幕（可能变形）';
+    return '宽屏 16:9';
+  }
+
+  /**
+   * 设置画面比例并立即生效。
+   *
+   * native 侧会改 GSConfig.AspectRatio 并调 MTGS::ApplySettings()，
+   * 使配置在运行期即时生效（无需重启 VM）。
+   * 机制依据：GSRenderer.cpp:412 的 CalculateDrawDstRect 里
+   * targetAr 默认取窗口比例，而 Stretch 不在任何分支中 => 铺满。
+   */
+  private setAspect(m: number): void {
+    this.aspectMode = m;
+    try {
+      const ok: number = hps2core.setAspectMode(m);
+      hilog.info(DOMAIN, TAG, 'setAspectMode(%{public}d) -> %{public}d', m, ok);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setAspectMode failed: %{public}s', err.message);
+    }
+  }
+
   private stopBoot(): void {
     try {
       hps2core.stop();
@@ -663,6 +698,32 @@ struct Index {
                   .onChange((on: boolean) => { this.showPad = on; })
               }
               .width('100%')
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(Theme.bgCard)
+            .borderRadius(Theme.radius)
+            .border({ width: 1, color: Theme.border })
+
+            // ---- 画面比例 ----
+            Column({ space: 10 }) {
+              Text('画面比例').fontSize(14).fontColor(Theme.textPri).width('100%')
+              Text('PS2 原生为 4:3。横屏时拉伸不明显，竖屏拉伸较明显。')
+                .fontSize(11).fontColor(Theme.textDim).width('100%')
+
+              ForEach([0, 1, 2, 3], (m: number) => {
+                Row() {
+                  Text(this.aspectLabel(m)).fontSize(13)
+                    .fontColor(this.aspectMode === m ? Theme.accentHi : Theme.textSec)
+                    .layoutWeight(1)
+                  if (this.aspectMode === m) {
+                    Text('✓').fontSize(14).fontColor(Theme.accentHi)
+                  }
+                }
+                .width('100%')
+                .padding({ top: 10, bottom: 10 })
+                .onClick(() => { this.setAspect(m); })
+              })
             }
             .width('100%')
             .padding(Theme.pad)

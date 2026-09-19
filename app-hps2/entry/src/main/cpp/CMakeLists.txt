@@ -101,6 +101,7 @@ add_library(hps2core SHARED
     hps2_host.cpp
     hps2_jitcheck.cpp
     hps2_vpad.cpp
+    hps2_video.cpp
 )
 
 # 核心静态库（整体链接，避免部分符号缺失）
