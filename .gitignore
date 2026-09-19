@@ -32,3 +32,31 @@ thirdparty-ohos/src/
 thirdparty-ohos/build/
 thirdparty-ohos/prefix/
 thirdparty-ohos/logs/
+
+# ============================================================================
+# 版权内容 —— 绝不入库、绝不随发行版分发
+#
+# BIOS 是索尼的版权作品；游戏镜像同理。本应用**不内置、不分发**它们，
+# 用户需自行准备合法拥有的副本（见 README 的法律声明）。
+#
+# 这些规则同时是**防御性**的：防止误把本地测试用的 BIOS/ROM 提交进去。
+# ============================================================================
+PS2 BIOS 全文件/
+*.iso
+*.ISO
+*.chd
+*.CHD
+*.bin
+*.BIN
+*.rom
+*.ROM
+*.nvm
+*.NVM
+*.mec
+*.MEC
+*.p2b
+
+# 例外：源码与资源（上面的 *.bin/*.rom 可能误伤，这里放行）
+!app-hps2/**/*.bin
+!app-hps2/**/*.rom
+!thirdparty-ohos/**/*.bin
