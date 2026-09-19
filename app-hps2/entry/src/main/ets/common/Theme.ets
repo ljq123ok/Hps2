@@ -27,16 +27,57 @@ export class Theme {
    * 注意：resourceManager 可能在某些时机（如 aboutToAppear 之前）不可用，
    * 因此包一层 try/catch 并给一个兜底色，避免整个界面因取色失败而白屏。
    */
+  /** 诊断：只在首次调用时各打印一次，便于确认资源是否真的解析成功。 */
+  private static diagOk: boolean = false;
+  private static diagFail: boolean = false;
+
+  /** number(ARGB) → '#AARRGGBB' */
+  private static toHex(argb: number): string {
+    return '#' + (argb >>> 0).toString(16).padStart(8, '0').toUpperCase();
+  }
+
+  /**
+   * 按资源名读取颜色。
+   *
+   * 【实测发现，务必注意】`getColorByNameSync()` 在本 SDK/设备上**直接返回
+   * 颜色值（ARGB 整数）**，而不是"资源引用 ID" —— 头文件注释写的是
+   * "integer reference value representing the color data"，容易被误读成
+   * 需要再喂给 getColorSync()。
+   *
+   * 实测证据：hps2_bg_base 的浅色值为 #F5F6F8，
+   * 而 getColorByNameSync("hps2_bg_base") 返回 4294309624 = 0xFFF5F6F8，
+   * 两者完全一致 —— 若它是 ID，这种吻合是不可能的。
+   *
+   * 因此这里**直接使用返回值**。（早先的写法多了一步 getColorSync(id)，
+   * 导致 9001001 Invalid resource ID，界面整体走了兜底色。）
+   *
+   * 日夜模式能work，正是因为返回值已由资源系统按当前配色解析完毕。
+   */
   private static color(name: string, fallback: string): string {
     try {
       const ctx = getContext() as common.UIAbilityContext;
       const mgr: resourceManager.ResourceManager = ctx.resourceManager;
-      const id: number = mgr.getColorByNameSync(name);
-      const v = mgr.getColorSync(id);
-      // getColorSync 返回 number（ARGB），转成 #AARRGGBB
-      const argb = v >>> 0;
-      return '#' + argb.toString(16).padStart(8, '0').toUpperCase();
+      const argb: number = mgr.getColorByNameSync(name);
+
+      if (typeof argb !== 'number') {
+        if (!Theme.diagFail) {
+          Theme.diagFail = true;
+          console.error(`HPS2_THEME: ${name} returned non-number: ${typeof argb}`);
+        }
+        return fallback;
+      }
+
+      const hex = Theme.toHex(argb);
+      if (!Theme.diagOk) {
+        Theme.diagOk = true;
+        console.info(`HPS2_THEME: resource OK ${name} -> ${hex}`);
+      }
+      return hex;
     } catch (e) {
+      if (!Theme.diagFail) {
+        Theme.diagFail = true;
+        console.error(`HPS2_THEME: lookup FAILED for ${name}: ${JSON.stringify(e)} — using fallback`);
+      }
       return fallback;
     }
   }
