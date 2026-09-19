@@ -53,21 +53,84 @@ export struct VirtualPad {
   private barH(): number { return Math.max(24, this.btn() * 0.62); }
   private gap(): number { return Math.max(4, this.btn() * 0.12); }
 
+  // ---- 画面区域与黑边（关键）----
+  //
+  // 【为什么要算这个】此前按键中心固定在 屏宽×0.22 / 屏高×0.40 等比例位置上，
+  // 真机上表现为"位置不对" —— 实测核算发现：
+  //   竖屏 440x674 时 4:3 画面占 y=172~502，而十字键中心在 y=270，
+  //   **正压在游戏主体上**，遮挡内容。
+  //
+  // 正确做法：把按键放进**黑边**（4:3 画面之外的空间）。
+  //   竖屏：上黑边 172vp、下黑边 172vp —— 空间充足
+  //   横屏：左右黑边各仅 79vp —— 放不下整套按键，只能叠在画面两侧
+  // 故两种方向分别处理。
+
+  /** 画面是否按宽度铺满（竖屏）；否则按高度铺满（横屏） */
+  private isPortraitFit(): boolean { return this.vpH >= this.vpW; }
+
+  /** 4:3 画面在本组件内的实际矩形（vp） */
+  private contentTop(): number {
+    if (this.isPortraitFit()) {
+      return (this.vpH - this.vpW * 0.75) / 2;
+    }
+    return 0;
+  }
+  private contentBottom(): number {
+    if (this.isPortraitFit()) {
+      return this.vpH - this.contentTop();
+    }
+    return this.vpH;
+  }
+
   // ---- 坐标计算 ----
-  /** 顶部肩键条的 y */
-  private barY(): number { return this.gap() + 6; }
+  /** 顶部肩键条的 y（放在上黑边内，或横屏时贴顶） */
+  private barY(): number {
+    // 竖屏：上黑边中点；横屏：贴顶（黑边太窄，只能叠在画面上）
+    return this.isPortraitFit() ? (this.contentTop() / 2 + 6) : (this.gap() + 8);
+  }
+
   /** 十字键/四键区的中心 y */
   private midY(): number {
-    return this.landscape ? this.vpH * 0.50 : this.vpH * 0.40;
+    if (this.isPortraitFit()) {
+      // 竖屏：放下黑边。
+      // 下黑边仅约 172vp，而十字键列高约 125vp、摇杆外框约 110vp ——
+      // 两组放不下（实测核算会重叠 37vp）。因此把十字键/四键放黑边，
+      // 摇杆另择位置（见 stickY）。
+      const bandH = this.vpH - this.contentBottom();
+      return this.contentBottom() + bandH / 2;
+    }
+    // 横屏：画面高度中部
+    return this.vpH * 0.50;
   }
+
   /** 摇杆中心 y */
   private stickY(): number {
-    return this.landscape ? this.vpH * 0.80 : this.vpH * 0.82;
+    if (this.isPortraitFit()) {
+      // 竖屏：十字键已占用下黑边，摇杆放在**画面下缘内部**（半透明叠加）。
+      // 取画面底部往上约一个外框处，尽量少遮挡主体（4:3 游戏的主体多在中部）。
+      return this.contentBottom() - this.stickBox() / 2 + 6;
+    }
+    // 横屏：叠在画面两侧的下方
+    return this.vpH * 0.80;
   }
+
   /** 左侧控件中心 x */
-  private leftX(): number { return this.landscape ? this.vpW * 0.15 : this.vpW * 0.22; }
+  private leftX(): number {
+    if (this.isPortraitFit()) {
+      // 竖屏：左半屏，留出与屏幕边缘的间距
+      return this.btn() + this.gap() + 10;
+    }
+    // 横屏：左黑边中心（黑边 79vp），按键略向画面方向偏移以免贴边
+    return Math.max(this.btn(), this.vpW * 0.11);
+  }
+
   /** 右侧控件中心 x */
-  private rightX(): number { return this.landscape ? this.vpW * 0.85 : this.vpW * 0.78; }
+  private rightX(): number {
+    if (this.isPortraitFit()) {
+      return this.vpW - this.btn() - this.gap() - 10;
+    }
+    return Math.min(this.vpW - this.btn(), this.vpW * 0.89);
+  }
 
   /** 把中心点换成左上角坐标 */
   private left(cx: number, w: number): number { return cx - w / 2; }
