@@ -32,6 +32,8 @@ export struct VirtualPad {
   /** XComponent 实测高度（vp） */
   @Prop vpH: number = 674;
 
+  private static diagDone: boolean = false;
+
   @State lsx: number = 0;
   @State lsy: number = 0;
   @State rsx: number = 0;
@@ -205,6 +207,34 @@ export struct VirtualPad {
     this.padButton('○', VpadButton.EAST, cx + this.btn + this.gap, cy)
   }
 
+  /**
+   * 尺寸/坐标发生变化时打印一次诊断（便于定位布局问题）。
+   *
+   * 【教训】此前的写法把诊断放在 aboutToAppear() 里并直接调用
+   * this.btn / this.midY 等 getter —— 而那时父组件还没把 @Prop
+   * vpW/vpH 传进来，getter 基于 undefined 计算，Diagnostic 本身
+   * 抛了 TypeError：
+   *   TypeError: Cannot read property toFixed of undefined
+   * 导致**点击启动游戏即闪退**。
+   * 教训：诊断代码必须晚于其依赖的数据就绪，且不得引入新的失败点。
+   *
+   * 现在改为在实测尺寸有效时才打印，并对每个值做数字兜底。
+   */
+  private logLayoutOnce(): void {
+    if (VirtualPad.diagDone)
+      return;
+    // 尺寸尚未就绪：静默等待下一次（不要在这里抛错）
+    if (!(this.vpW > 0) || !(this.vpH > 0))
+      return;
+
+    VirtualPad.diagDone = true;
+    const f = (v: number): string => (Number.isFinite(v) ? v.toFixed(1) : 'n/a');
+    console.info(`HPS2_VPAD_LAYOUT: vp=${this.vpW}x${this.vpH} ` +
+      `landscape=${this.landscape} btn=${f(this.btn)} ` +
+      `midY=${f(this.midY)} stickY=${f(this.stickY)} ` +
+      `leftX=${f(this.leftX)} rightX=${f(this.rightX)}`);
+  }
+
   build() {
     Stack() {
       // ---- 肩键与扳机 ----
@@ -230,7 +260,15 @@ export struct VirtualPad {
       this.stick(true, this.leftX, this.stickY)
       this.stick(false, this.rightX, this.stickY)
     }
-    .width('100%')
-    .height('100%')
+    // 用**显式尺寸**而非 '100%'：
+    // 绝对定位的子元素不参与父容器尺寸计算，若外层又是百分比链，
+    // Stack 可能塌缩为 0，届时所有按键都会被定位到不可见处。
+    // 这里直接用实测的 vp 宽高，尺寸来源明确、可核对。
+    .width(this.vpW > 0 ? this.vpW : '100%')
+    .height(this.vpH > 0 ? this.vpH : '100%')
+    // 用 onAppear 而非在 build() 内直接调用：
+    // onAppear 在组件挂载后触发，此时 @Prop 已由父组件赋值，
+    // getter 依赖的数据必然就绪；也不再受 build() 的语句限制。
+    .onAppear(() => { this.logLayoutOnce(); })
   }
 }
