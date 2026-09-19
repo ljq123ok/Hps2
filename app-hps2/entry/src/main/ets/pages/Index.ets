@@ -392,11 +392,12 @@ struct Index {
       if (ok !== 1) {
         this.statusError = '核心启动被拒绝，详见日志（tag=HPS2_CORE）';
       }
-      // 启动成功后准备虚拟手柄。
+      // 启动成功后只**挂载**虚拟手柄，不做按键映射。
       //
-      // 顺序很重要：必须等 VM 起来后再做自动映射，
-      // 因为 Pad::MapController 需要在输入源已初始化的前提下执行
-      // （与上游 FullscreenUI 的流程一致）。
+      // 映射必须等 VM 初始化完成（输入源懒创建）——
+      // 那段逻辑已移到 native 的 VM 线程里（napi_init.cpp 的 VMThreadMain，
+      // 在 VMManager::Initialize() 之后），因为在那之前调用会让
+      // InputManager::GetGenericBindingMapping() 解引用空指针而闪退。
       this.setupVirtualPad();
 
       // 启动后刷新一次 JIT 状态：native 的硬门禁可能刚判过一次。
@@ -451,12 +452,8 @@ struct Index {
         this.statusError = '虚拟手柄初始化失败（见 HPS2_VPAD 日志）';
         return;
       }
-      // 端口 0 = 1P
-      const mapped: number = hps2core.mapVirtualPad(0);
-      hilog.info(DOMAIN, TAG, 'mapVirtualPad(0) -> %{public}d', mapped);
-      if (mapped !== 1) {
-        this.statusError = '虚拟手柄按键映射失败（见 HPS2_VPAD 日志）';
-      }
+      // 按键映射不在这里做 —— 见上方注释。native 会在 VM 初始化完成后
+      // 自行映射到端口 0（1P）。
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'setupVirtualPad failed: %{public}s', JSON.stringify(err));

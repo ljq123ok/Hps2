@@ -70,6 +70,38 @@ namespace Hps2VPad
 		// 我们的 Host 实现继承自 eerunner 的无头版本，该函数是
 		// pxFailRel("Not implemented")（hps2_host.cpp:305）—— 调用它会直接
 		// 触发断言失败。而且上游证明映射并不需要 CPU 线程。
+		// ------------------------------------------------------------------
+		// 前置条件检查：输入源必须已创建。
+		//
+		// 为什么必须查：输入源是**懒创建**的 —— 只有
+		// InputManager::ReloadSources() 跑过之后
+		// s_input_sources[] 才会被填充（InputManager.cpp:1902 自己就写着
+		// `if (!s_input_sources[type])` 才创建）。
+		//
+		// ReloadSources() 由 VMManager::LoadSettings() 调用
+		// （VMManager.cpp:704），而后者在 **CPU 线程**的
+		// CPUThreadInitialize 内部执行。
+		//
+		// 因此若在 startBios() 一返回就调用本函数，输入源尚为空，
+		// InputManager::GetGenericBindingMapping() 会在
+		//   s_input_sources[i]->IsInitialized()
+        // （InputManager.cpp:1885，**没有 null 检查**）
+		// 处解引用空指针 → SIGSEGV → 应用闪退。这是实测到的崩溃。
+		//
+		// 正确时机：VM 线程完成 VMManager::Initialize() 之后
+		// （见 napi_init.cpp 的 VMThreadMain）。
+		// ------------------------------------------------------------------
+		// 用 GetInputSourceInterface() 判空 —— 它返回 s_input_sources[].get()，
+		// 未创建时为 nullptr（InputManager.cpp:718-721）。这是可靠的就绪判据，
+		// 不是我们自造的接口。
+		if (InputManager::GetInputSourceInterface(InputSourceType::SDL) == nullptr)
+		{
+			VLOGE("MapToPadPort: the SDL input source does not exist yet; refusing to "
+			      "call GetGenericBindingMapping, which dereferences s_input_sources[] "
+			      "without a null check (InputManager.cpp:1885) and would crash");
+			return false;
+		}
+
 		bool result = false;
 		{
 			auto lock = Host::GetSettingsLock();

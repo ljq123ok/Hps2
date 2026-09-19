@@ -452,6 +452,29 @@ void VMThreadMain() {
 	LOGI("JIT_ASSERT=passed cpu_is_recompiler=%{public}d",
 		(Cpu == &recCpu) ? 1 : 0);
 
+	// ---------------------------------------------------------------------
+	// 虚拟手柄的自动按键映射 —— 必须在这里做，不能更早。
+	//
+	// 为什么不能像先前那样在 startBios() 返回后立刻做：
+	//   输入源是**懒创建**的，只有 InputManager::ReloadSources() 跑过才填充
+	//   s_input_sources[]（InputManager.cpp:1902）。而 ReloadSources()
+	//   由 VMManager::LoadSettings()（VMManager.cpp:704）调用，后者在
+	//   **CPU 线程**的 CPUThreadInitialize 内部执行。
+	//
+	//   若在更早的时机调用，InputManager::GetGenericBindingMapping()
+	//   会在 s_input_sources[i]->IsInitialized()（InputManager.cpp:1885，
+	//   **没有 null 检查**）处解引用空指针 → SIGSEGV → 应用闪退。
+	//   这是真机上实测到的崩溃（日志停在 initVirtualPad -> 1）。
+	//
+	// 到这里时 VMManager::Initialize() 已完成，输入源必然存在。
+	// ---------------------------------------------------------------------
+	if (Hps2VPad::IsReady()) {
+		if (Hps2VPad::MapToPadPort(0))
+			LOGI("virtual pad mapped to port 0");
+		else
+			LOGW("virtual pad mapping failed (see HPS2_VPAD)");
+	}
+
 	LOGI("VM initialized; resuming execution");
 	SetStage(BootStage::kRunning);
 	VMManager::SetLimiterMode(LimiterModeType::Unlimited);
