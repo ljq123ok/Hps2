@@ -17,7 +17,10 @@ import picker from '@ohos.file.picker';
 import resourceManager from '@ohos.resourceManager';
 import buffer from '@ohos.buffer';
 import hps2core from 'libhps2core.so';
-import { VirtualPad } from '../components/VirtualPad';
+import { Theme } from '../common/Theme';
+import { HomeScreen } from '../components/HomeScreen';
+import { GameScreen } from '../components/GameScreen';
+import { StatusBar } from '../components/StatusBar';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -76,6 +79,14 @@ struct Index {
   @State jitStage: string = '';
   @State jitErrno: number = 0;
   @State jitChecking: boolean = false;
+
+  // ---- 新前端的 UI 状态 ----
+  /** 页面模式：home=设置/游戏库  game=全屏游玩 */
+  @State viewMode: string = 'home';
+  /** 是否显示虚拟按键（接入手柄后可关闭） */
+  @State showPad: boolean = true;
+  /** 设置弹层 */
+  @State showSettings: boolean = false;
 
   private timerId: number = -1;
 
@@ -550,162 +561,136 @@ struct Index {
     .backgroundColor('#F3F4F6').borderRadius(8)
   }
 
+  // =========================================================================
+  // UI：两态切换
+  //
+  // 旧版把「设置」与「游玩」挤在同一屏，还要容纳小小的游戏画面 ——
+  // 用户反馈「不可游玩」。新版按设计稿拆成两个独立页面：
+  //
+  //   viewMode = 'home'  → HomeScreen   （选 BIOS / 选游戏 / 看 JIT 状态）
+  //   viewMode = 'game'  → GameScreen   （全屏画面 + 虚拟按键，无设置项干扰）
+  //
+  // 切换由 viewMode 驱动，业务逻辑（startBoot/stopBoot/pickAndCopy 等）
+  // 全部保持不变。
+  // =========================================================================
+
   build() {
-    Column() {
-      Text('Hps2').fontSize(22).fontWeight(FontWeight.Bold).width('100%')
-      Text('HarmonyOS PS2 模拟器')
-        .fontSize(11).fontColor('#6B7280').width('100%').margin({ top: 2, bottom: 10 })
-
-      // 游戏画面显示区。
-      // XComponent 的 surface 就是 GS 的渲染目标；native 侧通过
-      // setSurface() 把它交给 EGL/OpenGL。
-      Stack() {
-        XComponent({
-          id: 'hps2_view',
-          type: XComponentType.SURFACE,
-          controller: this.xcController
+    Stack() {
+      if (this.viewMode === 'home') {
+        HomeScreen({
+          biosName: this.biosName,
+          gameName: this.gameName,
+          picking: this.picking,
+          statusStage: this.statusStage,
+          statusError: this.statusError,
+          busy: this.busy,
+          jitChecked: this.jitChecked,
+          jitAvailable: this.jitAvailable,
+          jitMessage: this.jitMessage,
+          jitAction: this.jitAction,
+          jitStage: this.jitStage,
+          jitErrno: this.jitErrno,
+          onPickBios: () => { this.chooseBios(); },
+          onPickGame: () => { this.chooseGame(); },
+          onClearGame: () => { this.clearGame(); },
+          onStart: () => { this.startBoot(); },
+          onCheckJit: () => { this.checkJit(); },
+          onOpenSettings: () => { this.showSettings = true; }
         })
-          .width('100%')
-          .height('100%')
-          .onLoad(() => {
-            hilog.info(DOMAIN, TAG, 'XComponent onLoad');
-            // onLoad 时 surface 已就绪，但尺寸可能还没定；
-            // onSurfaceChanged 会再给一次准确尺寸。
-            if (this.surfaceW > 0 && this.surfaceH > 0) {
-              this.pushSurface(this.surfaceW, this.surfaceH);
+      } else {
+        // 游玩页：全屏画面 + 虚拟按键 + 悬浮退出按钮
+        Stack({ alignContent: Alignment.TopEnd }) {
+          GameScreen({
+            playing: true,
+            showPad: this.showPad,
+            onSurfaceSize: (w: number, h: number) => {
+              this.surfaceW = w;
+              this.surfaceH = h;
             }
           })
-          .onDestroy(() => {
-            hilog.info(DOMAIN, TAG, 'XComponent onDestroy');
-            this.surfaceReady = false;
-          })
 
-        // 虚拟手柄叠加在画面上。
-        // 只在核心运行中显示 —— 未运行时不需要按键，也避免遮住设置界面。
-        if (this.statusRunning) {
-          VirtualPad()
-        }
-      }
-      .width('100%')
-      .layoutWeight(2)             // 画面占 2 份、控制区占 1 份，
-      .backgroundColor('#000000')  // 保证「启动游戏」按钮始终可见
-      .borderRadius(8)
-      .clip(true)
-      .margin({ bottom: 10 })
-      .onAreaChange((_, area) => {
-        // 布局尺寸确定后把 surface 尺寸同步给 native
-        const w = Number(area.width);
-        const h = Number(area.height);
-        this.surfaceW = w;
-        this.surfaceH = h;
-        if (w > 0 && h > 0) {
-          this.pushSurface(w, h);
-        }
-      })
+          // 悬浮控制条：游玩时不显示设置项，只留必要操作
+          Row({ space: 10 }) {
+            Text(this.statusRunning ? `运行中` : this.statusStage)
+              .fontSize(11)
+              .fontColor(this.statusRunning ? Theme.ok : Theme.textSec)
+              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+              .backgroundColor('#99000000')
+              .borderRadius(14)
 
-      // BIOS 选择区
-      Column() {
-        Row() {
-          Text('BIOS').fontSize(14).fontWeight(FontWeight.Medium)
-          Blank()
-        }.width('100%')
-        Text(this.biosName.length > 0 ? this.biosName : '尚未选择')
-          .fontSize(12)
-          .fontColor(this.biosName.length > 0 ? '#16A34A' : '#9CA3AF')
-          .width('100%').margin({ top: 6, bottom: 10 })
+            Button('按键')
+              .height(30).fontSize(12)
+              .backgroundColor('#99000000')
+              .fontColor(this.showPad ? Theme.accentHi : Theme.textSec)
+              .borderRadius(15)
+              .onClick(() => { this.showPad = !this.showPad; })
 
-        Button(this.picking === 'bios' ? '处理中…' : '选择 BIOS 文件')
-          .width('100%').enabled(this.picking === '')
-          .onClick(() => { this.chooseBios(); })
-      }
-      .width('100%').padding(14)
-      .backgroundColor('#FFFFFF').borderRadius(10)
-      .border({ width: 1, color: '#E5E7EB' })
-      .margin({ bottom: 12 })
-
-      // 游戏镜像选择（可选）
-      Column() {
-        Row() {
-          Text('游戏镜像（可选）').fontSize(14).fontWeight(FontWeight.Medium)
-          Blank()
-          if (this.gameName.length > 0) {
-            Text('清除')
-              .fontSize(12).fontColor('#2563EB')
-              .onClick(() => this.clearGame())
+            Button('返回')
+              .height(30).fontSize(12)
+              .backgroundColor('#99000000')
+              .fontColor(Theme.textPri)
+              .borderRadius(15)
+              .onClick(() => { this.stopBoot(); this.viewMode = 'home'; })
           }
-        }.width('100%')
-        Text(this.gameName.length > 0 ? this.gameName : '未选择 —— 将只启动 BIOS')
-          .fontSize(12)
-          .fontColor(this.gameName.length > 0 ? '#16A34A' : '#9CA3AF')
-          .width('100%').margin({ top: 6, bottom: 10 })
-
-        Button(this.picking === 'game' ? '处理中…' : '选择游戏镜像')
-          .width('100%').enabled(this.picking === '')
-          .onClick(() => { this.chooseGame(); })
-      }
-      .width('100%').padding(14)
-      .backgroundColor('#FFFFFF').borderRadius(10)
-      .border({ width: 1, color: '#E5E7EB' })
-      .margin({ bottom: 12 })
-
-      // 合法性提示（必须显著）
-      Column() {
-        Text('⚠ 关于 BIOS')
-          .fontSize(12).fontWeight(FontWeight.Medium).width('100%')
-        Text('本应用不内置、不分发 BIOS。请使用你自行合法拥有的 PS2 BIOS 文件。\n' +
-             '应用只读取你主动选择的文件，并复制到应用私有目录中使用。')
-          .fontSize(11).fontColor('#6B7280').width('100%').margin({ top: 4 })
-      }
-      .width('100%').padding(12)
-      .backgroundColor('#FFFBEB').borderRadius(8)
-      .border({ width: 1, color: '#FDE68A' })
-      .margin({ bottom: 12 })
-
-      // 控制区放进 Scroll：小屏或横屏时也能滚到按钮，
-      // 避免「启动游戏」被挤出可视区域（真机上出现过）。
-      Scroll() {
-        Column() {
-          // JIT 能力状态：放在启动按钮之前 —— 用户先看到"能不能跑"，再决定启动
-          this.jitView()
-
-          // 运行控制
-          Row() {
-                Button(this.gamePath.length > 0 ? '启动游戏' : '启动 BIOS')
-              .layoutWeight(1)
-              // JIT 不可用时禁用启动按钮：产品决策是不降级，
-              // 因此这里不给"用解释器凑合跑"的入口。
-              .enabled(this.biosPath.length > 0 && !this.statusRunning
-                && !(this.jitChecked && !this.jitAvailable))
-              .onClick(() => this.startBoot())
-            Blank().width(10)
-            Button('停止')
-              .layoutWeight(1)
-              .enabled(this.statusRunning)
-              .onClick(() => this.stopBoot())
-          }
-          .width('100%').margin({ bottom: 12 })
-
-          this.statusView()
-
-          if (this.statusError.length > 0) {
-            Column() {
-              Text('错误').fontSize(12).fontWeight(FontWeight.Medium).width('100%')
-              Text(this.statusError).fontSize(11).fontColor('#DC2626').width('100%').margin({ top: 4 })
-            }
-            .width('100%').padding(12)
-            .backgroundColor('#FEF2F2').borderRadius(8)
-            .border({ width: 1, color: '#FECACA' })
-            .margin({ top: 12, bottom: 12 })
-          }
+          .padding(10)
         }
         .width('100%')
+        .height('100%')
       }
-      .width('100%')
-      .layoutWeight(1)
-      .scrollBar(BarState.Auto)
-      .align(Alignment.Top)
+
+      // ---- 设置弹层 ----
+      if (this.showSettings) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Text('设置').fontSize(17).fontColor(Theme.textPri).fontWeight(FontWeight.Medium)
+              Blank()
+              Button('关闭')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi)
+                .fontColor(Theme.textPri)
+                .borderRadius(15)
+                .onClick(() => { this.showSettings = false; })
+            }
+            .width('100%')
+
+            Column({ space: 10 }) {
+              Text('虚拟按键').fontSize(14).fontColor(Theme.textPri).width('100%')
+              Row() {
+                Text('显示虚拟按键').fontSize(13).fontColor(Theme.textSec)
+                Blank()
+                Toggle({ type: ToggleType.Switch, isOn: this.showPad })
+                  .onChange((on: boolean) => { this.showPad = on; })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(Theme.bgCard)
+            .borderRadius(Theme.radius)
+            .border({ width: 1, color: Theme.border })
+
+            Text('提示：接入手柄后建议关闭虚拟按键，避免遮挡画面。')
+              .fontSize(11).fontColor(Theme.textDim).width('100%')
+
+            Blank()
+          }
+          .width('85%')
+          .height('70%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase)
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor('#B3000000')
+        .onClick(() => { this.showSettings = false; })
+      }
     }
-    .width('100%').height('100%').padding(16)
-    .backgroundColor('#F9FAFB')
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Theme.bgBase)
   }
 }
