@@ -419,6 +419,19 @@ struct Index {
       // InputManager::GetGenericBindingMapping() 解引用空指针而闪退。
       this.setupVirtualPad();
 
+      // 启动被拒绝：留在首页显示错误，不切页面。
+      if (ok !== 1) {
+        this.syncJitFromStatus();
+        return;
+      }
+
+      // 启动成功 —— 切到全屏游玩页。
+      //
+      // 【此前遗漏】viewMode 从未被设为 'game'，所以点了启动后 VM 起来了、
+      // 虚拟手柄也挂上了，但界面仍停在首页 —— 用户看到的是"点了没反应"。
+      // 现在按 startBios 的返回值决定是否切页。
+      this.viewMode = 'game';
+
       // 启动后刷新一次 JIT 状态：native 的硬门禁可能刚判过一次。
       this.syncJitFromStatus();
       this.startPolling();
@@ -545,69 +558,92 @@ struct Index {
 
   build() {
     Stack() {
+      // =====================================================================
+      // 【关键】GameScreen（含 XComponent）**始终挂载**，不随页面模式切换。
+      //
+      // 为什么必须这样 —— 这是一个真实的竞态，我最初的两态设计引入了它：
+      //   GS 初始化时会经 GSDevice::AcquireWindow()（GSDevice.cpp:472）
+      //   调 Host::AcquireRenderWindow() 拿渲染窗口。若那一刻 XComponent
+      //   尚未挂载，窗口拿不到，GS 只能以 Surfaceless 打开，无法出画面。
+      //   而 startBios() 会立刻触发 VM 线程去初始化 GS —— 若此时才切页
+      //   让 XComponent 挂载，两者就是竞态。
+      //
+      // 让 XComponent 常驻则从根本上消除该依赖：surface 自应用启动就存在，
+      // GS 任何时刻来拿都有。旧前端也是这个形态（XComponent 一直在树上），
+      // 所以它没暴露过这个问题。
+      //
+      // 首页只作为**叠加层**盖在画面之上，见下方。
+      // =====================================================================
+      GameScreen({
+        playing: this.viewMode === 'game',
+        showPad: this.showPad,
+        onSurfaceSize: (w: number, h: number) => {
+          this.surfaceW = w;
+          this.surfaceH = h;
+        }
+      })
+
+      // ---- 首页叠加层 ----
       if (this.viewMode === 'home') {
-        HomeScreen({
-          biosName: this.biosName,
-          gameName: this.gameName,
-          picking: this.picking,
-          statusStage: this.statusStage,
-          statusError: this.statusError,
-          busy: this.busy,
-          jitChecked: this.jitChecked,
-          jitAvailable: this.jitAvailable,
-          jitMessage: this.jitMessage,
-          jitAction: this.jitAction,
-          jitStage: this.jitStage,
-          jitErrno: this.jitErrno,
-          onPickBios: () => { this.chooseBios(); },
-          onPickGame: () => { this.chooseGame(); },
-          onClearGame: () => { this.clearGame(); },
-          onStart: () => { this.startBoot(); },
-          onCheckJit: () => { this.checkJit(); },
-          onOpenSettings: () => { this.showSettings = true; }
-        })
-      } else {
-        // 游玩页：全屏画面 + 虚拟按键 + 悬浮退出按钮
-        Stack({ alignContent: Alignment.TopEnd }) {
-          GameScreen({
-            playing: true,
-            showPad: this.showPad,
-            onSurfaceSize: (w: number, h: number) => {
-              this.surfaceW = w;
-              this.surfaceH = h;
-            }
+        Column() {
+          HomeScreen({
+            biosName: this.biosName,
+            gameName: this.gameName,
+            picking: this.picking,
+            statusStage: this.statusStage,
+            statusError: this.statusError,
+            busy: this.busy,
+            jitChecked: this.jitChecked,
+            jitAvailable: this.jitAvailable,
+            jitMessage: this.jitMessage,
+            jitAction: this.jitAction,
+            jitStage: this.jitStage,
+            jitErrno: this.jitErrno,
+            onPickBios: () => { this.chooseBios(); },
+            onPickGame: () => { this.chooseGame(); },
+            onClearGame: () => { this.clearGame(); },
+            onStart: () => { this.startBoot(); },
+            onCheckJit: () => { this.checkJit(); },
+            onOpenSettings: () => { this.showSettings = true; }
           })
-
-          // 悬浮控制条：游玩时不显示设置项，只留必要操作
-          Row({ space: 10 }) {
-            Text(this.statusRunning ? `运行中` : this.statusStage)
-              .fontSize(11)
-              .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
-              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-              .backgroundColor(Theme.overlayChip())
-              .borderRadius(14)
-
-            Button('按键')
-              .height(30).fontSize(12)
-              .backgroundColor(Theme.overlayChip())
-              .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
-              .borderRadius(15)
-              .onClick(() => { this.showPad = !this.showPad; })
-
-            Button('返回')
-              .height(30).fontSize(12)
-              .backgroundColor(Theme.overlayChip())
-              .fontColor(Theme.textPri())
-              .borderRadius(15)
-              .onClick(() => { this.stopBoot(); this.viewMode = 'home'; })
-          }
-          .padding(10)
         }
         .width('100%')
         .height('100%')
+        // 首页需要完全不透明地盖住下面的画面区，避免视觉串扰
+        .backgroundColor(Theme.bgBase())
+      }
+
+      // ---- 游玩页悬浮控制条 ----
+      if (this.viewMode === 'game') {
+        Row({ space: 10 }) {
+          Text(this.statusRunning ? '运行中' : this.statusStage)
+            .fontSize(11)
+            .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .backgroundColor(Theme.overlayChip())
+            .borderRadius(14)
+
+          Button('按键')
+            .height(30).fontSize(12)
+            .backgroundColor(Theme.overlayChip())
+            .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
+            .borderRadius(15)
+            .onClick(() => { this.showPad = !this.showPad; })
+
+          Button('返回')
+            .height(30).fontSize(12)
+            .backgroundColor(Theme.overlayChip())
+            .fontColor(Theme.textPri())
+            .borderRadius(15)
+            .onClick(() => { this.stopBoot(); this.viewMode = 'home'; })
+        }
+        .padding(10)
+        .align(Alignment.TopEnd)
+        .width('100%')
       }
 
       // ---- 设置弹层 ----
+      // 画面比例等设置放在这里，游玩时也能调（改完立即生效，无需重启 VM）。
       if (this.showSettings) {
         Column() {
           Column({ space: Theme.gap }) {
@@ -623,6 +659,35 @@ struct Index {
             }
             .width('100%')
 
+            // ---- 画面比例 ----
+            Column({ space: 8 }) {
+              Text('画面比例').fontSize(14).fontColor(Theme.textPri()).width('100%')
+              Text('PS2 原生为 4:3。横屏时拉伸不明显；竖屏拉伸较明显。')
+                .fontSize(11).fontColor(Theme.textDim()).width('100%')
+
+              ForEach([0, 1, 2, 3], (m: number) => {
+                Row() {
+                  Text(this.aspectLabel(m)).fontSize(13)
+                    .fontColor(this.aspectMode === m ? Theme.accentHi() : Theme.textSec())
+                    .layoutWeight(1)
+                  if (this.aspectMode === m) {
+                    Text('✓').fontSize(14).fontColor(Theme.accentHi())
+                  }
+                }
+                .width('100%')
+                .padding({ top: 10, bottom: 10 })
+                .backgroundColor(this.aspectMode === m ? Theme.bgCardHi() : Color.Transparent)
+                .borderRadius(Theme.radiusSm)
+                .onClick(() => { this.setAspect(m); })
+              })
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(Theme.bgCard())
+            .borderRadius(Theme.radius)
+            .border({ width: 1, color: Theme.border() })
+
+            // ---- 虚拟按键 ----
             Column({ space: 10 }) {
               Text('虚拟按键').fontSize(14).fontColor(Theme.textPri()).width('100%')
               Row() {
@@ -639,39 +704,13 @@ struct Index {
             .borderRadius(Theme.radius)
             .border({ width: 1, color: Theme.border() })
 
-            // ---- 画面比例 ----
-            Column({ space: 10 }) {
-              Text('画面比例').fontSize(14).fontColor(Theme.textPri()).width('100%')
-              Text('PS2 原生为 4:3。横屏时拉伸不明显，竖屏拉伸较明显。')
-                .fontSize(11).fontColor(Theme.textDim()).width('100%')
-
-              ForEach([0, 1, 2, 3], (m: number) => {
-                Row() {
-                  Text(this.aspectLabel(m)).fontSize(13)
-                    .fontColor(this.aspectMode === m ? Theme.accentHi() : Theme.textSec())
-                    .layoutWeight(1)
-                  if (this.aspectMode === m) {
-                    Text('✓').fontSize(14).fontColor(Theme.accentHi())
-                  }
-                }
-                .width('100%')
-                .padding({ top: 10, bottom: 10 })
-                .onClick(() => { this.setAspect(m); })
-              })
-            }
-            .width('100%')
-            .padding(Theme.pad)
-            .backgroundColor(Theme.bgCard())
-            .borderRadius(Theme.radius)
-            .border({ width: 1, color: Theme.border() })
-
-            Text('提示：接入手柄后建议关闭虚拟按键，避免遮挡画面。')
+            Text('提示：接入手柄后可关闭虚拟按键，避免遮挡画面。')
               .fontSize(11).fontColor(Theme.textDim()).width('100%')
 
             Blank()
           }
-          .width('85%')
-          .height('70%')
+          .width('88%')
+          .height('76%')
           .padding(Theme.pad)
           .backgroundColor(Theme.bgBase())
           .borderRadius(Theme.radius)
