@@ -40,34 +40,34 @@ export struct VirtualPad {
   @State rsy: number = 0;
 
   // ---- 尺寸（vp，按屏幕大小自适应但有上下限，避免极小或极大屏上失调）----
-  private get btn(): number {
+  private btn(): number {
     const base = this.landscape ? this.vpH * 0.085 : this.vpW * 0.095;
     return Math.max(30, Math.min(52, base));
   }
-  private get stickR(): number {
+  private stickR(): number {
     const base = this.landscape ? this.vpH * 0.15 : this.vpW * 0.19;
     return Math.max(26, Math.min(46, base));
   }
-  private get stickBox(): number { return this.stickR * 2.4; }
-  private get barW(): number { return this.btn * 1.5; }
-  private get barH(): number { return Math.max(24, this.btn * 0.62); }
-  private get gap(): number { return Math.max(4, this.btn * 0.12); }
+  private stickBox(): number { return this.stickR() * 2.4; }
+  private barW(): number { return this.btn() * 1.5; }
+  private barH(): number { return Math.max(24, this.btn() * 0.62); }
+  private gap(): number { return Math.max(4, this.btn() * 0.12); }
 
   // ---- 坐标计算 ----
   /** 顶部肩键条的 y */
-  private get barY(): number { return this.gap + 6; }
+  private barY(): number { return this.gap() + 6; }
   /** 十字键/四键区的中心 y */
-  private get midY(): number {
+  private midY(): number {
     return this.landscape ? this.vpH * 0.50 : this.vpH * 0.40;
   }
   /** 摇杆中心 y */
-  private get stickY(): number {
+  private stickY(): number {
     return this.landscape ? this.vpH * 0.80 : this.vpH * 0.82;
   }
   /** 左侧控件中心 x */
-  private get leftX(): number { return this.landscape ? this.vpW * 0.15 : this.vpW * 0.22; }
+  private leftX(): number { return this.landscape ? this.vpW * 0.15 : this.vpW * 0.22; }
   /** 右侧控件中心 x */
-  private get rightX(): number { return this.landscape ? this.vpW * 0.85 : this.vpW * 0.78; }
+  private rightX(): number { return this.landscape ? this.vpW * 0.85 : this.vpW * 0.78; }
 
   /** 把中心点换成左上角坐标 */
   private left(cx: number, w: number): number { return cx - w / 2; }
@@ -78,15 +78,15 @@ export struct VirtualPad {
   @Builder
   padButton(label: string, code: number, cx: number, cy: number) {
     Text(label)
-      .fontSize(this.btn * 0.42)
+      .fontSize(this.btn() * 0.42)
       .fontColor('#FFFFFF')
       .textAlign(TextAlign.Center)
-      .width(this.btn)
-      .height(this.btn)
-      .borderRadius(this.btn / 2)
+      .width(this.btn())
+      .height(this.btn())
+      .borderRadius(this.btn() / 2)
       .backgroundColor('#40FFFFFF')
       .border({ width: 1, color: '#80FFFFFF' })
-      .position({ x: this.left(cx, this.btn), y: this.top(cy, this.btn) })
+      .position({ x: this.left(cx, this.btn()), y: this.top(cy, this.btn()) })
       .onTouch((e: TouchEvent) => {
         if (e.type === TouchType.Down) {
           hps2core.vpadButton(code, true);
@@ -99,15 +99,15 @@ export struct VirtualPad {
   @Builder
   bar(label: string, code: number, isTrigger: boolean, cx: number, cy: number) {
     Text(label)
-      .fontSize(this.barH * 0.44)
+      .fontSize(this.barH() * 0.44)
       .fontColor('#FFFFFF')
       .textAlign(TextAlign.Center)
-      .width(this.barW)
-      .height(this.barH)
+      .width(this.barW())
+      .height(this.barH())
       .borderRadius(6)
       .backgroundColor('#40FFFFFF')
       .border({ width: 1, color: '#80FFFFFF' })
-      .position({ x: this.left(cx, this.barW), y: this.top(cy, this.barH) })
+      .position({ x: this.left(cx, this.barW()), y: this.top(cy, this.barH()) })
       .onTouch((e: TouchEvent) => {
         const down = (e.type === TouchType.Down);
         const up = (e.type === TouchType.Up || e.type === TouchType.Cancel);
@@ -126,23 +126,23 @@ export struct VirtualPad {
   stick(isLeft: boolean, cx: number, cy: number) {
     Stack() {
       Circle()
-        .width(this.stickBox)
-        .height(this.stickBox)
+        .width(this.stickBox())
+        .height(this.stickBox())
         .fill('#18FFFFFF')
         .stroke('#60FFFFFF')
         .strokeWidth(1)
       Circle()
-        .width(this.stickR)
-        .height(this.stickR)
+        .width(this.stickR())
+        .height(this.stickR())
         .fill('#66FFFFFF')
         .offset({
           x: isLeft ? this.lsx : this.rsx,
           y: isLeft ? this.lsy : this.rsy
         })
     }
-    .width(this.stickBox)
-    .height(this.stickBox)
-    .position({ x: this.left(cx, this.stickBox), y: this.top(cy, this.stickBox) })
+    .width(this.stickBox())
+    .height(this.stickBox())
+    .position({ x: this.left(cx, this.stickBox()), y: this.top(cy, this.stickBox()) })
     .onTouch((e: TouchEvent) => {
       if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
         // 回中：轴值必须归零，否则摇杆卡在最后位置
@@ -161,14 +161,14 @@ export struct VirtualPad {
         return;
       }
       const t = e.touches[0];
-      const c = this.stickBox / 2;
+      const c = this.stickBox() / 2;
       let dx = t.x - c;
       let dy = t.y - c;
 
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > this.stickR) {
-        dx = dx * this.stickR / dist;
-        dy = dy * this.stickR / dist;
+      if (dist > this.stickR()) {
+        dx = dx * this.stickR() / dist;
+        dy = dy * this.stickR() / dist;
       }
 
       if (isLeft) {
@@ -177,8 +177,8 @@ export struct VirtualPad {
         this.rsx = dx; this.rsy = dy;
       }
 
-      const ax = Math.round(dx / this.stickR * 32767);
-      const ay = Math.round(dy / this.stickR * 32767);
+      const ax = Math.round(dx / this.stickR() * 32767);
+      const ay = Math.round(dy / this.stickR() * 32767);
       if (isLeft) {
         hps2core.vpadAxis(VpadAxis.LEFTX, ax);
         hps2core.vpadAxis(VpadAxis.LEFTY, ay);
@@ -192,26 +192,26 @@ export struct VirtualPad {
   /** 十字键（以 (cx,cy) 为中心） */
   @Builder
   dpad(cx: number, cy: number) {
-    this.padButton('▲', VpadButton.DPAD_UP, cx, cy - this.btn - this.gap)
-    this.padButton('▼', VpadButton.DPAD_DOWN, cx, cy + this.btn + this.gap)
-    this.padButton('◀', VpadButton.DPAD_LEFT, cx - this.btn - this.gap, cy)
-    this.padButton('▶', VpadButton.DPAD_RIGHT, cx + this.btn + this.gap, cy)
+    this.padButton('▲', VpadButton.DPAD_UP, cx, cy - this.btn() - this.gap())
+    this.padButton('▼', VpadButton.DPAD_DOWN, cx, cy + this.btn() + this.gap())
+    this.padButton('◀', VpadButton.DPAD_LEFT, cx - this.btn() - this.gap(), cy)
+    this.padButton('▶', VpadButton.DPAD_RIGHT, cx + this.btn() + this.gap(), cy)
   }
 
   /** 四键（△上 ○右 ×下 □左，按 PS2 实际布局） */
   @Builder
   face(cx: number, cy: number) {
-    this.padButton('△', VpadButton.NORTH, cx, cy - this.btn - this.gap)
-    this.padButton('×', VpadButton.SOUTH, cx, cy + this.btn + this.gap)
-    this.padButton('□', VpadButton.WEST, cx - this.btn - this.gap, cy)
-    this.padButton('○', VpadButton.EAST, cx + this.btn + this.gap, cy)
+    this.padButton('△', VpadButton.NORTH, cx, cy - this.btn() - this.gap())
+    this.padButton('×', VpadButton.SOUTH, cx, cy + this.btn() + this.gap())
+    this.padButton('□', VpadButton.WEST, cx - this.btn() - this.gap(), cy)
+    this.padButton('○', VpadButton.EAST, cx + this.btn() + this.gap(), cy)
   }
 
   /**
    * 尺寸/坐标发生变化时打印一次诊断（便于定位布局问题）。
    *
    * 【教训】此前的写法把诊断放在 aboutToAppear() 里并直接调用
-   * this.btn / this.midY 等 getter —— 而那时父组件还没把 @Prop
+   * this.btn() / this.midY() 等 getter —— 而那时父组件还没把 @Prop
    * vpW/vpH 传进来，getter 基于 undefined 计算，Diagnostic 本身
    * 抛了 TypeError：
    *   TypeError: Cannot read property toFixed of undefined
@@ -230,9 +230,9 @@ export struct VirtualPad {
     VirtualPad.diagDone = true;
     const f = (v: number): string => (Number.isFinite(v) ? v.toFixed(1) : 'n/a');
     console.info(`HPS2_VPAD_LAYOUT: vp=${this.vpW}x${this.vpH} ` +
-      `landscape=${this.landscape} btn=${f(this.btn)} ` +
-      `midY=${f(this.midY)} stickY=${f(this.stickY)} ` +
-      `leftX=${f(this.leftX)} rightX=${f(this.rightX)}`);
+      `landscape=${this.landscape} btn=${f(this.btn())} ` +
+      `midY=${f(this.midY())} stickY=${f(this.stickY())} ` +
+      `leftX=${f(this.leftX())} rightX=${f(this.rightX())}`);
   }
 
   build() {
@@ -242,23 +242,23 @@ export struct VirtualPad {
       // 约束，等于把刚消除的问题引回来。
       // 左侧：L1 / L2 并排，整体以 leftX 为中心；右侧同理。
       this.bar('L1', VpadButton.LEFT_SHOULDER, false,
-        this.leftX - (this.barW + this.gap) / 2, this.barY)
+        this.leftX() - (this.barW() + this.gap()) / 2, this.barY())
       this.bar('L2', VpadAxis.LEFT_TRIGGER, true,
-        this.leftX + (this.barW + this.gap) / 2, this.barY)
+        this.leftX() + (this.barW() + this.gap()) / 2, this.barY())
       this.bar('R2', VpadAxis.RIGHT_TRIGGER, true,
-        this.rightX - (this.barW + this.gap) / 2, this.barY)
+        this.rightX() - (this.barW() + this.gap()) / 2, this.barY())
       this.bar('R1', VpadButton.RIGHT_SHOULDER, false,
-        this.rightX + (this.barW + this.gap) / 2, this.barY)
+        this.rightX() + (this.barW() + this.gap()) / 2, this.barY())
 
       // ---- 十字键 ----
-      this.dpad(this.leftX, this.midY)
+      this.dpad(this.leftX(), this.midY())
 
       // ---- 四键 ----
-      this.face(this.rightX, this.midY)
+      this.face(this.rightX(), this.midY())
 
       // ---- 双摇杆 ----
-      this.stick(true, this.leftX, this.stickY)
-      this.stick(false, this.rightX, this.stickY)
+      this.stick(true, this.leftX(), this.stickY())
+      this.stick(false, this.rightX(), this.stickY())
     }
     // 用**显式尺寸**而非 '100%'：
     // 绝对定位的子元素不参与父容器尺寸计算，若外层又是百分比链，

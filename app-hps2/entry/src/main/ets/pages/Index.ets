@@ -636,8 +636,17 @@ struct Index {
       }
 
       // ---- 游玩页悬浮控制条 ----
+      //
+      // 【修正】此前把 .align(Alignment.TopEnd) 写在 Row 子组件上 —— 但
+      // ArkUI 中 .align() 是 **Stack 容器**的属性，作用于子组件无效，
+      // 于是控制条落在 Stack 的默认对齐位置（居中），不在顶部。
+      // 真机表现为"运行状态显示位置不对，没在顶部"。
+      //
+      // 现改用全屏 Column + justifyContent/alignItems 明确把它钉在右上角，
+      // 不依赖 Stack 的对齐语义。
       if (this.viewMode === 'game') {
-        Row({ space: 10 }) {
+        Column() {
+          Row({ space: 10 }) {
           Text(this.statusRunning ? '运行中' : this.statusStage)
             .fontSize(11)
             .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
@@ -663,10 +672,14 @@ struct Index {
                 // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
                 this.setImmersive(false);
               })
+          }
+          .padding(10)
         }
-        .padding(10)
-        .align(Alignment.TopEnd)
         .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Start)
+        .alignItems(HorizontalAlign.End)
+        .hitTestBehavior(HitTestMode.Transparent)
       }
 
       // ---- 设置弹层 ----
