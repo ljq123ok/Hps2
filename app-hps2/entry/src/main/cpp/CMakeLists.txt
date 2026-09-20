@@ -104,6 +104,13 @@ add_library(hps2core SHARED
     hps2_video.cpp
 )
 
+# 不把开发机绝对路径编进发布 HAP 的 native 字符串（包括 __FILE__）。
+# 上游 ARMSX2 静态库由独立构建目录使用同等映射编译；这里覆盖本应用
+# 自己的 native 源文件，保证两层产物都不暴露本机用户名和工作区路径。
+target_compile_options(hps2core PRIVATE
+    "-ffile-prefix-map=${HPS2_REPO}=hps2-src"
+)
+
 # 核心静态库（整体链接，避免部分符号缺失）
 target_link_libraries(hps2core PUBLIC
     -Wl,--whole-archive
