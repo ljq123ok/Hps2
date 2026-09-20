@@ -23,6 +23,24 @@ const TAG = 'HPS2_CORE';
 
 export class Immersive {
   /**
+   * 设置游玩时的窗口方向。
+   * 游戏固定使用横屏；离开游戏时恢复跟随系统传感器。
+   */
+  static async setGameOrientation(inGame: boolean, ctx: common.UIAbilityContext): Promise<void> {
+    try {
+      const win: window.Window = await window.getLastWindow(ctx);
+      await win.setPreferredOrientation(
+        inGame ? window.Orientation.LANDSCAPE : window.Orientation.AUTO_ROTATION);
+      hilog.info(DOMAIN, TAG, 'Immersive.setGameOrientation(%{public}d) applied',
+        inGame ? 1 : 0);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setGameOrientation(%{public}d) failed: %{public}s',
+        inGame ? 1 : 0, err.message);
+    }
+  }
+
+  /**
    * 开关沉浸式全屏。
    *
    * @param enable true=隐藏系统栏并全屏布局；false=恢复系统栏

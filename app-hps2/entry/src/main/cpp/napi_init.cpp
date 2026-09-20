@@ -30,6 +30,7 @@
 #include <hilog/log.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>   // getenv/setenv
 #include <chrono>
 #include <mutex>
@@ -68,6 +69,7 @@
 #include "cpuinfo.h"      // 芯片拓扑探测
 #include "R5900.h"   // cpuRegs（EE 程序计数器）+ Cpu/intCpu（判定是否被静默降级）
 #include "VMManager.h"
+#include "Input/InputManager.h"
 #include "GS/GS.h"
 
 #include "hps2_jitcheck.h"   // JIT 能力自检（启动前 + 运行期复检，不降级）
@@ -378,6 +380,11 @@ bool InitializeConfig() {
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", false);
 
 	VMManager::Internal::LoadStartupSettings();
+	// Keep the selected multiplier in the same settings layer that the later
+	// VMManager::ApplySettings() reloads.  The CPU-thread injection below is
+	// still needed because this frontend has no persistent PCSX2 ini file.
+	s_settings_interface.SetFloatValue("EmuCore/GS", "upscale_multiplier",
+		Hps2Video::GetUpscaleMultiplier());
 	return true;
 }
 
@@ -389,6 +396,11 @@ void VMThreadMain() {
 	}
 
 	VMManager::ApplySettings();
+	// Apply the frontend-selected graphics values before VMManager::Initialize()
+	// opens GS.  Calling MTGS::ApplySettings() after initialization was both too
+	// late to guarantee the initial render-target size and a source of delayed
+	// renderer crashes on this device.
+	Hps2Video::ApplyPendingConfigBeforeVM();
 
 	VMBootParameters params;
 	if (!s_game_path.empty())
@@ -416,6 +428,8 @@ void VMThreadMain() {
 		SetStage(BootStage::kFailed);
 		return;
 	}
+	LOGI("GS initialized with upscale emu=%{public}f gs=%{public}f",
+		EmuConfig.GS.UpscaleMultiplier, GSConfig.UpscaleMultiplier);
 
 	// ---------------------------------------------------------------------
 	// 重编译器断言（拦截上游的"静默降级到解释器"）
@@ -469,16 +483,37 @@ void VMThreadMain() {
 	//
 	// 到这里时 VMManager::Initialize() 已完成，输入源必然存在。
 	// ---------------------------------------------------------------------
-	if (Hps2VPad::IsReady()) {
-		if (Hps2VPad::MapToPadPort(0))
-			LOGI("virtual pad mapped to port 0");
-		else
-			LOGW("virtual pad mapping failed (see HPS2_VPAD)");
+	// The virtual joystick-added event is queued by SDL. Drain it through
+	// PCSX2's SDL input source before asking for the player-id mapping;
+	// otherwise the source exists but still has an empty controller list and
+	// MapController() silently has nothing to bind. The UI creates the
+	// virtual pad just after startBios(), so retry briefly to cover either
+	// ordering without polling the input manager before VM init.
+	bool virtual_pad_mapped = false;
+	for (int attempt = 0; attempt < 20 && !virtual_pad_mapped; attempt++) {
+		if (Hps2VPad::IsReady()) {
+			InputManager::PollSources();
+			virtual_pad_mapped = Hps2VPad::MapToPadPort(0);
+		}
+		if (!virtual_pad_mapped)
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
+	if (virtual_pad_mapped)
+		LOGI("virtual pad mapped to port 0");
+	else
+		LOGW("virtual pad mapping failed after retry window (see HPS2_VPAD)");
 
 	LOGI("VM initialized; resuming execution");
 	SetStage(BootStage::kRunning);
-	VMManager::SetLimiterMode(LimiterModeType::Unlimited);
+	// Keep the emulated console clock at its nominal NTSC/PAL cadence.
+	//
+	// This must not be Unlimited: on a 120 Hz phone display, Unlimited lets the
+	// EE/GS loop run as fast as the host can execute it.  That also makes SPU2
+	// produce audio too quickly, so both gameplay and audio become faster than
+	// the PS2's 59.94/50 Hz timing.  VSync controls presentation, but the
+	// nominal frame limiter is what keeps the emulated clock correct.
+	VMManager::SetLimiterMode(LimiterModeType::Nominal);
+	LOGI("emulation limiter set to nominal (PS2 video timing), independent of host display refresh");
 
 	// ---------------------------------------------------------------------
 	// 关键：解除暂停
@@ -848,6 +883,45 @@ static napi_value NapiMapVirtualPad(napi_env env, napi_callback_info info) {
 	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
 }
 
+// enumerateControllers() -> JSON array of SDL real controllers
+static napi_value NapiEnumerateControllers(napi_env env, napi_callback_info info) {
+	const std::string json = Hps2VPad::EnumerateControllersJson();
+	napi_value r;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &r);
+	return r;
+}
+
+// mapController(device, port) -> 1/0
+static napi_value NapiMapController(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	if (argc < 2)
+	{
+		napi_value r;
+		napi_create_int32(env, 0, &r);
+		return r;
+	}
+
+	size_t length = 0;
+	if (napi_get_value_string_utf8(env, argv[0], nullptr, 0, &length) != napi_ok || length == 0)
+	{
+		napi_value r;
+		napi_create_int32(env, 0, &r);
+		return r;
+	}
+	std::string device(length + 1, '\0');
+	napi_get_value_string_utf8(env, argv[0], device.data(), length + 1, &length);
+	device.resize(length);
+
+	int32_t port = 0;
+	napi_get_value_int32(env, argv[1], &port);
+	const bool ok = Hps2VPad::MapControllerToPadPort(device, port);
+	napi_value r;
+	napi_create_int32(env, ok ? 1 : 0, &r);
+	return r;
+}
+
 // setButton(button, pressed) —— button 为 SDL_GAMEPAD_BUTTON_*
 static napi_value NapiVpadButton(napi_env env, napi_callback_info info) {
 	size_t argc = 2;
@@ -906,6 +980,30 @@ static napi_value NapiSetAspectMode(napi_env env, napi_callback_info info) {
 static napi_value NapiGetAspectMode(napi_env env, napi_callback_info info) {
 	napi_value r;
 	napi_create_int32(env, static_cast<int32_t>(Hps2Video::GetAspectMode()), &r);
+	return r;
+}
+
+// setUpscaleMultiplier(multiplier) -> 1/0
+// 1.0=原生，允许范围 1.0..4.0；具体上限仍由 GS 根据设备纹理能力钳制。
+static napi_value NapiSetUpscaleMultiplier(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	double value = 1.0;
+	if (argc >= 1)
+		napi_get_value_double(env, argv[0], &value);
+
+	const bool ok = Hps2Video::SetUpscaleMultiplier(static_cast<float>(value));
+	napi_value r;
+	napi_create_int32(env, ok ? 1 : 0, &r);
+	return r;
+}
+
+// getUpscaleMultiplier() -> number
+static napi_value NapiGetUpscaleMultiplier(napi_env env, napi_callback_info info) {
+	napi_value r;
+	napi_create_double(env, static_cast<double>(Hps2Video::GetUpscaleMultiplier()), &r);
 	return r;
 }
 
@@ -1017,6 +1115,8 @@ static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
 	json += ",\"stageName\":\"" + std::string(StageName(static_cast<BootStage>(stage))) + "\"";
 	json += ",\"running\":" + std::string(g_vm_running.load() ? "true" : "false");
 	json += ",\"error\":\"" + esc(err) + "\"";
+	const float fps = g_vm_running.load() ? PerformanceMetrics::GetFPS() : 0.0f;
+	json += ",\"fps\":" + std::to_string(std::isfinite(fps) && fps > 0.0f ? fps : 0.0f);
 
 	// JIT 状态一并上报：UI 需要在不启动的情况下也能显示"当前是否可用"。
 	{
@@ -1061,10 +1161,14 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"initVirtualPad", nullptr, NapiInitVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"mapVirtualPad", nullptr, NapiMapVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"enumerateControllers", nullptr, NapiEnumerateControllers, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"mapController", nullptr, NapiMapController, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"vpadButton", nullptr, NapiVpadButton, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"vpadAxis", nullptr, NapiVpadAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setAspectMode", nullptr, NapiSetAspectMode, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getAspectMode", nullptr, NapiGetAspectMode, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setUpscaleMultiplier", nullptr, NapiSetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"getUpscaleMultiplier", nullptr, NapiGetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"notifyResize", nullptr, NapiNotifyResize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},

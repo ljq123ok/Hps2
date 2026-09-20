@@ -2,9 +2,9 @@
 #
 # 真机验证一键脚本：构建 → 签名 → 安装 → 运行 → 抓证据
 #
-# 前提：DevEco 已为本工程生成签名材料（File > Project Structure >
-#       Signing Configs > Automatically generate signature）。
-#       材料会被写入本工程 build-profile.json5 的 signingConfigs。
+# 前提：签名材料只从本机环境读取，不写入仓库。
+#       可先配置 HPS2_SIGN_DIR、HPS2_KEY_ALIAS、HPS2_KEY_PWD；
+#       HPS2_SIGN_DIR 内应包含 app.p12、app.cer、app.p7b。
 #
 # 用法： bash scripts/verify-on-device.sh [hdc-target]
 set -euo pipefail
@@ -39,22 +39,26 @@ UNSIGNED="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
 SIGNED="$ROOT/entry/build/default/outputs/default/entry-default-signed.hap"
 OUT_HAP="${SIGNED}"
 if [[ ! -f "$OUT_HAP" ]]; then
-  echo "==> hvigor 未产出已签名 HAP，改用 build-profile.json5 中的材料手动签名"
-  M="$ROOT/build-profile.json5"
-  CER=$(python3 -c "import re;print(re.search(r'\"certpath\":\s*\"([^\"]+)\"',open('$M').read()).group(1))")
-  P7B=$(python3 -c "import re;print(re.search(r'\"profile\":\s*\"([^\"]+)\"',open('$M').read()).group(1))")
-  P12=$(python3 -c "import re;print(re.search(r'\"storeFile\":\s*\"([^\"]+)\"',open('$M').read()).group(1))")
-  ALIAS=$(python3 -c "import re;print(re.search(r'\"keyAlias\":\s*\"([^\"]+)\"',open('$M').read()).group(1))")
-  SPW=$(python3 -c "import re;print(re.search(r'\"storePassword\":\s*\"([0-9A-F]+)\"',open('$M').read()).group(1))")
-  KPW=$(python3 -c "import re;print(re.search(r'\"keyPassword\":\s*\"([0-9A-F]+)\"',open('$M').read()).group(1))")
-  MATDIR="$(dirname "$P12")"
-  "$NODE" "$ROOT/scripts/devpwd.js" "$SPW" "$MATDIR" >/dev/null; SP=$(cat /tmp/hps2_pwd.txt)
-  "$NODE" "$ROOT/scripts/devpwd.js" "$KPW" "$MATDIR" >/dev/null; KP=$(cat /tmp/hps2_pwd.txt)
+  echo "==> hvigor 未产出已签名 HAP，使用本机外部签名材料"
+  SIGN_DIR="\${HPS2_SIGN_DIR:-}"
+  KEY_PWD="\${HPS2_KEY_PWD:-}"
+  ALIAS="\${HPS2_KEY_ALIAS:-app}"
+  [[ -n "$SIGN_DIR" ]] || {
+    echo "请设置 HPS2_SIGN_DIR（目录内包含 app.p12/app.cer/app.p7b）" >&2
+    exit 1
+  }
+  [[ -n "$KEY_PWD" ]] || {
+    echo "请设置 HPS2_KEY_PWD（签名材料口令）" >&2
+    exit 1
+  }
+  CER="$SIGN_DIR/app.cer"
+  P7B="$SIGN_DIR/app.p7b"
+  P12="$SIGN_DIR/app.p12"
   OUT_HAP="$ROOT/entry/build/default/outputs/default/entry-default-manualsigned.hap"
   "$JAVA" -jar "$TOOL" sign-app -mode localSign \
-    -keyAlias "$ALIAS" -keyPwd "$KP" -appCertFile "$CER" \
+    -keyAlias "$ALIAS" -keyPwd "$KEY_PWD" -appCertFile "$CER" \
     -profileFile "$P7B" -profileSigned 1 -inFile "$UNSIGNED" \
-    -signAlg SHA256withECDSA -keystoreFile "$P12" -keystorePwd "$SP" \
+    -signAlg SHA256withECDSA -keystoreFile "$P12" -keystorePwd "$KEY_PWD" \
     -outFile "$OUT_HAP" 2>&1 | tail -2
 fi
 echo "==> 待安装: $OUT_HAP"

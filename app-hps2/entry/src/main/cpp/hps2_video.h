@@ -42,6 +42,20 @@ namespace Hps2Video
 	/// 读取当前模式。
 	AspectMode GetAspectMode();
 
+	/// 设置内部渲染倍率（1.0 为原生分辨率）。运行时记录为待应用值，
+	/// 由 VM CPU 线程安全应用，避免从 ArkUI 线程直接调用 MTGS。
+	bool SetUpscaleMultiplier(float multiplier);
+
+	/// 在 VM CPU 线程调用，把待应用倍率提交给 GS。
+	void ApplyPendingSettingsOnCPUThread();
+
+	/// 在 VMManager::ApplySettings() 之后、VMManager::Initialize() 之前调用。
+	/// 此时 GS 尚未打开，只写入启动配置，保证 GS 第一次创建时就使用前端选择的倍率。
+	void ApplyPendingConfigBeforeVM();
+
+	/// 读取当前内部渲染倍率。
+	float GetUpscaleMultiplier();
+
 	/// 屏幕方向变化后调用：把新的窗口尺寸通知 GS，让它重建视口与投影。
 	///
 	/// 为什么必须调：GS 的正交投影与视口是用 WindowInfo 的尺寸算的

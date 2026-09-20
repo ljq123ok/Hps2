@@ -14,7 +14,7 @@
 
 排查中发现本机另一个工程带有**可用的 DevEco 生成签名配置**：
 
-`<USER_HOME>/Documents/deepseek/harmony-vpn/apps/arktunnel/build-profile.json5`
+`<OTHER_PROJECT_ROOT>/harmony-vpn/apps/arktunnel/build-profile.json5`
 
 ```json5
 "signingConfigs": [{
@@ -98,7 +98,7 @@ E BMSInstaller: base_bundle_installer.cpp:ParseHapFiles:5632
 已确认本机**不存在**其它可用 profile：
 
 ```bash
-$ find <USER_HOME> -name "*.p7b" -type f      # 全盘搜索
+$ find "$HOME" -name "*.p7b" -type f      # 本机搜索
 （仅 ~/.ohos/config/default_arktunnel_*.p7b 与其自身）
 ```
 
@@ -112,7 +112,7 @@ $ find <USER_HOME> -name "*.p7b" -type f      # 全盘搜索
 
 ```
 1. 用 DevEco Studio 打开工程：
-   <USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe
+   <REPO_ROOT>/stage1-jitprobe
 2. File > Project Structure > Signing Configs
 3. 勾选 "Automatically generate signature"
 4. 点 OK
@@ -153,7 +153,7 @@ SELinux/XPM 拒绝记录，输出到 `docs/evidence/`。
 
 | 项目 | 状态 |
 |---|---|
-| 工程路径纯英文（hvigor 拒绝中文路径） | ✅ `<USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe` |
+| 工程路径纯英文（hvigor 拒绝中文路径） | ✅ `<REPO_ROOT>/stage1-jitprobe` |
 | 工程结构完整（可被 DevEco 直接打开） | ✅ 全部配置文件就位 |
 | `targetSdkVersion` / `compatibleSdkVersion` | ✅ `6.1.1(24)` / `6.0.0(20)` |
 | 探针自动运行（无需手动点按钮） | ✅ `aboutToAppear` 中调用 `runTests()` |

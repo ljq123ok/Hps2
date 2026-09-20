@@ -16,6 +16,7 @@ stage1-jitprobe/host-test/encode_check
 
 # macOS
 .DS_Store
+.idea/
 
 # 签名材料 —— 绝不入库
 *.p12

@@ -32,26 +32,64 @@ export struct VirtualPad {
   /** XComponent 实测高度（vp） */
   @Prop vpH: number = 674;
 
-  private static diagDone: boolean = false;
+  /**
+   * The parent surface can resize after this component is created (entering
+   * immersive mode and rotating are both real examples).  ArkUI may keep the
+   * initial @Prop snapshot for a custom component, so use the overlay's own
+   * measured size as the authoritative value once it is available.
+   */
+  @State measuredW: number = 0;
+  @State measuredH: number = 0;
+
+  private static diagW: number = 0;
+  private static diagH: number = 0;
+  private static diagLandscape: boolean = false;
 
   @State lsx: number = 0;
   @State lsy: number = 0;
   @State rsx: number = 0;
   @State rsy: number = 0;
 
+  // Keep each stick attached to the finger that started it.  Using
+  // touches[0] loses as soon as another finger is down (for example while
+  // holding a face button), and can make the stick appear to point in one
+  // constant direction.
+  private leftTouchId: number = -1;
+  private rightTouchId: number = -1;
+
+  private layoutW(): number {
+    return this.measuredW > 0 ? this.measuredW : this.vpW;
+  }
+
+  private layoutH(): number {
+    return this.measuredH > 0 ? this.measuredH : this.vpH;
+  }
+
   // ---- 尺寸（vp，按屏幕大小自适应但有上下限，避免极小或极大屏上失调）----
   private btn(): number {
-    const base = this.landscape ? this.vpH * 0.085 : this.vpW * 0.095;
+    const base = this.isPortraitFit() ? this.layoutW() * 0.095 : this.layoutH() * 0.085;
     return Math.max(30, Math.min(52, base));
   }
   private stickR(): number {
-    const base = this.landscape ? this.vpH * 0.15 : this.vpW * 0.19;
+    const base = this.isPortraitFit() ? this.layoutW() * 0.19 : this.layoutH() * 0.15;
     return Math.max(26, Math.min(46, base));
   }
   private stickBox(): number { return this.stickR() * 2.4; }
   private barW(): number { return this.btn() * 1.5; }
   private barH(): number { return Math.max(24, this.btn() * 0.62); }
   private gap(): number { return Math.max(4, this.btn() * 0.12); }
+
+  /**
+   * The face/d-pad and shoulder groups need a little more inset than a
+   * joystick.  Their outer edges are wider than their center point, so using
+   * the joystick center for all three groups clips the outer buttons on a
+   * portrait surface (for 440x674 the old L1/R1 edges were -8/448).
+   */
+  private controlInset(): number {
+    const dpadHalf = this.btn() * 1.5 + this.gap();
+    const shoulderHalf = this.barW() + this.gap() / 2;
+    return Math.max(dpadHalf, shoulderHalf) + this.gap();
+  }
 
   // ---- 画面区域与黑边（关键）----
   //
@@ -66,20 +104,20 @@ export struct VirtualPad {
   // 故两种方向分别处理。
 
   /** 画面是否按宽度铺满（竖屏）；否则按高度铺满（横屏） */
-  private isPortraitFit(): boolean { return this.vpH >= this.vpW; }
+  private isPortraitFit(): boolean { return this.layoutH() >= this.layoutW(); }
 
   /** 4:3 画面在本组件内的实际矩形（vp） */
   private contentTop(): number {
     if (this.isPortraitFit()) {
-      return (this.vpH - this.vpW * 0.75) / 2;
+      return (this.layoutH() - this.layoutW() * 0.75) / 2;
     }
     return 0;
   }
   private contentBottom(): number {
     if (this.isPortraitFit()) {
-      return this.vpH - this.contentTop();
+      return this.layoutH() - this.contentTop();
     }
-    return this.vpH;
+    return this.layoutH();
   }
 
   // ---- 坐标计算 ----
@@ -96,11 +134,11 @@ export struct VirtualPad {
       // 下黑边仅约 172vp，而十字键列高约 125vp、摇杆外框约 110vp ——
       // 两组放不下（实测核算会重叠 37vp）。因此把十字键/四键放黑边，
       // 摇杆另择位置（见 stickY）。
-      const bandH = this.vpH - this.contentBottom();
+      const bandH = this.layoutH() - this.contentBottom();
       return this.contentBottom() + bandH / 2;
     }
     // 横屏：画面高度中部
-    return this.vpH * 0.50;
+    return this.layoutH() * 0.50;
   }
 
   /** 摇杆中心 y */
@@ -111,25 +149,37 @@ export struct VirtualPad {
       return this.contentBottom() - this.stickBox() / 2 + 6;
     }
     // 横屏：叠在画面两侧的下方
-    return this.vpH * 0.80;
+    return this.layoutH() * 0.80;
   }
 
-  /** 左侧控件中心 x */
-  private leftX(): number {
+  /** Control-group centers; kept separate from the joystick centers. */
+  private controlLeftX(): number {
     if (this.isPortraitFit()) {
-      // 竖屏：左半屏，留出与屏幕边缘的间距
-      return this.btn() + this.gap() + 10;
+      return Math.max(this.controlInset(), this.layoutW() * 0.16);
     }
-    // 横屏：左黑边中心（黑边 79vp），按键略向画面方向偏移以免贴边
-    return Math.max(this.btn(), this.vpW * 0.11);
+    return Math.max(this.controlInset(), this.layoutW() * 0.11);
   }
 
-  /** 右侧控件中心 x */
-  private rightX(): number {
+  private controlRightX(): number {
+    return this.layoutW() - this.controlLeftX();
+  }
+
+  /** Joysticks can sit closer to the side edge because they are one object. */
+  private stickLeftX(): number {
+    return Math.max(this.stickBox() / 2 + this.gap(), this.layoutW() * 0.11);
+  }
+
+  private stickRightX(): number {
+    return this.layoutW() - this.stickLeftX();
+  }
+
+  /** Centered system buttons that were missing from the old virtual pad. */
+  private systemY(): number {
     if (this.isPortraitFit()) {
-      return this.vpW - this.btn() - this.gap() - 10;
+      const bandH = this.layoutH() - this.contentBottom();
+      return this.contentBottom() + bandH * 0.82;
     }
-    return Math.min(this.vpW - this.btn(), this.vpW * 0.89);
+    return this.layoutH() - this.barH() / 2 - this.gap() - 6;
   }
 
   /** 把中心点换成左上角坐标 */
@@ -175,12 +225,33 @@ export struct VirtualPad {
         const down = (e.type === TouchType.Down);
         const up = (e.type === TouchType.Up || e.type === TouchType.Cancel);
         if (isTrigger) {
-          // L2/R2 在 PCSX2 里是**轴**：按下给满量程、抬起归零
+          // L2/R2 在 PCSX2 里是**轴**：按下给满量程、抬起回到 SDL 轴底值
           if (down) { hps2core.vpadAxis(code, 32767); }
-          else if (up) { hps2core.vpadAxis(code, 0); }
+          else if (up) { hps2core.vpadAxis(code, VpadAxis.TRIGGER_REST); }
         } else {
           if (down) { hps2core.vpadButton(code, true); }
           else if (up) { hps2core.vpadButton(code, false); }
+        }
+      })
+  }
+
+  @Builder
+  systemButton(label: string, code: number, cx: number, cy: number) {
+    Text(label)
+      .fontSize(this.barH() * 0.38)
+      .fontColor('#FFFFFF')
+      .textAlign(TextAlign.Center)
+      .width(this.barW())
+      .height(this.barH())
+      .borderRadius(6)
+      .backgroundColor('#40FFFFFF')
+      .border({ width: 1, color: '#80FFFFFF' })
+      .position({ x: this.left(cx, this.barW()), y: this.top(cy, this.barH()) })
+      .onTouch((e: TouchEvent) => {
+        if (e.type === TouchType.Down) {
+          hps2core.vpadButton(code, true);
+        } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+          hps2core.vpadButton(code, false);
         }
       })
   }
@@ -207,26 +278,65 @@ export struct VirtualPad {
     .height(this.stickBox())
     .position({ x: this.left(cx, this.stickBox()), y: this.top(cy, this.stickBox()) })
     .onTouch((e: TouchEvent) => {
+      e.stopPropagation();
       if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+        const activeId = isLeft ? this.leftTouchId : this.rightTouchId;
+        const endedId = e.changedTouches.length > 0 ? e.changedTouches[0].id : activeId;
+        if (activeId >= 0 && endedId !== activeId) {
+          return;
+        }
         // 回中：轴值必须归零，否则摇杆卡在最后位置
         if (isLeft) {
           this.lsx = 0; this.lsy = 0;
+          this.leftTouchId = -1;
           hps2core.vpadAxis(VpadAxis.LEFTX, 0);
           hps2core.vpadAxis(VpadAxis.LEFTY, 0);
         } else {
           this.rsx = 0; this.rsy = 0;
+          this.rightTouchId = -1;
           hps2core.vpadAxis(VpadAxis.RIGHTX, 0);
           hps2core.vpadAxis(VpadAxis.RIGHTY, 0);
         }
         return;
       }
-      if (e.touches.length === 0) {
+
+      // Use the finger which changed in this event, then keep following its
+      // id on Move.  This avoids reading another finger from touches[0].
+      let t = e.changedTouches.length > 0 ? e.changedTouches[0] : e.touches[0];
+      if (e.type === TouchType.Down && t) {
+        if (isLeft) {
+          this.leftTouchId = t.id;
+        } else {
+          this.rightTouchId = t.id;
+        }
+      } else {
+        const activeId = isLeft ? this.leftTouchId : this.rightTouchId;
+        for (let i = 0; i < e.touches.length; i++) {
+          if (e.touches[i].id === activeId) {
+            t = e.touches[i];
+            break;
+          }
+        }
+      }
+      if (!t) {
         return;
       }
-      const t = e.touches[0];
-      const c = this.stickBox() / 2;
-      let dx = t.x - c;
-      let dy = t.y - c;
+
+      const box = this.stickBox();
+      const c = box / 2;
+      let localX = t.x;
+      let localY = t.y;
+
+      // x/y should be local to the event component.  On some absolute
+      // positioned ArkUI trees they arrive in window/pixel coordinates
+      // instead.  Detect that case and convert from the known stick origin.
+      if (localX < -box || localX > box * 2 || localY < -box || localY > box * 2) {
+        localX = t.windowX - this.left(cx, box);
+        localY = t.windowY - this.top(cy, box);
+      }
+
+      let dx = localX - c;
+      let dy = localY - c;
 
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > this.stickR()) {
@@ -284,18 +394,26 @@ export struct VirtualPad {
    * 现在改为在实测尺寸有效时才打印，并对每个值做数字兜底。
    */
   private logLayoutOnce(): void {
-    if (VirtualPad.diagDone)
+    const w = this.layoutW();
+    const h = this.layoutH();
+    const ls = !this.isPortraitFit();
+    if (VirtualPad.diagW === w && VirtualPad.diagH === h &&
+      VirtualPad.diagLandscape === ls)
       return;
     // 尺寸尚未就绪：静默等待下一次（不要在这里抛错）
-    if (!(this.vpW > 0) || !(this.vpH > 0))
+    if (!(w > 0) || !(h > 0))
       return;
 
-    VirtualPad.diagDone = true;
+    VirtualPad.diagW = w;
+    VirtualPad.diagH = h;
+    VirtualPad.diagLandscape = ls;
     const f = (v: number): string => (Number.isFinite(v) ? v.toFixed(1) : 'n/a');
-    console.info(`HPS2_VPAD_LAYOUT: vp=${this.vpW}x${this.vpH} ` +
-      `landscape=${this.landscape} btn=${f(this.btn())} ` +
+    console.info(`HPS2_VPAD_LAYOUT: vp=${w}x${h} ` +
+      `landscape=${ls} btn=${f(this.btn())} ` +
       `midY=${f(this.midY())} stickY=${f(this.stickY())} ` +
-      `leftX=${f(this.leftX())} rightX=${f(this.rightX())}`);
+      `controlLeftX=${f(this.controlLeftX())} controlRightX=${f(this.controlRightX())} ` +
+      `stickLeftX=${f(this.stickLeftX())} stickRightX=${f(this.stickRightX())} ` +
+      `systemY=${f(this.systemY())}`);
   }
 
   build() {
@@ -305,33 +423,50 @@ export struct VirtualPad {
       // 约束，等于把刚消除的问题引回来。
       // 左侧：L1 / L2 并排，整体以 leftX 为中心；右侧同理。
       this.bar('L1', VpadButton.LEFT_SHOULDER, false,
-        this.leftX() - (this.barW() + this.gap()) / 2, this.barY())
+        this.controlLeftX() - (this.barW() + this.gap()) / 2, this.barY())
       this.bar('L2', VpadAxis.LEFT_TRIGGER, true,
-        this.leftX() + (this.barW() + this.gap()) / 2, this.barY())
+        this.controlLeftX() + (this.barW() + this.gap()) / 2, this.barY())
       this.bar('R2', VpadAxis.RIGHT_TRIGGER, true,
-        this.rightX() - (this.barW() + this.gap()) / 2, this.barY())
+        this.controlRightX() - (this.barW() + this.gap()) / 2, this.barY())
       this.bar('R1', VpadButton.RIGHT_SHOULDER, false,
-        this.rightX() + (this.barW() + this.gap()) / 2, this.barY())
+        this.controlRightX() + (this.barW() + this.gap()) / 2, this.barY())
 
       // ---- 十字键 ----
-      this.dpad(this.leftX(), this.midY())
+      this.dpad(this.controlLeftX(), this.midY())
 
       // ---- 四键 ----
-      this.face(this.rightX(), this.midY())
+      this.face(this.controlRightX(), this.midY())
+
+      // ---- Select / Start ----
+      // These are separate SDL gamepad buttons (BACK/START), not labels on
+      // the status bar.  Keep them in the center gap so they do not steal
+      // touch space from the d-pad or face buttons.
+      this.systemButton('SELECT', VpadButton.BACK,
+        this.layoutW() / 2 - (this.barW() + this.gap()) / 2, this.systemY())
+      this.systemButton('START', VpadButton.START,
+        this.layoutW() / 2 + (this.barW() + this.gap()) / 2, this.systemY())
 
       // ---- 双摇杆 ----
-      this.stick(true, this.leftX(), this.stickY())
-      this.stick(false, this.rightX(), this.stickY())
+      this.stick(true, this.stickLeftX(), this.stickY())
+      this.stick(false, this.stickRightX(), this.stickY())
     }
-    // 用**显式尺寸**而非 '100%'：
-    // 绝对定位的子元素不参与父容器尺寸计算，若外层又是百分比链，
-    // Stack 可能塌缩为 0，届时所有按键都会被定位到不可见处。
-    // 这里直接用实测的 vp 宽高，尺寸来源明确、可核对。
-    .width(this.vpW > 0 ? this.vpW : '100%')
-    .height(this.vpH > 0 ? this.vpH : '100%')
+    // Fill the current game surface and measure it locally.  This is
+    // deliberate: the parent can rotate/resize after the child is mounted,
+    // and the measured size must replace the initial prop snapshot.
+    .width('100%')
+    .height('100%')
     // 用 onAppear 而非在 build() 内直接调用：
     // onAppear 在组件挂载后触发，此时 @Prop 已由父组件赋值，
     // getter 依赖的数据必然就绪；也不再受 build() 的语句限制。
     .onAppear(() => { this.logLayoutOnce(); })
+    .onAreaChange((_, area) => {
+      const w = Number(area.width);
+      const h = Number(area.height);
+      if (w > 0 && h > 0 && (w !== this.measuredW || h !== this.measuredH)) {
+        this.measuredW = w;
+        this.measuredH = h;
+        this.logLayoutOnce();
+      }
+    })
   }
 }

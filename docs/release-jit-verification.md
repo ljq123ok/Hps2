@@ -113,7 +113,7 @@ AGC 控制台 → 我的应用 → com.hps2.jitprobe
 
 CSR 文件路径：
 ```
-<USER_HOME>/Documents/deepseek/Hps2/.release-signing/hps2-release.csr
+<REPO_ROOT>/.release-signing/hps2-release.csr
 ```
 
 ### 步骤 2：申请**发布 Profile**

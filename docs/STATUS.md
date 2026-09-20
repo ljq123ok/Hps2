@@ -212,7 +212,7 @@ debugkey, 2026年9月9日, PrivateKeyEntry,      ← 成功打开
 **方案 B（用户已选定）**：由 DevEco 为本工程生成签名材料。
 
 ```
-1. 用 DevEco Studio 打开：<USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe
+1. 用 DevEco Studio 打开：<REPO_ROOT>/stage1-jitprobe
 2. File > Project Structure > Signing Configs
 3. 勾选 "Automatically generate signature"
 4. 点 OK
@@ -323,7 +323,7 @@ HarmonyOS 的内存/权限策略上。这是阶段 1 失败诊断的关键前提
 
 ```
 1. 用 DevEco Studio 打开工程：
-   <USER_HOME>/Documents/deepseek/Hps2/stage1-jitprobe
+   <REPO_ROOT>/stage1-jitprobe
 2. File > Project Structure > Signing Configs
 3. 勾选 "Automatically generate signature"
    （本机 DevEco 已登录华为账号，历史上执行过 AutoSign，此步应能直接成功）

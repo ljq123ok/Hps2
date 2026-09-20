@@ -32,6 +32,7 @@ interface BootStatus {
   stageName: string;
   running: boolean;
   error: string;
+  fps: number;
   jitAvailable: boolean;
   jitStage: string;
   jitErrno: number;
@@ -47,6 +48,26 @@ interface JitCheckResult {
   errno: number;
   message: string;
   action: string;
+}
+
+interface BiosSelection {
+  fileName: string;
+  displayName: string;
+}
+
+interface VideoSettingsSelection {
+  upscaleMultiplier: number;
+}
+
+interface ControllerInfo {
+  id: string;
+  name: string;
+  mapped: boolean;
+}
+
+interface ControllerDescriptor {
+  id: string;
+  name: string;
 }
 
 @Entry
@@ -69,6 +90,7 @@ struct Index {
   @State statusStage: string = 'idle';
   @State statusError: string = '';
   @State statusRunning: boolean = false;
+  @State gameFps: number = 0;
   @State busy: boolean = false;
 
   // ---- JIT 能力状态（产品决策：不降级，不可用则阻止启动）----
@@ -89,8 +111,13 @@ struct Index {
   @State showPad: boolean = true;
   /** 设置弹层 */
   @State showSettings: boolean = false;
+  /** SDL 已识别的真实手柄；蓝牙手柄通过系统 HID 进入这里。 */
+  @State controllerDevices: Array<ControllerInfo> = [];
+  @State controllerStatus: string = '请先启动游戏，再刷新手柄列表';
   /** 画面比例：0=自动 1=保持4:3 2=铺满 3=宽屏16:9 */
   @State aspectMode: number = 0;
+  /** 内部渲染倍率：1.0 为原生分辨率 */
+  @State upscaleMultiplier: number = 1.0;
 
   private timerId: number = -1;
 
@@ -105,7 +132,17 @@ struct Index {
     return this.dataRoot() + '/games';
   }
 
+  private biosSelectionFile(): string {
+    return this.biosDir() + '/selected.json';
+  }
+
+  private videoSettingsFile(): string {
+    return this.dataRoot() + '/video-settings.json';
+  }
+
   aboutToAppear(): void {
+    // Native 状态只在当前进程内有效；先恢复持久化设置，再读取 UI 初始值。
+    this.restoreVideoSettings();
     // 让 native 侧与 UI 的初始比例一致（默认「自动」）。
     try {
       this.aspectMode = hps2core.getAspectMode();
@@ -113,11 +150,17 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'getAspectMode failed');
     }
     try {
+      this.upscaleMultiplier = hps2core.getUpscaleMultiplier();
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'getUpscaleMultiplier failed');
+    }
+    try {
       const dir = this.biosDir();
       if (!fs.accessSync(dir)) {
         fs.mkdirSync(dir);
       }
       hilog.info(DOMAIN, TAG, 'biosDir=%{public}s', dir);
+      this.restoreBiosSelection();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir bios dir failed: %{public}s', JSON.stringify(e));
     }
@@ -362,6 +405,81 @@ struct Index {
       const parts = r.split('|');
       this.biosPath = parts[0];
       this.biosName = parts[1] + ' (' + parts[2] + ')';
+      this.saveBiosSelection(parts[1], this.biosName);
+    }
+  }
+
+  /** 保存最后一次选择的 BIOS，只记录沙箱内文件名，不保存临时 picker URI。 */
+  private saveBiosSelection(fileName: string, displayName: string): void {
+    try {
+      const file = fs.openSync(this.biosSelectionFile(),
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        const selection: BiosSelection = { fileName: fileName, displayName: displayName };
+        fs.writeSync(file.fd, JSON.stringify(selection));
+      } finally {
+        fs.closeSync(file);
+      }
+      hilog.info(DOMAIN, TAG, 'saved BIOS selection %{public}s', fileName);
+    } catch (e) {
+      // BIOS 已复制成功；记录失败不阻止本次启动，但保留诊断日志。
+      hilog.error(DOMAIN, TAG, 'save BIOS selection failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /**
+   * 应用启动时恢复 BIOS。
+   * 兼容早期版本：没有选择记录但沙箱中只有一个 BIOS 文件时自动接管。
+   */
+  private restoreBiosSelection(): void {
+    try {
+      let fileName: string = '';
+      let displayName: string = '';
+      const marker = this.biosSelectionFile();
+
+      if (fs.accessSync(marker)) {
+        const raw = fs.readTextSync(marker);
+        const selection = JSON.parse(raw) as BiosSelection;
+        fileName = selection.fileName;
+        displayName = selection.displayName;
+      } else {
+        const files = fs.listFileSync(this.biosDir());
+        let candidateCount = 0;
+        for (const name of files) {
+          const lower = name.toLowerCase();
+          if (lower.endsWith('.bin') || lower.endsWith('.rom') || lower.endsWith('.p2b')) {
+            fileName = name;
+            candidateCount++;
+          }
+        }
+        if (candidateCount !== 1) {
+          fileName = '';
+        }
+      }
+
+      if (fileName.length === 0) {
+        return;
+      }
+
+      const restoredPath = this.biosDir() + '/' + fileName;
+      if (!fs.accessSync(restoredPath)) {
+        this.statusError = '已保存的 BIOS 文件不存在，请到设置中重新选择';
+        hilog.error(DOMAIN, TAG, 'saved BIOS missing: %{public}s', restoredPath);
+        return;
+      }
+
+      if (displayName.length === 0) {
+        const stat = fs.statSync(restoredPath);
+        displayName = fileName + ' (' + this.humanSize(stat.size) + ')';
+      }
+      this.biosPath = restoredPath;
+      this.biosName = displayName;
+      if (!fs.accessSync(marker)) {
+        this.saveBiosSelection(fileName, displayName);
+      }
+      hilog.info(DOMAIN, TAG, 'restored BIOS selection %{public}s', restoredPath);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'restore BIOS selection failed: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -392,7 +510,7 @@ struct Index {
     return n + ' B';
   }
 
-  private startBoot(): void {
+  private async startBoot(): Promise<void> {
     if (!this.biosPath) {
       this.statusError = '请先选择 BIOS 文件';
       return;
@@ -408,6 +526,8 @@ struct Index {
 
     this.statusError = '';
     try {
+      // 先锁定窗口方向，再启动 GS，避免 VM 已开始渲染后才发生旋转。
+      await this.setGameOrientation(true);
       const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), this.gamePath);
       hilog.info(DOMAIN, TAG, 'startBios returned %{public}d', ok);
       if (ok !== 1) {
@@ -444,6 +564,17 @@ struct Index {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'startBios exception: %{public}s', err.message);
       this.statusError = '调用核心失败：' + err.message;
+    }
+  }
+
+  private async setGameOrientation(inGame: boolean): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      await Immersive.setGameOrientation(inGame, ctx);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setGameOrientation(%{public}d) failed: %{public}s',
+        inGame ? 1 : 0, err.message);
     }
   }
 
@@ -511,6 +642,7 @@ struct Index {
       const st = JSON.parse(raw) as BootStatus;
       this.statusStage = st.stageName;
       this.statusRunning = st.running;
+      this.gameFps = st.fps > 0 ? st.fps : 0;
       this.statusError = st.error ? st.error : this.statusError;
     } catch (e) {
       // 轮询失败不刷屏
@@ -525,13 +657,21 @@ struct Index {
     return '宽屏 16:9';
   }
 
+  private upscaleLabel(m: number): string {
+    if (m === 1) return '原生分辨率（1x）';
+    return m + 'x 内部渲染';
+  }
+
+  private runningLabel(): string {
+    if (this.gameFps <= 0) return '运行中';
+    return '运行中  ' + (Math.round(this.gameFps * 10) / 10) + ' FPS';
+  }
+
   /**
-   * 设置画面比例并立即生效。
+   * 设置画面比例，下一次启动游戏时生效。
    *
-   * native 侧会改 GSConfig.AspectRatio 并调 MTGS::ApplySettings()，
-   * 使配置在运行期即时生效（无需重启 VM）。
-   * 机制依据：GSRenderer.cpp:412 的 CalculateDrawDstRect 里
-   * targetAr 默认取窗口比例，而 Stretch 不在任何分支中 => 铺满。
+   * native 侧会把值写入启动配置；不在 ArkUI 线程直接调用 MTGS，避免
+   * 运行中的渲染器重配置造成闪退。
    */
   private setAspect(m: number): void {
     this.aspectMode = m;
@@ -541,6 +681,108 @@ struct Index {
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'setAspectMode failed: %{public}s', err.message);
+    }
+  }
+
+  private setUpscale(m: number): void {
+    try {
+      const ok: number = hps2core.setUpscaleMultiplier(m);
+      if (ok === 1) {
+        this.upscaleMultiplier = m;
+        this.saveVideoSettings(m);
+      }
+      hilog.info(DOMAIN, TAG, 'setUpscaleMultiplier(%{public}f) -> %{public}d', m, ok);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setUpscaleMultiplier failed: %{public}s', err.message);
+    }
+  }
+
+  /** 保存视频设置；倍率在应用重启后仍应保持。 */
+  private saveVideoSettings(multiplier: number): void {
+    try {
+      const file = fs.openSync(this.videoSettingsFile(),
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        const settings: VideoSettingsSelection = { upscaleMultiplier: multiplier };
+        fs.writeSync(file.fd, JSON.stringify(settings));
+      } finally {
+        fs.closeSync(file);
+      }
+      hilog.info(DOMAIN, TAG, 'saved video settings upscale=%{public}f', multiplier);
+    } catch (e) {
+      // 本次运行已经应用成功；持久化失败只记录，不阻止游戏启动。
+      hilog.error(DOMAIN, TAG, 'save video settings failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /** 应用启动时恢复视频设置，并同步到 native 的启动配置。 */
+  private restoreVideoSettings(): void {
+    try {
+      const marker = this.videoSettingsFile();
+      if (!fs.accessSync(marker)) {
+        return;
+      }
+
+      const raw = fs.readTextSync(marker);
+      const settings = JSON.parse(raw) as VideoSettingsSelection;
+      const multiplier = settings.upscaleMultiplier;
+      // 当前 UI 提供 1x/2x/3x；拒绝损坏文件或未来写入的越界值。
+      if (multiplier !== 1 && multiplier !== 2 && multiplier !== 3) {
+        hilog.error(DOMAIN, TAG, 'ignored invalid saved upscale=%{public}f', multiplier);
+        return;
+      }
+
+      const ok: number = hps2core.setUpscaleMultiplier(multiplier);
+      if (ok === 1) {
+        this.upscaleMultiplier = multiplier;
+        hilog.info(DOMAIN, TAG, 'restored video settings upscale=%{public}f', multiplier);
+      } else {
+        hilog.error(DOMAIN, TAG, 'restore video settings rejected upscale=%{public}f', multiplier);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'restore video settings failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  private refreshControllers(): void {
+    try {
+      const raw: string = hps2core.enumerateControllers();
+      const parsed = JSON.parse(raw) as Array<ControllerDescriptor>;
+      const devices: Array<ControllerInfo> = [];
+      for (const item of parsed) {
+        devices.push({ id: item.id, name: item.name, mapped: false });
+      }
+      this.controllerDevices = devices;
+      this.controllerStatus = devices.length > 0 ?
+        '已发现 ' + devices.length + ' 个手柄' :
+        (this.statusRunning ? '未发现已被模拟器识别的手柄' : '请先启动游戏，再刷新手柄列表');
+      hilog.info(DOMAIN, TAG, 'enumerate controllers count=%{public}d', devices.length);
+    } catch (e) {
+      const err = e as BusinessError;
+      this.controllerDevices = [];
+      this.controllerStatus = '手柄列表读取失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'enumerate controllers failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  private mapController(device: ControllerInfo): void {
+    try {
+      const ok: number = hps2core.mapController(device.id, 0);
+      if (ok === 1) {
+        const updated: Array<ControllerInfo> = [];
+        for (const item of this.controllerDevices) {
+          updated.push({ id: item.id, name: item.name, mapped: item.id === device.id });
+        }
+        this.controllerDevices = updated;
+        this.controllerStatus = device.name + ' 已映射到 1P（本次运行有效）';
+      } else {
+        this.controllerStatus = '映射失败，请确认手柄已连接并重新刷新';
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      this.controllerStatus = '映射失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'map controller failed: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -559,6 +801,30 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'setImmersive(%{public}d) failed: %{public}s',
         enable ? 1 : 0, err.message);
     }
+  }
+
+  /**
+   * 顶部运行提示栏的安全起始位置。
+   *
+   * VirtualPad 的 L1/L2/R1/R2 使用顶部区域：横屏贴近顶部，竖屏位于
+   * 4:3 画面上方黑边的中部。提示栏不能继续固定在右上角，否则会覆盖
+   * R1/R2 的触控区域。这里把提示栏放到肩键行的下方，同时保留 Row
+   * 自身的 10vp 内边距。
+   */
+  private overlayTop(): number {
+    if (this.surfaceW <= 0 || this.surfaceH <= 0) {
+      // surface 尺寸尚未回调时，先避开横屏肩键的顶部区域。
+      return 38;
+    }
+
+    if (this.surfaceH > this.surfaceW) {
+      // 竖屏 4:3 内容上边界；提示栏放在肩键行下方，尽量仍留在黑边。
+      const contentTop: number = (this.surfaceH - this.surfaceW * 0.75) / 2;
+      return Math.max(0, contentTop - 54);
+    }
+
+    // 横屏黑边不足，肩键贴顶，提示栏放在其下方。
+    return 38;
   }
 
   private stopBoot(): void {
@@ -626,7 +892,10 @@ struct Index {
             onClearGame: () => { this.clearGame(); },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
-            onOpenSettings: () => { this.showSettings = true; }
+            onOpenSettings: () => {
+              this.showSettings = true;
+              this.refreshControllers();
+            }
           })
         }
         .width('100%')
@@ -647,7 +916,7 @@ struct Index {
       if (this.viewMode === 'game') {
         Column() {
           Row({ space: 10 }) {
-          Text(this.statusRunning ? '运行中' : this.statusStage)
+          Text(this.statusRunning ? this.runningLabel() : this.statusStage)
             .fontSize(11)
             .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
@@ -671,12 +940,14 @@ struct Index {
                 this.viewMode = 'home';
                 // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
                 this.setImmersive(false);
+                this.setGameOrientation(false);
               })
           }
           .padding(10)
         }
         .width('100%')
         .height('100%')
+        .padding({ top: this.overlayTop() })
         .justifyContent(FlexAlign.Start)
         .alignItems(HorizontalAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
@@ -699,8 +970,77 @@ struct Index {
             }
             .width('100%')
 
-            // ---- 画面比例 ----
-            Column({ space: 8 }) {
+          Scroll() {
+            Column({ space: Theme.gap }) {
+              // ---- BIOS ----
+              Column({ space: 10 }) {
+                Text('BIOS').fontSize(14).fontColor(Theme.textPri()).width('100%')
+                Text(this.biosName.length > 0 ? '当前：' + this.biosName :
+                  '尚未选择 BIOS；首次选择后会自动记住。')
+                  .fontSize(11)
+                  .fontColor(this.biosName.length > 0 ? Theme.ok() : Theme.textDim())
+                  .width('100%')
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Button(this.picking === 'bios' ? '处理中…' : '更换 BIOS')
+                  .width('100%')
+                  .height(38)
+                  .fontSize(13)
+                  .backgroundColor(Theme.bgCardHi())
+                  .fontColor(Theme.textPri())
+                  .borderRadius(Theme.radiusSm)
+                  .enabled(this.picking !== 'bios')
+                  .onClick(() => { this.chooseBios(); })
+              }
+              .width('100%')
+              .padding(Theme.pad)
+              .backgroundColor(Theme.bgCard())
+              .borderRadius(Theme.radius)
+              .border({ width: 1, color: Theme.border() })
+
+              // ---- 蓝牙 / 外接手柄 ----
+              Column({ space: 10 }) {
+                Text('蓝牙手柄映射').fontSize(14).fontColor(Theme.textPri()).width('100%')
+                Text(this.controllerStatus)
+                  .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                Text('蓝牙手柄需要先在系统中完成配对；模拟器启动后点击刷新。映射当前运行有效。')
+                  .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                Button('刷新手柄')
+                  .width('100%').height(38).fontSize(13)
+                  .backgroundColor(Theme.bgCardHi())
+                  .fontColor(Theme.textPri())
+                  .borderRadius(Theme.radiusSm)
+                  .onClick(() => { this.refreshControllers(); })
+
+                ForEach(this.controllerDevices, (device: ControllerInfo) => {
+                  Row({ space: 8 }) {
+                    Column({ space: 2 }) {
+                      Text(device.name).fontSize(12).fontColor(Theme.textSec())
+                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(device.id).fontSize(10).fontColor(Theme.textDim())
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start)
+                    Button(device.mapped ? '已映射 1P' : '映射到 1P')
+                      .height(34).fontSize(12)
+                      .backgroundColor(device.mapped ? Theme.ok() : Theme.accent())
+                      .fontColor('#FFFFFF')
+                      .borderRadius(Theme.radiusSm)
+                      .enabled(!device.mapped)
+                      .onClick(() => { this.mapController(device); })
+                  }
+                  .width('100%')
+                  .padding({ top: 6, bottom: 6 })
+                }, (device: ControllerInfo) => device.id)
+              }
+              .width('100%')
+              .padding(Theme.pad)
+              .backgroundColor(Theme.bgCard())
+              .borderRadius(Theme.radius)
+              .border({ width: 1, color: Theme.border() })
+
+              // ---- 画面比例 ----
+              Column({ space: 8 }) {
               Text('画面比例').fontSize(14).fontColor(Theme.textPri()).width('100%')
               Text('PS2 原生为 4:3。横屏时拉伸不明显；竖屏拉伸较明显。')
                 .fontSize(11).fontColor(Theme.textDim()).width('100%')
@@ -727,6 +1067,33 @@ struct Index {
             .borderRadius(Theme.radius)
             .border({ width: 1, color: Theme.border() })
 
+            // ---- 内部渲染分辨率 ----
+            Column({ space: 8 }) {
+              Text('内部渲染分辨率').fontSize(14).fontColor(Theme.textPri()).width('100%')
+              Text('倍率越高越清晰，也越占用 GPU；修改后下次启动游戏生效。')
+                .fontSize(11).fontColor(Theme.textDim()).width('100%')
+
+              ForEach([1, 2, 3], (m: number) => {
+                Row() {
+                  Text(this.upscaleLabel(m)).fontSize(13)
+                    .fontColor(Math.round(this.upscaleMultiplier) === m ? Theme.accentHi() : Theme.textSec())
+                    .layoutWeight(1)
+                  if (Math.round(this.upscaleMultiplier) === m) {
+                    Text('✓').fontSize(14).fontColor(Theme.accentHi())
+                  }
+                }
+                .width('100%')
+                .padding({ top: 10, bottom: 10 })
+                .backgroundColor(Math.round(this.upscaleMultiplier) === m ? Theme.bgCardHi() : Color.Transparent)
+                .borderRadius(Theme.radiusSm)
+                .onClick(() => { this.setUpscale(m); })
+              })
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(Theme.bgCard())
+            .border({ width: 1, color: Theme.border() })
+
             // ---- 虚拟按键 ----
             Column({ space: 10 }) {
               Text('虚拟按键').fontSize(14).fontColor(Theme.textPri()).width('100%')
@@ -744,17 +1111,24 @@ struct Index {
             .borderRadius(Theme.radius)
             .border({ width: 1, color: Theme.border() })
 
-            Text('提示：接入手柄后可关闭虚拟按键，避免遮挡画面。')
-              .fontSize(11).fontColor(Theme.textDim()).width('100%')
+              Text('提示：接入手柄后可关闭虚拟按键，避免遮挡画面。')
+                .fontSize(11).fontColor(Theme.textDim()).width('100%')
 
-            Blank()
-          }
-          .width('88%')
-          .height('76%')
-          .padding(Theme.pad)
-          .backgroundColor(Theme.bgBase())
-          .borderRadius(Theme.radius)
-          .border({ width: 1, color: Theme.borderHi() })
+              Blank()
+            }
+            .width('100%')
+            .padding({ left: Theme.pad, right: Theme.pad, bottom: Theme.pad })
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .scrollBar(BarState.Off)
+        }
+        .width('88%')
+        .height('86%')
+        .padding(Theme.pad)
+        .backgroundColor(Theme.bgBase())
+        .borderRadius(Theme.radius)
+        .border({ width: 1, color: Theme.borderHi() })
         }
         .width('100%')
         .height('100%')

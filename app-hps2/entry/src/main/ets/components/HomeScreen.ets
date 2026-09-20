@@ -40,7 +40,7 @@ export struct HomeScreen {
   @Builder
   pickRow(icon: string, title: string, value: string, hint: string,
           btnText: string, onTap: () => void, hasValue: boolean,
-          onClear?: () => void) {
+          onClear?: () => void, disableReplace: boolean = false) {
     Column({ space: 10 }) {
       Row() {
         Text(icon).fontSize(18).width(28)
@@ -71,6 +71,7 @@ export struct HomeScreen {
         .fontSize(14)
         .backgroundColor(Theme.accent())
         .borderRadius(Theme.radiusSm)
+        .enabled(!disableReplace || !hasValue)
         .onClick(onTap)
     }
     .width('100%')
@@ -152,8 +153,10 @@ export struct HomeScreen {
 
         Blank()
 
-        Button('⚙')
-          .width(40).height(40).fontSize(18)
+        // 不使用 ⚙ 字形：部分系统字体会把 emoji 版本裁成半个图标。
+        // 使用完整文字按钮，保证设置入口在不同字体和分辨率下都可见。
+        Button('设置')
+          .width(72).height(40).fontSize(14)
           .backgroundColor(Theme.bgCard())
           .fontColor(Theme.textSec())
           .borderRadius(20)
@@ -169,9 +172,10 @@ export struct HomeScreen {
 
           this.pickRow('💿', 'BIOS', this.biosName,
             '需要你自己合法拥有的 PS2 BIOS（4MB）',
-            this.picking === 'bios' ? '处理中…' : '选择 BIOS 文件',
+            this.picking === 'bios' ? '处理中…' :
+              (this.biosName.length > 0 ? '已选择（到设置中更换）' : '选择 BIOS 文件'),
             () => { if (this.onPickBios) this.onPickBios(); },
-            this.biosName.length > 0)
+            this.biosName.length > 0, undefined, true)
 
           this.pickRow('🎮', '游戏镜像', this.gameName,
             '可选 —— 不选则只启动 BIOS',

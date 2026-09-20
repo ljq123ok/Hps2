@@ -7,6 +7,7 @@
 #include <hilog/log.h>
 
 #include <atomic>
+#include <cmath>
 
 // PCSX2 侧
 #include "Config.h"
@@ -28,6 +29,9 @@ namespace Hps2Video
 	{
 		std::atomic<AspectMode> s_mode{AspectMode::Auto};
 		std::atomic<bool> s_landscape{false};
+		std::atomic<float> s_upscale_multiplier{1.0f};
+		std::atomic<unsigned int> s_pending_width{0};
+		std::atomic<unsigned int> s_pending_height{0};
 
 		/// 把 AspectMode 翻译成 PCSX2 的 AspectRatioType。
 		AspectRatioType ToPcsx2Mode(AspectMode m, bool landscape)
@@ -66,32 +70,81 @@ namespace Hps2Video
 		const bool landscape = s_landscape.load();
 		const AspectRatioType ar = ToPcsx2Mode(mode, landscape);
 
-		// 直接改当前生效的 GS 配置，再让 MTGS 重新应用。
-		//
-		// 为什么不走 SettingsInterface：本应用目前用 MemorySettingsInterface，
-		// 配置全在内存；而 GSConfig 是 GS 线程实际读取的那份，
-		// 改它 + ApplySettings 是上游的运行期生效路径
-		// （见 GS.cpp 里多处 MTGS::ApplySettings 调用）。
-		GSConfig.AspectRatio = ar;
-		EmuConfig.CurrentAspectRatio = ar;
-
-		if (MTGS::IsOpen())
-		{
-			MTGS::ApplySettings();
-			VLOGI("aspect mode set to %{public}d (landscape=%{public}d) -> pcsx2 AR %{public}d",
-				static_cast<int>(mode), landscape ? 1 : 0, static_cast<int>(ar));
-			return true;
-		}
-
-		// VM 尚未启动：配置已写入 GSConfig，启动时会生效。
-		VLOGI("aspect mode recorded as %{public}d (VM not running; will apply on boot)",
-			static_cast<int>(mode));
+		// ArkUI/N-API runs outside PCSX2's CPU thread. Stage the values here;
+		// MTGS::ApplySettings() is called by the VM CPU thread at boot.
+		VLOGI("aspect mode queued as %{public}d (landscape=%{public}d) -> pcsx2 AR %{public}d",
+			static_cast<int>(mode), landscape ? 1 : 0, static_cast<int>(ar));
 		return true;
 	}
 
 	AspectMode GetAspectMode()
 	{
 		return s_mode.load();
+	}
+
+	bool SetUpscaleMultiplier(float multiplier)
+	{
+		if (!std::isfinite(multiplier) || multiplier < 1.0f || multiplier > 4.0f)
+			return false;
+
+		s_upscale_multiplier.store(multiplier);
+		// Do not call MTGS::ApplySettings() from ArkUI. Upstream requires that
+		// RunOnGSThread is entered from the VM CPU thread; direct UI calls can
+		// assert, race GS, and explain both delayed crashes and no-op changes.
+		VLOGI("upscale multiplier queued as %{public}f (safe CPU-thread apply)", multiplier);
+		return true;
+	}
+
+	void ApplyPendingSettingsOnCPUThread()
+	{
+		const float multiplier = s_upscale_multiplier.load();
+		const AspectRatioType ar = ToPcsx2Mode(s_mode.load(), s_landscape.load());
+		GSConfig.AspectRatio = ar;
+		EmuConfig.CurrentAspectRatio = ar;
+		EmuConfig.GS.AspectRatio = ar;
+		GSConfig.UpscaleMultiplier = multiplier;
+		EmuConfig.GS.UpscaleMultiplier = multiplier;
+
+		if (MTGS::IsOpen())
+		{
+			MTGS::ApplySettings();
+			const unsigned int width = s_pending_width.load();
+			const unsigned int height = s_pending_height.load();
+			if (width > 0 && height > 0)
+			{
+				MTGS::ResizeDisplayWindow(width, height, 1.0f);
+				MTGS::UpdateDisplayWindow();
+				VLOGI("display resize applied on CPU thread: %{public}ux%{public}u", width, height);
+			}
+			VLOGI("upscale multiplier applied on CPU thread: %{public}f", multiplier);
+		}
+		else
+		{
+			VLOGI("upscale multiplier staged: %{public}f (GS not open)", multiplier);
+		}
+	}
+
+	void ApplyPendingConfigBeforeVM()
+	{
+		const float multiplier = s_upscale_multiplier.load();
+		const AspectRatioType ar = ToPcsx2Mode(s_mode.load(), s_landscape.load());
+
+		// VMManager::ApplySettings() rebuilds EmuConfig from the settings layer.
+		// Apply the frontend value after that rebuild and before VMManager::Initialize()
+		// opens GS.  This makes GSopen() receive the selected value on first creation,
+		// instead of trying to repair the renderer after it is already running.
+		GSConfig.AspectRatio = ar;
+		EmuConfig.CurrentAspectRatio = ar;
+		EmuConfig.GS.AspectRatio = ar;
+		GSConfig.UpscaleMultiplier = multiplier;
+		EmuConfig.GS.UpscaleMultiplier = multiplier;
+		VLOGI("boot graphics config: upscale=%{public}f aspect=%{public}d landscape=%{public}d",
+			multiplier, static_cast<int>(ar), s_landscape.load() ? 1 : 0);
+	}
+
+	float GetUpscaleMultiplier()
+	{
+		return MTGS::IsOpen() ? GSConfig.UpscaleMultiplier : s_upscale_multiplier.load();
 	}
 
 	bool NotifyResize(unsigned int width, unsigned int height)
@@ -106,33 +159,13 @@ namespace Hps2Video
 		const bool orientation_changed = (landscape != s_landscape.load());
 		s_landscape.store(landscape);
 
-		if (!MTGS::IsOpen())
-		{
-			// VM 未运行：只记录方向。「自动」模式下的比例会在启动时按此决定。
-			VLOGI("NotifyResize: %{public}ux%{public}u (landscape=%{public}d) — VM not running, "
-			      "orientation recorded only",
-				width, height, landscape ? 1 : 0);
-			return false;
-		}
-
-		// 方向变化时，「自动」模式需要切换宽高比：
-		// 横屏铺满、竖屏保持 4:3（理由见 ToPcsx2Mode 的注释）。
-		if (orientation_changed && s_mode.load() == AspectMode::Auto)
-		{
-			const AspectRatioType ar = ToPcsx2Mode(AspectMode::Auto, landscape);
-			GSConfig.AspectRatio = ar;
-			EmuConfig.CurrentAspectRatio = ar;
-			VLOGI("orientation changed -> landscape=%{public}d, auto AR switched to %{public}d",
-				landscape ? 1 : 0, static_cast<int>(ar));
-		}
-
-		// 关键：把新尺寸通知 GS，让它重建视口、投影与（可能的）交换链。
-		// 上游用法见 MTGS.cpp:1006 —— 必须经 GS 线程，不能直接改 device。
-		MTGS::ResizeDisplayWindow(width, height, 1.0f);
-		MTGS::UpdateDisplayWindow();
-
-		VLOGI("NotifyResize applied: %{public}ux%{public}u (landscape=%{public}d)",
-			width, height, landscape ? 1 : 0);
+		// ArkUI 的回调不在 PCSX2 CPU 线程。只记录尺寸；真正的
+		// ResizeDisplayWindow/UpdateDisplayWindow 由 ApplyPendingSettingsOnCPUThread
+		// 提交，避免 MTGS::RunOnGSThread 的跨线程断言和环形队列竞态。
+		s_pending_width.store(width);
+		s_pending_height.store(height);
+		VLOGI("NotifyResize queued: %{public}ux%{public}u (landscape=%{public}d, orientation_changed=%{public}d)",
+			width, height, landscape ? 1 : 0, orientation_changed ? 1 : 0);
 		return true;
 	}
 }

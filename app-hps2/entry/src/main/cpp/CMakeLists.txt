@@ -161,6 +161,7 @@ target_link_libraries(hps2core PUBLIC
     net_http
     libace_napi.z.so
     libhilog_ndk.z.so
+    ohaudio
     # OHOS 图形：EGL/GLES 由 glad 运行时 dlopen，但 native_window 的
     # OH_NativeWindow_* 是直接调用的，需要链接期解析。
     native_window

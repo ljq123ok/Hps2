@@ -124,7 +124,16 @@ export struct GameScreen {
 
       // 虚拟按键：仅在游玩中显示。
       // 参考设计稿，按键半透明，尽量不遮挡画面。
-      if (this.playing && this.showPad) {
+      // Use separate conditional branches for the two orientations.  The
+      // surface can rotate while the same GameScreen remains mounted; using
+      // one child instance left its absolute-position builders with the
+      // initial portrait geometry on the real device.  Recreating the child
+      // at the orientation boundary makes the new vpW/vpH the initial
+      // geometry instead of relying on a nested Builder to re-measure it.
+      if (this.playing && this.showPad && !this.landscape) {
+        VirtualPad({ landscape: false, vpW: this.vpW, vpH: this.vpH })
+      }
+      if (this.playing && this.showPad && this.landscape) {
         VirtualPad({ landscape: this.landscape, vpW: this.vpW, vpH: this.vpH })
       }
     }

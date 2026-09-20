@@ -34,6 +34,8 @@ export class VpadAxis {
   static readonly LEFTY: number = 1;
   static readonly RIGHTX: number = 2;
   static readonly RIGHTY: number = 3;
-  static readonly LEFT_TRIGGER: number = 4;   // L2（0..32767）
-  static readonly RIGHT_TRIGGER: number = 5;  // R2（0..32767）
+  static readonly LEFT_TRIGGER: number = 4;   // L2（SDL 轴编号）
+  static readonly RIGHT_TRIGGER: number = 5;  // R2（SDL 轴编号）
+  // SDL gamepad triggers rest at SDL_JOYSTICK_AXIS_MIN, not at zero.
+  static readonly TRIGGER_REST: number = -32768;
 }
