@@ -156,6 +156,17 @@ struct Index {
 
   /** 悬浮球是否展开为功能列表 */
   @State overlayExpanded: boolean = false;
+
+  // ---- 悬浮球位置（可拖动）----
+  //
+  // 用绝对坐标而非固定右上角：用户要求"拖动后停留在最终位置"。
+  // 初值 -1 表示"尚未拖动过"，此时按右上角默认位置摆放；
+  // 一旦拖动即以实际坐标为准。
+  @State ballX: number = -1;
+  @State ballY: number = -1;
+  /** 拖动起点（手势开始时球的位置） */
+  private dragStartX: number = 0;
+  private dragStartY: number = 0;
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State gameFps: number = 0;
@@ -801,6 +812,67 @@ struct Index {
     }
   }
 
+  /** 屏幕可用宽高（surface 未就绪时给安全默认值） */
+  private screenW(): number { return this.surfaceW > 0 ? this.surfaceW : 440; }
+  private screenH(): number { return this.surfaceH > 0 ? this.surfaceH : 744; }
+
+  /** 悬浮球尺寸 */
+  private ballSize(): number { return 56; }
+
+  /**
+   * 悬浮球左上角的默认 x（屏幕右侧，留 12 边距）。
+   * 尚未拖动过（ballX < 0）时用默认位置。
+   */
+  private ballLeft(): number {
+    if (this.ballX >= 0) {
+      return this.ballX;
+    }
+    return this.screenW() - this.ballSize() - 12;
+  }
+
+  /** 悬浮球左上角的默认 y（顶部，避开系统状态栏区域） */
+  private ballTop(): number {
+    if (this.ballY >= 0) {
+      return this.ballY;
+    }
+    return this.overlayTop();
+  }
+
+  /** 更新球位置（拖动中调用，边界钳制后写入） */
+  private updateBallPos(x: number, y: number): void {
+    this.ballX = x;
+    this.ballY = y;
+    this.clampBall();
+  }
+
+  /**
+   * 把球钳制在屏幕内。
+   *
+   * 为什么要钳：拖动可能越界，导致球部分或完全移出屏幕，
+   * 用户再也点不到（也就无法展开功能或退出）。
+   * 因此保留至少球体完整可见 —— 这是可用性底线，不是美化。
+   */
+  private clampBall(): void {
+    const size = this.ballSize();
+    const w = this.screenW();
+    const h = this.screenH();
+    const minX = 0;
+    const maxX = Math.max(0, w - size);
+    const minY = 0;
+    const maxY = Math.max(0, h - size);
+
+    let x = this.ballX >= 0 ? this.ballX : this.ballLeft();
+    let y = this.ballY >= 0 ? this.ballY : this.ballTop();
+
+    if (x < minX) x = minX;
+    if (x > maxX) x = maxX;
+    if (y < minY) y = minY;
+    if (y > maxY) y = maxY;
+
+    this.ballX = x;
+    this.ballY = y;
+  }
+
   /** 悬浮球展开后各按钮的宽度（按屏幕宽度自适应） */
   private ballBtnW(): number {
     // 竖屏窄、横屏宽；给一个合理范围，避免过宽或过窄
@@ -1391,21 +1463,20 @@ struct Index {
         .backgroundColor(Theme.bgBase())
       }
 
-      // ---- 游玩页悬浮球 ----
+      // ---- 游玩页悬浮球（可拖动）----
       //
-      // 【为什么改成悬浮球】用户要求：把显示 FPS、存档等功能条收成一个
-      // 悬浮球，点击后展开全部功能。
-      // 好处：功能条常驻会遮挡画面（尤其横屏 4:3 两侧空间有限），
-      // 收成小球后仅占很小一块，需要时才展开。
+      // 【为什么用绝对定位 + PanGesture】
+      // 用户要求：悬浮球可随意拖动，并停留在最终拖动位置。
+      // 因此不能用"全屏 Column 钉在右上角"的做法（那样无法自由移动），
+      // 改为 position({x,y}) 绝对定位 + PanGesture 更新坐标。
       //
-      // 定位：用全屏 Column + justifyContent/alignItems 钉在右上角。
-      // （注：.align() 是 Stack 容器的属性，写在子组件上无效 —— 此前踩过。）
+      // 坐标含义：球**左上角**在容器内的位置。
+      // 拖动时把手势偏移量累加到起点坐标上，实现跟手。
       if (this.viewMode === 'game') {
-        Column() {
+        Stack() {
           if (this.overlayExpanded) {
-            // ---- 展开态：一列功能按钮 ----
+            // ---- 展开态：功能列表 ----
             Column({ space: 8 }) {
-              // 顶部：状态（FPS / 运行状态）
               Text(this.statusRunning ? `${this.gameFps.toFixed(0)} FPS` : this.statusStage)
                 .fontSize(11)
                 .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
@@ -1452,7 +1523,6 @@ struct Index {
                 .borderRadius(16)
                 .onClick(() => { this.exitGame(); })
 
-              // 收起按钮
               Button('收起')
                 .width(this.ballBtnW()).height(28).fontSize(11)
                 .backgroundColor(Theme.overlayChip())
@@ -1463,11 +1533,9 @@ struct Index {
             .padding(8)
             .backgroundColor(Theme.overlayChip())
             .borderRadius(Theme.radius)
+            .position({ x: this.ballLeft(), y: this.ballTop() })
           } else {
-            // ---- 收起态：悬浮球显示 FPS ----
-            //
-            // 球上直接显示 FPS —— 用户最常看的就是这个，
-            // 不必展开即可看到，避免"为看帧率而展开"的多余操作。
+            // ---- 收起态：FPS 悬浮球（可拖动）----
             Column({ space: 1 }) {
               Text(this.statusRunning ? this.gameFps.toFixed(0) : '--')
                 .fontSize(15)
@@ -1483,16 +1551,35 @@ struct Index {
             .backgroundColor(Theme.overlayChip())
             .borderRadius(28)
             .border({ width: 1, color: Theme.borderHi() })
+            .position({ x: this.ballLeft(), y: this.ballTop() })
+            // 用 PanGesture 而非 onClick 拖动：
+            // 点击与拖动在触屏上是同一种手势的不同幅度，用 gesture 统一处理
+            // 可避免"轻微移动就被判为拖动、导致点击失效"。
+            .gesture(
+              PanGesture({ fingers: 1, distance: 5 })
+                .onActionStart(() => {
+                  // 记录拖动起点：若尚未拖过，用当前默认位置
+                  this.dragStartX = this.ballLeft();
+                  this.dragStartY = this.ballTop();
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.updateBallPos(
+                    this.dragStartX + event.offsetX,
+                    this.dragStartY + event.offsetY);
+                })
+                .onActionEnd(() => {
+                  // 停留在最终位置：坐标已在 update 中写入 @State，
+                  // 此处只需保证坐标合法（贴边不越界）。
+                  this.clampBall();
+                })
+            )
             .onClick(() => { this.overlayExpanded = true; })
           }
         }
         .width('100%')
         .height('100%')
-        .padding({ top: this.overlayTop(), right: 12 })
-        .justifyContent(FlexAlign.Start)
-        .alignItems(HorizontalAlign.End)
-        // 容器覆盖全屏但不拦截触摸：只有其中的球/按钮可点，
-        // 其余区域的触摸透传给下层（虚拟按键与画面）。
+        // 容器不拦截触摸：只有球/列表可点，其余区域透传给下层
+        // （虚拟按键与画面）。拖动时由球的 PanGesture 消费事件。
         .hitTestBehavior(HitTestMode.Transparent)
       }
 
