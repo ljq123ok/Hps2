@@ -1167,6 +1167,21 @@ struct Index {
     }
   }
 
+  /**
+   * 枚举 SDL 能识别的**真实手柄**（备用路径）。
+   *
+   * 【主备关系（用户已确认以 ArkUI 事件方案为准）】
+   *   主方案：components/GamepadCatcher 监听系统 KeyEvent/FocusAxisEvent
+   *           —— 不依赖 SDL 能否发现设备
+   *   备用  ：本函数（SDL 枚举）
+   *
+   * 为何保留备用：SDL 在本项目的自编译配置中**没有 evdev 后端**
+   * （SDL_JOYSTICK_LINUX 未定义），只启用 HIDAPI，而后端依赖
+   * /dev/hidraw*（真机实测不存在）与 udev（OHOS 无）。
+   * 因此本路径**很可能枚举不到任何设备** —— 但它成本为零，
+   * 且若某个手柄恰好被 SDL 识别，多一条可用路径没有坏处。
+   * UI 上只作为进阶选项展示，主流程指引用户直接用（主方案自动生效）。
+   */
   private refreshControllers(): void {
     try {
       const raw: string = hps2core.enumerateControllers();

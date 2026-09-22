@@ -41,6 +41,9 @@ export struct GamepadCatcher {
   private firstEventReported: boolean = false;
 
   /** 一次性诊断：打印原始 keyCode，便于核对不同手柄的实际码值 */
+  /** 焦点 id（与 .id() 一致，供 requestFocus 使用） */
+  static readonly FOCUS_ID: string = 'hps2_gamepad_catcher';
+
   private static seenCodes: Set<number> = new Set<number>();
   private static seenAxes: Set<number> = new Set<number>();
 
@@ -56,6 +59,8 @@ export struct GamepadCatcher {
 
   build() {
     Column()
+      // 指定 id：onAppear 时用它主动请求焦点（见下方说明）
+      .id(GamepadCatcher.FOCUS_ID)
       // 零尺寸：不参与视觉布局，只用来接收事件
       .width(1)
       .height(1)
@@ -102,6 +107,26 @@ export struct GamepadCatcher {
       // 名字里的 "Focus" 也印证了它与焦点相关 —— 与 onKeyEvent 同理。
       // （我最初用 onAxisEvent，编译期报 "Property 'axisMap' does not
       //   exist on type 'AxisEvent'"，据此更正。）
+      // 【为什么要手动请求焦点】
+      // 本组件在 viewMode='game' 时才挂载，而页面早已构建完毕 ——
+      // defaultFocus 只在**页面首次构建**时生效，此时再设无效。
+      // 若不主动请求，onKeyEvent/onFocusAxisEvent 都不会触发，
+      // 表现为"手柄按了没反应"。
+      // 用 FocusController.requestFocus(id) 在挂载后显式取得焦点。
+      .onAppear(() => {
+        try {
+          // 组件自带 getUIContext()，比经 UIAbilityContext.windowStage
+          // 再取 mainWindow 的链路更短、失败点更少。
+          this.getUIContext().getFocusController().requestFocus(GamepadCatcher.FOCUS_ID);
+          hilog.info(DOMAIN, TAG, 'requested focus for gamepad catcher');
+        } catch (e) {
+          // 拿不到焦点不致命：onKeyEvent 仍可能在其它控件获得焦点时
+          // 通过事件冒泡到达。但需记录，便于排查"手柄无反应"。
+          hilog.error(DOMAIN, TAG, 'requestFocus failed: %{public}s', JSON.stringify(e));
+        }
+      })
+      // 焦点可能被其它可获焦控件抢走（例如用户点了设置面板），
+      // 这里在失焦时不做什么；下次挂载会重新请求。
       .onFocusAxisEvent((event: FocusAxisEvent): void => {
         if (!this.padEnabled) {
           return;
