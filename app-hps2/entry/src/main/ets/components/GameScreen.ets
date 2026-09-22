@@ -16,6 +16,7 @@ import hilog from '@ohos.hilog';
 import hps2core from 'libhps2core.so';
 import { Theme } from '../common/Theme';
 import { VirtualPad } from './VirtualPad';
+import { GamepadCatcher } from './GamepadCatcher';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -29,6 +30,8 @@ export struct GameScreen {
 
   /** surface 回调：把尺寸交给父组件，由父组件统一 push 给 native */
   onSurfaceSize?: (w: number, h: number) => void;
+  /** 首次检测到蓝牙手柄时回调（供上层自动隐藏虚拟按键） */
+  onGamepadDetected?: () => void;
 
   private xcController: XComponentController = new XComponentController();
   /** 上次已知的方向（用于识别旋转）。0=未知 1=竖屏 2=横屏 */
@@ -135,6 +138,26 @@ export struct GameScreen {
       }
       if (this.playing && this.showPad && this.landscape) {
         VirtualPad({ landscape: this.landscape, vpW: this.vpW, vpH: this.vpH })
+      }
+
+      // 蓝牙手柄事件接收器（零尺寸，不影响视觉与触摸布局）。
+      //
+      // 放在 Stack 中以保证已挂载并能获焦；它只监听按键/轴事件，
+      // 不拦截触摸，因此不影响虚拟按键。
+      // 首次收到手柄事件时回调上层，可用于自动隐藏虚拟按键。
+      //
+      // 三家手柄（Xbox / PlayStation / Switch）通用：
+      // 系统层按键码统一，差异只在物理标注，按位置映射即可。
+      // 映射表见 common/GamepadKeyMap.ets。
+      if (this.playing) {
+        GamepadCatcher({
+          padEnabled: true,
+          onFirstEvent: () => {
+            if (this.onGamepadDetected) {
+              this.onGamepadDetected();
+            }
+          }
+        })
       }
     }
     .width('100%')

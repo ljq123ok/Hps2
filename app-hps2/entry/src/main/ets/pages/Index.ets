@@ -759,6 +759,27 @@ struct Index {
     }
   }
 
+  /**
+   * 检测到蓝牙手柄时的处理。
+   *
+   * 自动隐藏虚拟按键 —— 接上手柄后屏幕按键只会遮挡画面。
+   * 只在首次触发时动作，避免玩家每次按键都改写状态。
+   */
+  private gamepadSeen: boolean = false;
+
+  private onGamepadConnected(): void {
+    if (this.gamepadSeen) {
+      return;
+    }
+    this.gamepadSeen = true;
+    if (this.showPad) {
+      this.showPad = false;
+      hilog.info(DOMAIN, TAG, 'bluetooth gamepad detected -> hid on-screen pad');
+    } else {
+      hilog.info(DOMAIN, TAG, 'bluetooth gamepad detected');
+    }
+  }
+
   /** 开始一个长任务：显示加载提示。 */
   private beginLoading(text: string): void {
     this.loadingText = text;
@@ -1204,7 +1225,11 @@ struct Index {
         onSurfaceSize: (w: number, h: number) => {
           this.surfaceW = w;
           this.surfaceH = h;
-        }
+        },
+        // 首次检测到蓝牙手柄 → 自动隐藏虚拟按键。
+        // 理由：玩家接上手柄就不需要屏幕按键了，留着反而遮挡画面。
+        // 用户仍可在设置里手动打开（showPad 开关保留）。
+        onGamepadDetected: () => { this.onGamepadConnected(); }
       })
 
       // ---- 首页叠加层 ----
