@@ -981,6 +981,39 @@ struct Index {
     }
   }
 
+  /** 删除指定槽的即时存档（包括上游自动保留的 .backup 文件）。 */
+  private doDeleteState(slot: number): void {
+    try {
+      const raw: string = hps2core.deleteSaveState(slot);
+      const r = JSON.parse(raw) as SaveOpResult;
+      this.saveMessage = r.message;
+      hilog.info(DOMAIN, TAG, 'deleteSaveState(%{public}d) ok=%{public}d', slot, r.ok ? 1 : 0);
+      this.refreshSaveSlots();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.saveMessage = '删除存档失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'deleteSaveState failed: %{public}s', err.message);
+    }
+  }
+
+  /** 删除不可恢复，先让用户明确确认槽位，避免误触。 */
+  private confirmDeleteState(slot: number): void {
+    AlertDialog.show({
+      title: '删除即时存档',
+      message: `确定删除槽 ${slot} 的存档吗？删除后无法恢复。`,
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: Theme.err(),
+        action: () => { this.doDeleteState(slot); }
+      }
+    });
+  }
+
   /** 开始一个长任务：显示加载提示。 */
   private beginLoading(text: string): void {
     this.loadingText = text;
@@ -1663,6 +1696,14 @@ struct Index {
                       .borderRadius(Theme.radiusSm)
                       .enabled(item.hasSave)
                       .onClick(() => { this.doLoadState(item.slot); })
+
+                    Button('删')
+                      .height(32).fontSize(12)
+                      .backgroundColor(item.hasSave ? Theme.panelErrBg() : Theme.bgDeep())
+                      .fontColor(item.hasSave ? Theme.err() : Theme.textDim())
+                      .borderRadius(Theme.radiusSm)
+                      .enabled(item.hasSave)
+                      .onClick(() => { this.confirmDeleteState(item.slot); })
                   }
                   .width('100%')
                   .padding({ top: 6, bottom: 6 })

@@ -49,6 +49,9 @@ namespace Hps2SaveState
 	/** 从指定槽读取（1-based）。 */
 	Result Load(int slot);
 
+	/** 删除指定槽的存档及其备份（1-based）。 */
+	Result Remove(int slot);
+
 	/** 该槽是否已有存档。 */
 	bool HasSave(int slot);
 

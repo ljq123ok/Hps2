@@ -21,5 +21,7 @@ export const getStatus: () => string;
 export const saveState: (slot: number) => string;
 /** 即时存档：从指定槽读取（1-based） */
 export const loadState: (slot: number) => string;
+/** 删除指定槽的即时存档及其备份（1-based） */
+export const deleteSaveState: (slot: number) => string;
 /** 各槽状态：[{slot, hasSave}, ...] */
 export const listSaveSlots: () => string;

@@ -14,6 +14,7 @@
 #include "R5900.h"
 #include "MemoryTypes.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -294,6 +295,73 @@ namespace Hps2SaveState
 		r.ok = true;
 		r.message = "已读取槽 " + std::to_string(slot);
 		SLOGI("loaded from slot %{public}d", slot);
+		return r;
+	}
+
+	Result Remove(int slot)
+	{
+		Result r;
+		if (!SlotValid(slot))
+		{
+			r.message = "无效的存档槽：" + std::to_string(slot);
+			return r;
+		}
+
+		if (!VMManager::HasValidVM())
+		{
+			r.message = "尚未启动游戏，无法删除存档。";
+			return r;
+		}
+
+		const std::string serial = VMManager::GetDiscSerial();
+		const u32 crc = VMManager::GetDiscCRC();
+		if (serial.empty())
+		{
+			r.message = "无法识别当前游戏，未删除存档。";
+			return r;
+		}
+
+		// 若用户刚完成存档，先等后台压缩线程落盘，避免删除与写入竞态，
+		// 否则文件可能在删除成功后又被后台线程重新写出来。
+		VMManager::WaitForSaveStateFlush();
+
+		const std::string state_path =
+			VMManager::GetSaveStateFileName(serial.c_str(), crc, slot, false);
+		const std::string backup_path =
+			VMManager::GetSaveStateFileName(serial.c_str(), crc, slot, true);
+
+		u32 deleted = 0;
+		std::string delete_error;
+		auto delete_if_present = [&deleted, &delete_error](const std::string& path) {
+			if (!FileSystem::FileExists(path.c_str()))
+				return;
+
+			Error error;
+			if (FileSystem::DeleteFilePath(path.c_str(), &error))
+			{
+				deleted++;
+			}
+			else if (delete_error.empty())
+			{
+				delete_error = error.GetDescription();
+			}
+		};
+
+		delete_if_present(state_path);
+		delete_if_present(backup_path);
+
+		if (!delete_error.empty())
+		{
+			r.message = "删除槽 " + std::to_string(slot) + " 失败：" + delete_error;
+			SLOGE("delete slot %{public}d failed: %{public}s", slot, delete_error.c_str());
+			return r;
+		}
+
+		r.ok = true;
+		r.message = (deleted > 0)
+			? "已删除槽 " + std::to_string(slot) + " 的存档"
+			: "槽 " + std::to_string(slot) + " 已为空";
+		SLOGI("deleted slot %{public}d files=%{public}u", slot, deleted);
 		return r;
 	}
 

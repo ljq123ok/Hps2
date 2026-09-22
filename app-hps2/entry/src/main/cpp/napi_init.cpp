@@ -1201,6 +1201,25 @@ static napi_value NapiLoadState(napi_env env, napi_callback_info info) {
 	return out;
 }
 
+// deleteSaveState(slot) -> JSON { ok, message }
+static napi_value NapiDeleteSaveState(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t slot = 0;
+	if (argc >= 1)
+		napi_get_value_int32(env, argv[0], &slot);
+
+	const Hps2SaveState::Result r = Hps2SaveState::Remove(slot);
+	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
+		+ ",\"message\":\"" + r.message + "\"}";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+	return out;
+}
+
 // listSaveSlots() -> JSON 数组 [{slot, hasSave}, ...]
 static napi_value NapiListSaveSlots(napi_env env, napi_callback_info info) {
 	const std::string json = Hps2SaveState::ListSlotsJson();
@@ -1387,6 +1406,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"checkBios", nullptr, NapiCheckBios, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"saveState", nullptr, NapiSaveState, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"loadState", nullptr, NapiLoadState, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"deleteSaveState", nullptr, NapiDeleteSaveState, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listSaveSlots", nullptr, NapiListSaveSlots, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
