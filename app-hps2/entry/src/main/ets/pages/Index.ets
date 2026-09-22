@@ -564,12 +564,16 @@ struct Index {
 
       this.picking = '';
       const sizeText = size > 0 ? this.humanSize(size) : '未知大小';
-      // 返回 URI 供上层保存（持久授权后重启仍可用），
-      // 但**不能直接交给 native** —— native 用 POSIX open() 打开路径，
-      // 不认识 file://docs/... 这种 URI 格式。
-      // 故上层还会做一次异步复制到沙箱，见 copyToSandboxAsync()。
-      const realPath = this.uriToPath(srcUri);
-      return realPath + '|' + fileName + '|' + sizeText;
+      // 【注意】返回的是 **URI**，不是转换后的文件系统路径。
+      //
+      // 我一度把 URI 转成 `/storage/...` 再复制，结果报 13900002
+      // (No such file or directory) —— 因为 ArkTS 的 fs 需要的是
+      // picker **已授权的那个 URI**；裸路径没有对应授权，反而打不开。
+      // 旧实现 fs.openSync(srcUri) 传 URI 是对的，不应改动这一点。
+      //
+      // 因此：ArkTS 侧一律用 URI 做 IO；native 侧才需要真实路径，
+      // 由 copyToSandboxAsync 复制到沙箱后统一用沙箱路径。
+      return srcUri + '|' + fileName + '|' + sizeText;
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'pick %{public}s failed: %{public}s', kind, JSON.stringify(err));
@@ -580,44 +584,28 @@ struct Index {
   }
 
   /**
-   * 把 picker 返回的 URI 转成文件系统路径。
-   *
-   * picker 返回形如 `file://docs/storage/Users/currentUser/a/b.iso`，
-   * 而真实路径是 `/storage/Users/currentUser/a/b.iso`
-   * （去掉 `file://docs` 前缀）。native 侧用 POSIX open()，
-   * 必须给真实路径。
-   *
-   * 若格式不符预期，原样返回 —— 让后续打开失败并给出明确报错，
-   * 而不是在这里静默猜错。
-   */
-  private uriToPath(uri: string): string {
-    const clean = uri.split('?')[0];
-    if (clean.startsWith('file://docs')) {
-      return clean.substring('file://docs'.length);
-    }
-    if (clean.startsWith('file://')) {
-      return clean.substring('file://'.length);
-    }
-    return clean;
-  }
-
-  /**
    * 异步复制到沙箱。
    *
-   * 【为什么还要复制】native 的 CDVD 需要 POSIX 路径，而授权 URI 不能
-   * 直接当路径用（见 uriToPath）。若将来 native 支持接收 fd 或
-   * 支持 URI 映射，可省掉这一步。
+   * 【为什么用 fd 方式而不是 fs.copyFile(uri, path)】
+   * 1) ArkTS 的 fs 需要 picker **已授权的 URI**；把 URI 转成裸路径
+   *    （/storage/...）会报 13900002 No such file or directory
+   *    —— 这是我上一版改错的地方（本次真机实测踩到）。
+   * 2) 直接 copyFileSync(uri, path) 在本平台会报 ENOENT，
+   *    故沿用旧实现验证过的做法：先 openSync 成 fd，再按 fd 复制。
    *
-   * 【与旧实现的区别】旧代码用 fs.copyFileSync **同步**复制且跑在 UI 线程，
-   * 2-4GB 的 ISO 会让界面冻结数秒（外部反馈：卡 8 秒后闪退）。
-   * 这里改用 fs.copyFile 的 Promise 版本 —— 复制期间 UI 保持响应，
-   * 并通过 statusStage 告诉用户正在准备文件。
+   * 【与旧实现的唯一区别】用 **Promise 版** copyFile 而非 copyFileSync：
+   * 复制 2-4GB 的 ISO 时不再阻塞 UI 线程（外部反馈的"卡 8 秒"）。
+   *
+   * 【为什么仍需复制】native 的 CDVD 只接受 POSIX 路径，不能收授权 URI。
+   * 若将来 native 支持接收 fd 或 URI 映射，即可省掉这一步
+   * （那也是"数据目录外置"的最终形态）。
    */
-  private async copyToSandboxAsync(srcPath: string, destDir: string,
+  private async copyToSandboxAsync(srcUri: string, destDir: string,
                                    fileName: string): Promise<string> {
     const destPath = destDir + '/' + fileName;
     // 用户可见的进展提示（避免"点了没反应"）
     this.statusStage = '正在准备文件（' + fileName + '）…';
+
     try {
       if (fs.accessSync(destPath)) {
         fs.unlinkSync(destPath);   // 覆盖旧文件，避免复制到自己
@@ -625,7 +613,22 @@ struct Index {
     } catch (e) {
       // accessSync 失败即不存在，无需处理
     }
-    await fs.copyFile(srcPath, destPath);
+
+    let srcFile: fs.File | null = null;
+    let dstFile: fs.File | null = null;
+    try {
+      srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
+      dstFile = fs.openSync(destPath,
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      await fs.copyFile(srcFile.fd, dstFile.fd);
+    } finally {
+      if (srcFile !== null) {
+        fs.closeSync(srcFile);
+      }
+      if (dstFile !== null) {
+        fs.closeSync(dstFile);
+      }
+    }
     return destPath;
   }
 
