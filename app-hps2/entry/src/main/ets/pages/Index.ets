@@ -101,6 +101,16 @@ struct Index {
   @State surfaceW: number = 0;
   @State surfaceH: number = 0;
   @State statusStage: string = 'idle';
+
+  // ---- 长任务的加载提示 ----
+  //
+  // 为什么单独建状态而不是复用 statusStage：
+  // statusStage 是 native 上报的启动阶段（idle/starting-thread/...），
+  // 语义是"模拟器核心的状态"；而这里是"应用正在做一件耗时的事"
+  // （复制数 GB 的游戏镜像、解析 BIOS）。两者含义不同，
+  // 混用会让 UI 判断变得含糊。
+  @State loading: boolean = false;
+  @State loadingText: string = '';
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State gameFps: number = 0;
@@ -411,6 +421,17 @@ struct Index {
   }
 
   private async chooseBios(): Promise<void> {
+    // BIOS 仅 4MB，复制很快，但用户选择后到显示结果之间仍有间隔，
+    // 给一个轻量提示避免"点了没反应"的观感。
+    this.beginLoading('正在载入 BIOS…');
+    try {
+      await this.doChooseBios();
+    } finally {
+      this.endLoading();
+    }
+  }
+
+  private async doChooseBios(): Promise<void> {
     // PS2 BIOS 常见后缀：.bin / .rom，也有无后缀的
     const r = await this.pickAndCopy('bios',
       ['.bin', '.BIN', '.rom', '.ROM', '.p2b'], this.biosDir());
@@ -603,8 +624,11 @@ struct Index {
   private async copyToSandboxAsync(srcUri: string, destDir: string,
                                    fileName: string): Promise<string> {
     const destPath = destDir + '/' + fileName;
-    // 用户可见的进展提示（避免"点了没反应"）
-    this.statusStage = '正在准备文件（' + fileName + '）…';
+    // 用户可见的加载提示。
+    // 复制 2-4GB 的 ISO 需要数十秒，期间必须让用户知道应用在工作
+    // （此前只在按钮上写"处理中…"，且 picking 在复制开始前就被清掉，
+    //   按钮已还原成"选择游戏镜像" —— 用户看不到任何提示）。
+    this.beginLoading('正在载入游戏镜像…\n' + fileName);
 
     try {
       if (fs.accessSync(destPath)) {
@@ -630,6 +654,18 @@ struct Index {
       }
     }
     return destPath;
+  }
+
+  /** 开始一个长任务：显示加载提示。 */
+  private beginLoading(text: string): void {
+    this.loadingText = text;
+    this.loading = true;
+  }
+
+  /** 结束长任务：隐藏加载提示。 */
+  private endLoading(): void {
+    this.loading = false;
+    this.loadingText = '';
   }
 
   private async chooseGame(): Promise<void> {
@@ -663,6 +699,8 @@ struct Index {
       this.gamePath = '';
       this.gameName = '';
     } finally {
+      // 无论成功失败都要收起加载提示，否则界面会一直卡在"载入中"
+      this.endLoading();
       this.statusStage = '';
       this.picking = '';
     }
@@ -1143,6 +1181,43 @@ struct Index {
         .justifyContent(FlexAlign.Start)
         .alignItems(HorizontalAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // ---- 加载覆盖层 ----
+      //
+      // 用户要求：选择游戏后给出加载中提示，加载完自动消失。
+      // 覆盖全屏且**拦截触摸** —— 复制数 GB 期间不应允许再次点选，
+      // 否则会并发复制、互相覆盖目标文件。
+      if (this.loading) {
+        Column({ space: 20 }) {
+          LoadingProgress()
+            .width(56)
+            .height(56)
+            .color(Theme.accentHi())
+
+          Text('载入中')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Theme.textPri())
+
+          Text(this.loadingText)
+            .fontSize(13)
+            .fontColor(Theme.textSec())
+            .textAlign(TextAlign.Center)
+            .maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 24, right: 24 })
+
+          Text('大文件需要数十秒，请勿退出应用')
+            .fontSize(11)
+            .fontColor(Theme.textDim())
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        // 拦截所有触摸：加载期间不允许再触发选择/启动
+        .onClick(() => { /* 有意吞掉点击，避免穿透到底层控件 */ })
       }
 
       // ---- 设置弹层 ----
