@@ -14,6 +14,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace Hps2VmSync
@@ -22,6 +23,12 @@ namespace Hps2VmSync
 	/// 定义在 napi_init.cpp（只有那里知道主循环状态）。
 	/// 读档/存档前用它判断是否已达安全点。
 	bool IsInExecute();
+
+	/// 把任务投递到 VM 线程执行并等待完成（等效上游 Host::RunOnCPUThread）。
+	/// 读档/存档必须经此调用：它们要重建重编译器状态与 TLB 映射，
+	/// 这些只允许在 VM 线程上下文里发生。
+	/// 返回 false 表示 VM 未运行或超时。
+	bool RunOnVmThread(std::function<void()> fn, int timeout_ms);
 }
 
 namespace Hps2SaveState

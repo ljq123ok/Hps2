@@ -7,6 +7,7 @@
 #include <hilog/log.h>
 
 #include <chrono>
+#include <memory>
 #include <thread>
 
 #include "VMManager.h"
@@ -76,19 +77,43 @@ namespace Hps2SaveState
 
 		// zip_on_thread=true：压缩放到后台线程，避免存档瞬间卡住画面
 		// （上游 Hotkeys.cpp:115 亦如此调用）。
-		VMManager::SaveStateToSlot(slot, true, [slot](const std::string& error) {
-			if (!error.empty())
-				SLOGE("save slot %{public}d failed: %{public}s", slot, error.c_str());
-			else
-				SLOGI("saved to slot %{public}d", slot);
-		});
+		// 【关键】经 VM 线程执行 —— 与读档同理，状态操作必须在 VM 线程上下文。
+		//
+		// 注意用 shared_ptr 而非栈上引用：zip_on_thread=true 时回调可能
+		// 在 RunOnVmThread 返回**之后**才触发，捕获栈变量会悬垂（use-after-free）。
+		auto err2 = std::make_shared<std::string>();
+		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, err2]() {
+			VMManager::SaveStateToSlot(slot, true, [slot, err2](const std::string& error) {
+				if (!error.empty())
+				{
+					SLOGE("save slot %{public}d failed: %{public}s", slot, error.c_str());
+					*err2 = error;
+				}
+				else
+				{
+					SLOGI("saved to slot %{public}d", slot);
+				}
+			});
+		}, 5000);
+		if (!dispatched)
+		{
+			if (was_running)
+				VMManager::SetPaused(false);
+			r.message = "存档失败：无法在模拟器线程上执行。";
+			return r;
+		}
 
 		// 注意：压缩在后台进行，此处返回"已开始"而非"已完成"。
 		// 措辞需相应保守，避免用户以为立刻可用。
-		if (was_running)
+		if (was_running && err2->empty())
 		{
 			VMManager::SetPaused(false);
 			SLOGI("SAVE: VM resumed");
+		}
+		if (!err2->empty())
+		{
+			r.message = "存档失败：" + *err2;
+			return r;
 		}
 
 		r.ok = true;
@@ -176,10 +201,37 @@ namespace Hps2SaveState
 			}
 		}
 
-		SLOGI("LOAD step3: about to call LoadStateFromSlot(%{public}d)", slot);
+		SLOGI("LOAD step3: about to call LoadStateFromSlot(%{public}d) on VM thread", slot);
 
+		// ==================================================================
+		// 【根因修复】读档必须在 **VM 线程**上执行。
+		//
+		// 我此前只把 VM 暂停，然后在本线程（JS 线程）执行读档。结果：
+		//   - eeMem->Main 内容正确（断点处验证过，全是合法 MIPS 指令）
+		//   - cpuRegs.pc 正确（0x00116F4C）
+		//   - 但 JIT 取指得到垃圾（Unknown R5900 MMI: 73414842）
+		// 即 **JIT 看到的内存与 eeMem->Main 不一致**。
+		//
+		// 原因：读档内部会重建重编译器与 fastmem 映射
+		// （ClearCPUExecutionCaches -> recResetEE/recResetRaw、PostLoadPrep
+		// 的 MapTLB）。这些操作只允许在 VM 线程上下文里发生 ——
+		// 上游正是为此才用 Host::RunOnCPUThread 投递。
+		// 我们的 Host 没实现它，故补了任务队列（Hps2VmSync::RunOnVmThread）。
+		// ==================================================================
 		Error error;
-		const bool ok = VMManager::LoadStateFromSlot(slot, false, &error);
+		bool ok = false;
+		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, &ok, &error]() {
+			ok = VMManager::LoadStateFromSlot(slot, false, &error);
+		}, 8000);
+
+		if (!dispatched)
+		{
+			if (was_running)
+				VMManager::SetPaused(false);
+			r.message = "读档失败：无法在模拟器线程上执行（超时或线程不可用）。";
+			SLOGE("LOAD aborted: RunOnVmThread failed");
+			return r;
+		}
 
 		SLOGI("LOAD step4: LoadStateFromSlot returned ok=%{public}d", ok ? 1 : 0);
 

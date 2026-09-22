@@ -36,6 +36,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <functional>
+#include <condition_variable>
 #include <vector>
 
 #undef LOG_DOMAIN
@@ -134,6 +136,31 @@ std::atomic<bool> g_vm_running{false};
 // 外部线程在读完档前先等它变 false，才是真的等到了安全点。
 // ---------------------------------------------------------------------------
 std::atomic<bool> g_vm_in_execute{false};
+
+// ---------------------------------------------------------------------------
+// VM 线程任务队列（等效于上游的 Host::RunOnCPUThread）
+//
+// 【为什么必须这样】上游把读档投递到 CPU 线程执行：
+//     Host::RunOnCPUThread([slot]() { LoadStateFromSlot(...); });
+// 而我们的 Host::RunOnCPUThread 是未实现的桩，且 VM 跑在独立线程里。
+//
+// 我此前只把 VM 暂停，然后**在 JS 线程上**执行读档 —— 结果：
+//   eeMem->Main 的内容是对的（已在断点处验证，全是合法 MIPS 指令），
+//   cpuRegs.pc 也是对的，但 JIT 取指得到垃圾
+//   （"Unknown R5900 MMI: 73414842"）。
+// 即：**JIT 看到的内存与 eeMem->Main 不一致** —— 因为读档内部会重建
+// 重编译器与 fastmem 映射（ClearCPUExecutionCaches / MapTLB），
+// 而这些必须发生在 VM 线程的上下文里。
+//
+// 故补一个任务队列：外部线程投递，暂停中的 VM 线程取出并执行，
+// 完成后通知等待方。这就是 RunOnCPUThread 的等效实现。
+// ---------------------------------------------------------------------------
+std::mutex g_vm_task_mutex;
+std::condition_variable g_vm_task_cv;          // VM 线程等待任务
+std::condition_variable g_vm_task_done_cv;     // 外部线程等待完成
+std::function<void()> g_vm_pending_task;
+bool g_vm_task_pending = false;
+bool g_vm_task_running = false;
 std::mutex g_mutex;
 std::string g_last_error;
 std::thread g_vm_thread;
@@ -793,7 +820,37 @@ void VMThreadMain() {
 		// ------------------------------------------------------------------
 		if (before == VMState::Paused) {
 			g_vm_in_execute.store(false);
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+			// 暂停期间在此执行外部投递的任务（等效 RunOnCPUThread）。
+			// 关键：任务在**本线程**（VM/CPU 线程）上下文中运行，
+			// 因此读档内部的重编译器重建、TLB 重映射等都发生在
+			// 正确的线程上 —— 这是 JIT 能看到一致内存的前提。
+			{
+				std::unique_lock<std::mutex> lk(g_vm_task_mutex);
+				if (!g_vm_task_pending)
+				{
+					// 无任务时带超时等待，避免空转耗电
+					g_vm_task_cv.wait_for(lk, std::chrono::milliseconds(5),
+						[] { return g_vm_task_pending || !g_vm_running.load(); });
+				}
+
+				if (g_vm_task_pending)
+				{
+					std::function<void()> task = std::move(g_vm_pending_task);
+					g_vm_pending_task = nullptr;
+					g_vm_task_pending = false;
+					g_vm_task_running = true;
+					lk.unlock();
+
+					LOGI("VM thread: running queued task");
+					task();
+					LOGI("VM thread: queued task finished");
+
+					lk.lock();
+					g_vm_task_running = false;
+				}
+			}
+			g_vm_task_done_cv.notify_all();
 			continue;
 		}
 
@@ -1366,5 +1423,50 @@ namespace Hps2VmSync
 	bool IsInExecute()
 	{
 		return g_vm_in_execute.load();
+	}
+
+	/**
+	 * 把一个任务投递到 VM 线程执行，并等待其完成。
+	 *
+	 * 等效于上游的 Host::RunOnCPUThread(fn, /*block=* /true)。
+	 * 读档/存档必须经此调用 —— 它们要重建重编译器状态与 TLB 映射，
+	 * 这些操作只允许在 VM 线程上下文里发生。
+	 *
+	 * 返回 false 表示 VM 线程不可用（未运行）或超时。
+	 */
+	bool RunOnVmThread(std::function<void()> fn, int timeout_ms)
+	{
+		if (!g_vm_running.load())
+			return false;
+
+		std::unique_lock<std::mutex> lk(g_vm_task_mutex);
+
+		// 若已有任务在执行或排队，等待其完成（串行化，避免并发投递）
+		g_vm_task_done_cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+			[] { return !g_vm_task_pending && !g_vm_task_running; });
+
+		if (g_vm_task_pending || g_vm_task_running)
+		{
+			LOGE("RunOnVmThread: previous task still busy; refusing");
+			return false;
+		}
+
+		g_vm_pending_task = std::move(fn);
+		g_vm_task_pending = true;
+		lk.unlock();
+		g_vm_task_cv.notify_all();
+
+		// 等待 VM 线程完成
+		lk.lock();
+		const bool done = g_vm_task_done_cv.wait_for(lk,
+			std::chrono::milliseconds(timeout_ms),
+			[] { return !g_vm_task_pending && !g_vm_task_running; });
+
+		if (!done)
+		{
+			LOGE("RunOnVmThread: timed out waiting for task completion");
+			return false;
+		}
+		return true;
 	}
 }
