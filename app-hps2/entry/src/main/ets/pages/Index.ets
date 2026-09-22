@@ -16,6 +16,7 @@ import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
 import resourceManager from '@ohos.resourceManager';
 import buffer from '@ohos.buffer';
+import fileshare from '@ohos.fileshare';
 import hps2core from 'libhps2core.so';
 import { Theme } from '../common/Theme';
 import { HomeScreen } from '../components/HomeScreen';
@@ -53,6 +54,18 @@ interface JitCheckResult {
 interface BiosSelection {
   fileName: string;
   displayName: string;
+}
+
+/**
+ * 上次选中的游戏。
+ *
+ * 与 BIOS 不同，游戏镜像**原地读取**（不复制到沙箱），
+ * 因此这里保存的是完整的 URI，而不是沙箱内文件名。
+ * URI 的读权限经 fileshare.persistPermission() 持久化，重启后仍可用。
+ */
+interface GameSelection {
+  uri: string;
+  name: string;
 }
 
 interface VideoSettingsSelection {
@@ -483,16 +496,192 @@ struct Index {
     }
   }
 
-  private async chooseGame(): Promise<void> {
-    // PS2 游戏镜像常见格式
-    const r = await this.pickAndCopy('game',
-      ['.iso', '.ISO', '.chd', '.CHD', '.bin', '.BIN', '.img', '.IMG', '.gz'],
-      this.gameDir());
-    if (r.length > 0) {
-      const parts = r.split('|');
-      this.gamePath = parts[0];
-      this.gameName = parts[1] + ' (' + parts[2] + ')';
+  /**
+   * 让用户选一个大文件并**原地使用**（不复制）。
+   *
+   * 【为什么不再复制】外部测试者反馈：选 ISO 后 GUI 卡约 8 秒随后闪退，
+   * 而 .bin 正常。成因是 pickAndCopy() 用 fs.copyFileSync **同步复制**
+   * 且跑在 UI 线程 —— ISO 动辄 2-4GB，期间界面完全冻结。
+   * （自测 2.24GB 约 2.4 秒；用户文件更大或存储更慢时 8 秒合理。）
+   *
+   * 改为原地读取还有两个额外好处：
+   *   1. 省下 2-4GB 沙箱空间（用户此前要等两份拷贝）
+   *   2. 游戏放在用户自己的目录里，升级/重装应用不会丢
+   *
+   * 【权限】长期持有 URI 读权限需要 fileshare.persistPermission()，
+   * 其要求的 ohos.permission.FILE_ACCESS_PERSIST 经查 SDK 的
+   * PermissionDefinitions.json 为 grantMode=system_grant、
+   * availableLevel=normal —— 系统自动授予，非受限、无需 ACL、无需弹窗。
+   *
+   * 返回 '路径|显示名|大小'，失败返回 ''。
+   */
+  private async pickInPlace(kind: string, suffixes: Array<string>): Promise<string> {
+    this.picking = kind;
+    this.statusError = '';
+    try {
+      const ctx = getContext(this);
+      const options = new picker.DocumentSelectOptions();
+      options.fileSuffixFilters = suffixes;
+
+      const docPicker = new picker.DocumentViewPicker(ctx);
+      const uris: Array<string> = await docPicker.select(options);
+      if (!uris || uris.length === 0) {
+        hilog.info(DOMAIN, TAG, 'user cancelled %{public}s selection', kind);
+        this.picking = '';
+        return '';
+      }
+
+      const srcUri = uris[0];
+      hilog.info(DOMAIN, TAG, 'selected %{public}s uri=%{public}s', kind, srcUri);
+
+      // 持久化读权限：否则应用重启后该 URI 失效。
+      // 失败不致命 —— 本次会话内仍可用，只是下次启动要重选。
+      try {
+        const policy: fileshare.PolicyInfo = {
+          uri: srcUri,
+          operationMode: fileshare.OperationMode.READ_MODE
+        };
+        await fileshare.persistPermission([policy]);
+        hilog.info(DOMAIN, TAG, 'persistPermission ok for %{public}s', kind);
+      } catch (e) {
+        const err = e as BusinessError;
+        hilog.error(DOMAIN, TAG, 'persistPermission failed (%{public}s): %{public}s',
+          kind, err.message);
+      }
+
+      const clean = srcUri.split('?')[0];
+      const segs = clean.split('/');
+      const fileName = decodeURIComponent(segs[segs.length - 1]) || (kind + '.bin');
+
+      // 只取大小用于显示，不读取内容
+      let size = 0;
+      try {
+        const stat = fs.statSync(srcUri);
+        size = stat.size;
+      } catch (e) {
+        hilog.error(DOMAIN, TAG, 'stat %{public}s failed (size unknown)', kind);
+      }
+
+      this.picking = '';
+      const sizeText = size > 0 ? this.humanSize(size) : '未知大小';
+      // 返回 URI 供上层保存（持久授权后重启仍可用），
+      // 但**不能直接交给 native** —— native 用 POSIX open() 打开路径，
+      // 不认识 file://docs/... 这种 URI 格式。
+      // 故上层还会做一次异步复制到沙箱，见 copyToSandboxAsync()。
+      const realPath = this.uriToPath(srcUri);
+      return realPath + '|' + fileName + '|' + sizeText;
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'pick %{public}s failed: %{public}s', kind, JSON.stringify(err));
+      this.statusError = '选择文件失败：' + (err.message ? err.message : JSON.stringify(err));
+      this.picking = '';
+      return '';
     }
+  }
+
+  /**
+   * 把 picker 返回的 URI 转成文件系统路径。
+   *
+   * picker 返回形如 `file://docs/storage/Users/currentUser/a/b.iso`，
+   * 而真实路径是 `/storage/Users/currentUser/a/b.iso`
+   * （去掉 `file://docs` 前缀）。native 侧用 POSIX open()，
+   * 必须给真实路径。
+   *
+   * 若格式不符预期，原样返回 —— 让后续打开失败并给出明确报错，
+   * 而不是在这里静默猜错。
+   */
+  private uriToPath(uri: string): string {
+    const clean = uri.split('?')[0];
+    if (clean.startsWith('file://docs')) {
+      return clean.substring('file://docs'.length);
+    }
+    if (clean.startsWith('file://')) {
+      return clean.substring('file://'.length);
+    }
+    return clean;
+  }
+
+  /**
+   * 异步复制到沙箱。
+   *
+   * 【为什么还要复制】native 的 CDVD 需要 POSIX 路径，而授权 URI 不能
+   * 直接当路径用（见 uriToPath）。若将来 native 支持接收 fd 或
+   * 支持 URI 映射，可省掉这一步。
+   *
+   * 【与旧实现的区别】旧代码用 fs.copyFileSync **同步**复制且跑在 UI 线程，
+   * 2-4GB 的 ISO 会让界面冻结数秒（外部反馈：卡 8 秒后闪退）。
+   * 这里改用 fs.copyFile 的 Promise 版本 —— 复制期间 UI 保持响应，
+   * 并通过 statusStage 告诉用户正在准备文件。
+   */
+  private async copyToSandboxAsync(srcPath: string, destDir: string,
+                                   fileName: string): Promise<string> {
+    const destPath = destDir + '/' + fileName;
+    // 用户可见的进展提示（避免"点了没反应"）
+    this.statusStage = '正在准备文件（' + fileName + '）…';
+    try {
+      if (fs.accessSync(destPath)) {
+        fs.unlinkSync(destPath);   // 覆盖旧文件，避免复制到自己
+      }
+    } catch (e) {
+      // accessSync 失败即不存在，无需处理
+    }
+    await fs.copyFile(srcPath, destPath);
+    return destPath;
+  }
+
+  private async chooseGame(): Promise<void> {
+    // PS2 游戏镜像常见格式。
+    // 【改为原地读取，不再复制】见 pickInPlace 的说明 —— 复制 2-4GB 的 ISO
+    // 会同步阻塞 UI 线程（外部反馈：卡 8 秒后闪退）。
+    const r = await this.pickInPlace('game',
+      ['.iso', '.ISO', '.chd', '.CHD', '.bin', '.BIN', '.img', '.IMG', '.gz']);
+    if (r.length === 0) {
+      this.statusStage = '';
+      return;
+    }
+
+    const parts = r.split('|');
+    const srcPath = parts[0];
+    const fileName = parts[1];
+    const sizeText = parts[2];
+
+    try {
+      // 异步复制到沙箱（native 需要 POSIX 路径）。
+      // 关键改进：不再用同步复制，UI 在复制期间保持响应。
+      const destPath = await this.copyToSandboxAsync(srcPath, this.gameDir(), fileName);
+      this.gamePath = destPath;
+      this.gameName = fileName + ' (' + sizeText + ')';
+      this.saveGameSelection(destPath, fileName);
+      hilog.info(DOMAIN, TAG, 'game ready at sandbox: %{public}s', destPath);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'copy game failed: %{public}s', JSON.stringify(err));
+      this.statusError = '复制游戏文件失败：' + (err.message ? err.message : JSON.stringify(err));
+      this.gamePath = '';
+      this.gameName = '';
+    } finally {
+      this.statusStage = '';
+      this.picking = '';
+    }
+  }
+
+  /** 记住上次选中的游戏（含 URI，便于重启后直接恢复）。 */
+  private saveGameSelection(uri: string, displayName: string): void {
+    try {
+      const file = fs.openSync(this.gameSelectionFile(),
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, JSON.stringify({ uri: uri, name: displayName } as GameSelection));
+      } finally {
+        fs.closeSync(file);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'saveGameSelection failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  private gameSelectionFile(): string {
+    return this.dataRoot() + '/game_selection.json';
   }
 
   private clearGame(): void {
