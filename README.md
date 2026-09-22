@@ -3,7 +3,7 @@
 基于 [ARMSX2](https://github.com/ARMSX2/ARMSX2)（PCSX2 的原生 ARM64 JIT fork）
 移植到 HarmonyOS / OpenHarmony。
 
-> **当前测试版：v0.11**
+> **当前测试版：v0.12**
 >
 > 开发测试设备：**Pura X View**。欢迎在 GitHub Issues 反馈测试结果。
 > 本版本是开发测试包，不代表已经适配所有 HarmonyOS 设备。
@@ -116,7 +116,7 @@ bundleName 与 Profile 不匹配而失败。
 
 ## 项目状态
 
-### v0.11 真实状态
+### v0.12 真实状态
 
 - 已在开发测试手机 **Pura X View** 上完成核心启动、BIOS/游戏运行、OpenGL 画面、横屏布局、虚拟按键、3 倍内部渲染倍率等阶段性验证。
 - 本版新增即时存档（保存、读取、删除）、可拖动 FPS 悬浮球、日夜主题、错误分类、BIOS 规格检查、诊断日志导出和加载提示。

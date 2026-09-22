@@ -1,6 +1,6 @@
 # Hps2 更新日志 —— 2026-09-22
 
-**版本**：0.11（`versionCode` 1000011）
+**版本**：0.12（`versionCode` 1000012）
 **设备**：HUAWEI Pura X View（`VOL-AL00`），OpenHarmony-7.0.0.105，API 26，arm64-v8a
 **提交数**：23 个（含修复与文档）
 
