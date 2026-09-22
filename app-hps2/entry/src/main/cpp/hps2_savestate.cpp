@@ -11,6 +11,7 @@
 
 #include "VMManager.h"
 #include "R5900.h"
+#include "MemoryTypes.h"
 #include "common/Error.h"
 
 #undef LOG_DOMAIN
@@ -19,6 +20,7 @@
 #define LOG_TAG "HPS2_SAVE"
 
 #define SLOGI(...) OH_LOG_Print(LOG_APP, LOG_INFO,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
+#define SLOGW(...) OH_LOG_Print(LOG_APP, LOG_WARN,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 #define SLOGE(...) OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 
 namespace Hps2SaveState
@@ -188,6 +190,38 @@ namespace Hps2SaveState
 		//   a) 读档刚结束 pc 就是错的 => 恢复流程本身有问题
 		//   b) 读档后 pc 正确、后续被改 => 问题在恢复运行那一步
 		SLOGI("LOAD check: after load, cpuRegs.pc=0x%{public}08X", cpuRegs.pc);
+
+		// ------------------------------------------------------------------
+		// 【直接验证主存是否真的被写入】
+		//
+		// 真机日志显示：PC 恢复正确（0x00116F4C），但从该地址取指得到的
+		// 是垃圾（"Unknown R5900 MMI: 73414842"）。
+		// => PC 对、内存不对。二者是两批独立数据，故必须分开验证。
+		//
+		// 这里直接读 eeMem->Main 在 PC 处的 4 个字节：
+		//   - 若是 0x77 填充 / 与其后的字节雷同，说明主存**没有被恢复**
+		//   - 若内容因游戏而异，说明主存已恢复，问题在别处
+		// ------------------------------------------------------------------
+		if (cpuRegs.pc < Ps2MemSize::MainRam)
+		{
+			const u8* p = &eeMem->Main[cpuRegs.pc & ~3u];
+			const u32 word = static_cast<u32>(p[0]) | (static_cast<u32>(p[1]) << 8)
+				| (static_cast<u32>(p[2]) << 16) | (static_cast<u32>(p[3]) << 24);
+			// 同时在四个不同区域各取一个样本，判断是否为"整片相同值"
+			const u32 s0 = *reinterpret_cast<const u32*>(&eeMem->Main[0x000000]);
+			const u32 s1 = *reinterpret_cast<const u32*>(&eeMem->Main[0x100000]);
+			const u32 s2 = *reinterpret_cast<const u32*>(&eeMem->Main[0x800000]);
+			const u32 s3 = *reinterpret_cast<const u32*>(&eeMem->Main[0x1000000]);
+			SLOGI("LOAD memcheck: at_pc=0x%{public}08X | "
+			      "samples 0x0=0x%{public}08X 0x100000=0x%{public}08X "
+			      "0x800000=0x%{public}08X 0x1000000=0x%{public}08X",
+				word, s0, s1, s2, s3);
+		}
+		else
+		{
+			SLOGW("LOAD memcheck: pc=0x%{public}08X is outside main RAM; skipped",
+				cpuRegs.pc);
+		}
 
 		// 读档完成后恢复运行（仅当读档前本来在运行）。
 		// 这一步同样重要：若不恢复，用户会看到"读档后画面静止"。
