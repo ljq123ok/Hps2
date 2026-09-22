@@ -120,6 +120,20 @@ const char* StageName(BootStage s) {
 
 std::atomic<int> g_stage{static_cast<int>(BootStage::kIdle)};
 std::atomic<bool> g_vm_running{false};
+
+// ---------------------------------------------------------------------------
+// VM 线程与外部线程的握手（用于安全地改 VM 状态，例如读档）
+//
+// 【为什么需要】SetPaused(true) 只是把 VMManager 的状态改为 Paused，
+// 它**立即返回**，并不保证 VM 线程已退出 VMManager::Execute()。
+// 因此"轮询 GetState() == Paused"是**形同虚设**的等待 ——
+// 状态是自己刚设的，第一次检查就通过（实测 0ms）。
+//
+// 真正需要知道的是"VM 线程此刻是否在执行中"。故加一个标志：
+//   g_vm_in_execute = true  表示正阻塞在 VMManager::Execute() 内
+// 外部线程在读完档前先等它变 false，才是真的等到了安全点。
+// ---------------------------------------------------------------------------
+std::atomic<bool> g_vm_in_execute{false};
 std::mutex g_mutex;
 std::string g_last_error;
 std::thread g_vm_thread;
@@ -763,6 +777,26 @@ void VMThreadMain() {
 			break;
 		}
 
+		// ------------------------------------------------------------------
+		// 【关键】Paused 时必须**不要**调用 Execute()。
+		//
+		// 原实现只跳过 Stopping/Shutdown，于是暂停期间仍反复调用
+		// VMManager::Execute() -> recExecute() -> 进入 JIT 执行 guest 代码。
+		// 后果有两个：
+		//   1) 暂停名不副实 —— 外部线程（读档）以为 VM 停了，实际还在跑，
+		//      状态依然被并发覆写。
+		//   2) 日志里那句 "WARN: Execute returned N times (频繁返回通常
+		//      意味着 VM 处于 Paused)" 正是这个缺陷的症状。
+		//
+		// 现在暂停时就空转等待，让 g_vm_in_execute 保持 false ——
+		// 外部线程据此可确认已达真正的安全点。
+		// ------------------------------------------------------------------
+		if (before == VMState::Paused) {
+			g_vm_in_execute.store(false);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			continue;
+		}
+
 		// 只在状态变化时报一次，避免高频刷屏。
 		// 正常运行时状态恒为 Running，Execute() 会长时间不返回；
 		// 若它频繁返回（且状态是 Paused），说明 VM 未被恢复。
@@ -772,7 +806,11 @@ void VMThreadMain() {
 			last_state = before;
 		}
 
+		// 标记"正在执行"。外部线程（如读档）据此判断是否已达安全点。
+		// 必须在调用前置位、返回后清除，且中间不能提前退出。
+		g_vm_in_execute.store(true);
 		VMManager::Execute();
+		g_vm_in_execute.store(false);
 		execute_calls++;
 
 		// 每 5000 次返回报一次存活，正常应极少触发（Execute 是长跑）。
@@ -1314,4 +1352,19 @@ static napi_module hps2CoreModule = {
 
 extern "C" __attribute__((constructor)) void RegisterHps2CoreModule(void) {
 	napi_module_register(&hps2CoreModule);
+}
+
+// ---------------------------------------------------------------------------
+// 供 hps2_savestate 使用的握手接口（见 g_vm_in_execute 的说明）。
+//
+// 放在 napi_init.cpp 而非 savestate 里，是因为"VM 线程是否在执行"这件事
+// 只有这里知道（主循环在此文件中）。
+// ---------------------------------------------------------------------------
+namespace Hps2VmSync
+{
+	/** VM 线程此刻是否阻塞在 VMManager::Execute() 内 */
+	bool IsInExecute()
+	{
+		return g_vm_in_execute.load();
+	}
 }

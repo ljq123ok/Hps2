@@ -58,15 +58,18 @@ namespace Hps2SaveState
 		if (was_running)
 		{
 			VMManager::SetPaused(true);
+			// 与读档同理：必须等 VM 真正退出 Execute()，
+			// 否则保存到的是"写了一半"的不一致状态。
 			constexpr int kMaxWaitMs = 3000;
-			constexpr int kStepMs = 10;
+			constexpr int kStepMs = 2;
 			int waited = 0;
-			while (VMManager::GetState() == VMState::Running && waited < kMaxWaitMs)
+			while (Hps2VmSync::IsInExecute() && waited < kMaxWaitMs)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
 				waited += kStepMs;
 			}
-			SLOGI("SAVE: VM paused after %{public}dms", waited);
+			SLOGI("SAVE: waited %{public}dms, still_in_execute=%{public}d",
+				waited, Hps2VmSync::IsInExecute() ? 1 : 0);
 		}
 
 		// zip_on_thread=true：压缩放到后台线程，避免存档瞬间卡住画面
@@ -134,19 +137,41 @@ namespace Hps2SaveState
 		if (was_running)
 			VMManager::SetPaused(true);
 
-		// 等待 VM 真正停下。Execute() 只在状态变化时返回，所以这一步
-		// 通常很快；但仍给足超时并逐次记录，避免无声卡住。
+		// ------------------------------------------------------------------
+		// 【关键修正】等待 VM 线程真正退出 VMManager::Execute()。
+		//
+		// 原先的条件是 `while (GetState() == VMState::Running)` —— 那是
+		// **形同虚设**：SetPaused(true) 会立刻把状态改成 Paused（因为就是
+		// 我们自己设的），于是第一次检查就通过，实测耗时 0ms。
+		// 结果读档仍在 VM 正在执行时进行 —— 状态依然被并发覆写。
+		//
+		// 现在改为等待 g_vm_in_execute（由 VM 线程在主循环里置位/清除），
+		// 它真实反映"VM 线程是否阻塞在 Execute() 内"。
+		// ------------------------------------------------------------------
 		{
 			constexpr int kMaxWaitMs = 3000;
-			constexpr int kStepMs = 10;
+			constexpr int kStepMs = 2;
 			int waited = 0;
-			while (VMManager::GetState() == VMState::Running && waited < kMaxWaitMs)
+			while (Hps2VmSync::IsInExecute() && waited < kMaxWaitMs)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
 				waited += kStepMs;
 			}
-			SLOGI("LOAD step2: VM paused after %{public}dms, state=%{public}d",
-				waited, static_cast<int>(VMManager::GetState()));
+			const bool in_exec = Hps2VmSync::IsInExecute();
+			SLOGI("LOAD step2: waited %{public}dms for Execute() to return; "
+			      "still_in_execute=%{public}d state=%{public}d",
+				waited, in_exec ? 1 : 0, static_cast<int>(VMManager::GetState()));
+			if (in_exec)
+			{
+				// 超时仍未退出 —— 明确报出，不要假装安全。
+				SLOGE("LOAD aborted: VM thread still in Execute() after %{public}dms; "
+				      "refusing to load state (would corrupt it)",
+					kMaxWaitMs);
+				if (was_running)
+					VMManager::SetPaused(false);
+				r.message = "读档失败：模拟器线程未能在超时内暂停，已取消以避免损坏存档。";
+				return r;
+			}
 		}
 
 		SLOGI("LOAD step3: about to call LoadStateFromSlot(%{public}d)", slot);

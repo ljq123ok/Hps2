@@ -16,6 +16,14 @@
 
 #include <string>
 
+namespace Hps2VmSync
+{
+	/// VM 线程此刻是否阻塞在 VMManager::Execute() 内。
+	/// 定义在 napi_init.cpp（只有那里知道主循环状态）。
+	/// 读档/存档前用它判断是否已达安全点。
+	bool IsInExecute();
+}
+
 namespace Hps2SaveState
 {
 	/** 存档槽数量。上游常用 1..10，这里取 8 个便于 UI 排布。 */
