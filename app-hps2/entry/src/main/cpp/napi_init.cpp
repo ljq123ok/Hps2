@@ -1484,8 +1484,25 @@ namespace Hps2VmSync
 
 		if (!done)
 		{
-			LOGE("RunOnVmThread: timed out waiting for task completion");
-			return false;
+			// 尚未被 VM 线程取走时可以安全撤销，保证调用方收到 false 后
+			// 任务不会又在后台迟到执行。
+			if (g_vm_task_pending)
+			{
+				g_vm_pending_task = nullptr;
+				g_vm_task_pending = false;
+				LOGE("RunOnVmThread: timed out before task start; task cancelled");
+				return false;
+			}
+
+			// 一旦任务已经开始，就不能让捕获状态先于任务析构，也不能让
+			// 调用方恢复 VM 后再继续读写存档。此时同步等到任务真正结束。
+			if (g_vm_task_running)
+			{
+				LOGW("RunOnVmThread: timeout elapsed while task is running; waiting for safe completion");
+				g_vm_task_done_cv.wait(lk,
+					[] { return !g_vm_task_pending && !g_vm_task_running; });
+				return true;
+			}
 		}
 		return true;
 	}

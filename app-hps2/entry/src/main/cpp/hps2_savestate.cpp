@@ -219,10 +219,14 @@ namespace Hps2SaveState
 		// 上游正是为此才用 Host::RunOnCPUThread 投递。
 		// 我们的 Host 没实现它，故补了任务队列（Hps2VmSync::RunOnVmThread）。
 		// ==================================================================
-		Error error;
-		bool ok = false;
-		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, &ok, &error]() {
-			ok = VMManager::LoadStateFromSlot(slot, false, &error);
+		struct LoadOutcome
+		{
+			bool ok = false;
+			Error error;
+		};
+		auto outcome = std::make_shared<LoadOutcome>();
+		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, outcome]() {
+			outcome->ok = VMManager::LoadStateFromSlot(slot, false, &outcome->error);
 		}, 8000);
 
 		if (!dispatched)
@@ -234,7 +238,22 @@ namespace Hps2SaveState
 			return r;
 		}
 
-		SLOGI("LOAD step4: LoadStateFromSlot returned ok=%{public}d", ok ? 1 : 0);
+		SLOGI("LOAD step4: LoadStateFromSlot returned ok=%{public}d", outcome->ok ? 1 : 0);
+
+		if (!outcome->ok)
+		{
+			// 读档失败也必须恢复到调用前的运行状态，否则一次坏档/旧档
+			// 就会让画面永久停在 Paused，看起来像应用卡死。
+			if (was_running)
+			{
+				VMManager::SetPaused(false);
+				SLOGI("LOAD step5: VM resumed after load failure");
+			}
+			r.message = "读档失败：" + outcome->error.GetDescription();
+			SLOGE("LoadStateFromSlot(%{public}d) failed: %{public}s",
+				slot, outcome->error.GetDescription().c_str());
+			return r;
+		}
 
 		// 直接读取 EE 的 PC，判断"状态是否真的恢复了"。
 		// 真机日志显示恢复后 recExecute 打印 pc=0x00000001（非法值：
@@ -278,18 +297,10 @@ namespace Hps2SaveState
 
 		// 读档完成后恢复运行（仅当读档前本来在运行）。
 		// 这一步同样重要：若不恢复，用户会看到"读档后画面静止"。
-		if (was_running && ok)
+		if (was_running)
 		{
 			VMManager::SetPaused(false);
 			SLOGI("LOAD step5: VM resumed");
-		}
-
-		if (!ok)
-		{
-			r.message = "读档失败：" + error.GetDescription();
-			SLOGE("LoadStateFromSlot(%{public}d) failed: %{public}s",
-				slot, error.GetDescription().c_str());
-			return r;
 		}
 
 		r.ok = true;
