@@ -20,6 +20,15 @@ export struct HomeScreen {
   @Prop picking: string = '';
   @Prop statusStage: string = '';
   @Prop statusError: string = '';
+  /** 失败类别标签（改进 1）；空则只显示原始错误 */
+  @Prop errorKindLabel: string = '';
+  @Prop errorAdvice: string = '';
+  /** BIOS 规格检查（改进 2） */
+  @Prop biosCheckChecked: boolean = false;
+  @Prop biosCheckMessage: string = '';
+  @Prop biosCheckSuspicious: boolean = false;
+  /** 日志导出反馈（改进 3） */
+  @Prop logExportMessage: string = '';
   @Prop busy: boolean = false;
   @Prop jitChecked: boolean = false;
   @Prop jitAvailable: boolean = false;
@@ -35,6 +44,7 @@ export struct HomeScreen {
   onStart?: () => void;
   onCheckJit?: () => void;
   onOpenSettings?: () => void;
+  onExportLog?: () => void;
 
   /** 列表项通用样式 */
   @Builder
@@ -197,15 +207,82 @@ export struct HomeScreen {
             .onClick(() => { if (this.onStart) this.onStart(); })
 
           if (this.statusError.length > 0) {
-            Column({ space: 6 }) {
-              Text('错误').fontSize(13).fontColor(Theme.err()).fontWeight(FontWeight.Medium)
-              Text(this.statusError).fontSize(12).fontColor(Theme.err())
+            Column({ space: 10 }) {
+              // 标题行：有分类时显示类别标签，让用户一眼看出该重启还是该换文件
+              Row({ space: 8 }) {
+                Text('启动失败')
+                  .fontSize(13).fontColor(Theme.err()).fontWeight(FontWeight.Medium)
+                if (this.errorKindLabel.length > 0) {
+                  Text(this.errorKindLabel)
+                    .fontSize(11)
+                    .fontColor(Theme.textPri())
+                    .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                    .backgroundColor(Theme.panelErrBd())
+                    .borderRadius(8)
+                }
+              }
+              .width('100%')
+
+              Text(this.statusError).fontSize(12).fontColor(Theme.err()).width('100%')
+
+              // 处置建议（改进 1 的核心价值：告诉用户下一步做什么）
+              if (this.errorAdvice.length > 0) {
+                Column({ space: 4 }) {
+                  Text('怎么办').fontSize(11).fontColor(Theme.warn()).width('100%')
+                  Text(this.errorAdvice)
+                    .fontSize(11).fontColor(Theme.textSec()).width('100%')
+                }
+                .width('100%')
+                .padding(10)
+                .backgroundColor(Theme.bgCardHi())
+                .borderRadius(Theme.radiusSm)
+              }
+
+              // 改进 3：一键导出诊断日志
+              Button('复制诊断日志')
+                .width('100%').height(36).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(Theme.radiusSm)
+                .onClick(() => { if (this.onExportLog) this.onExportLog(); })
+
+              if (this.logExportMessage.length > 0) {
+                Text(this.logExportMessage)
+                  .fontSize(11).fontColor(Theme.textSec()).width('100%')
+              }
             }
             .width('100%')
             .padding(Theme.pad)
             .backgroundColor(Theme.panelErrBg())
             .borderRadius(Theme.radius)
             .border({ width: 1, color: Theme.panelErrBd() })
+          }
+
+          // BIOS 规格检查提示（改进 2）。
+          // 措辞保守：只能说"可能不是有效 BIOS"，不能断言有效性。
+          if (this.biosCheckChecked && this.biosCheckMessage.length > 0) {
+            Column({ space: 6 }) {
+              Row({ space: 6 }) {
+                Text(this.biosCheckSuspicious ? '⚠' : '✓')
+                  .fontSize(13)
+                  .fontColor(this.biosCheckSuspicious ? Theme.warn() : Theme.ok())
+                Text(this.biosCheckSuspicious ? 'BIOS 可能需要更换' : 'BIOS 规格正常')
+                  .fontSize(12)
+                  .fontColor(this.biosCheckSuspicious ? Theme.warn() : Theme.ok())
+                  .fontWeight(FontWeight.Medium)
+              }
+              .width('100%')
+              Text(this.biosCheckMessage)
+                .fontSize(11).fontColor(Theme.textSec()).width('100%')
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(this.biosCheckSuspicious ? Theme.panelWarnBg() : Theme.bgCard())
+            .borderRadius(Theme.radius)
+            .border({
+              width: 1,
+              color: this.biosCheckSuspicious ? Theme.panelWarnBd() : Theme.border()
+            })
           }
 
           // ---- 法律声明 ----

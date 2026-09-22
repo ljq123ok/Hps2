@@ -102,6 +102,7 @@ add_library(hps2core SHARED
     hps2_jitcheck.cpp
     hps2_vpad.cpp
     hps2_video.cpp
+    hps2_bioscheck.cpp
 )
 
 # 不把开发机绝对路径编进发布 HAP 的 native 字符串（包括 __FILE__）。

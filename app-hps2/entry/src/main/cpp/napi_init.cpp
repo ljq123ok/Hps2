@@ -59,6 +59,7 @@
 #include "hps2_surface.h"
 #include "hps2_vpad.h"
 #include "hps2_video.h"
+#include "hps2_bioscheck.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -1024,6 +1025,41 @@ static napi_value NapiNotifyResize(napi_env env, napi_callback_info info) {
 	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
 }
 
+// checkBios(path) -> JSON 字符串
+//
+// 返回 { sizeOk, signatureOk, size, sizeText, message }
+// 用途：用户选完 BIOS 后做一次基本规格检查，尽早提示"可能无效"，
+// 而不是等到启动失败才让用户困惑。
+//
+// 边界：本检查只能排除**明显无效**的文件，不能证明其合法或完整，
+// 故 UI 措辞为"可能不是有效的 PS2 BIOS"。
+static napi_value NapiCheckBios(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string path;
+	if (argc >= 1) {
+		size_t len = 0;
+		napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+		path.resize(len + 1);
+		napi_get_value_string_utf8(env, argv[0], path.data(), len + 1, &len);
+		path.resize(len);
+	}
+
+	const Hps2BiosCheck::Result r = Hps2BiosCheck::Check(path);
+
+	std::string json = std::string("{\"sizeOk\":") + (r.size_ok ? "true" : "false")
+		+ ",\"signatureOk\":" + (r.signature_ok ? "true" : "false")
+		+ ",\"size\":" + std::to_string(r.size)
+		+ ",\"sizeText\":\"" + r.size_text + "\""
+		+ ",\"message\":\"" + r.message + "\"}";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+	return out;
+}
+
 // setSurface(surfaceId: string, width: number, height: number) -> 1/0
 //
 // 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
@@ -1170,6 +1206,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"setUpscaleMultiplier", nullptr, NapiSetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getUpscaleMultiplier", nullptr, NapiGetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"notifyResize", nullptr, NapiNotifyResize, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"checkBios", nullptr, NapiCheckBios, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},

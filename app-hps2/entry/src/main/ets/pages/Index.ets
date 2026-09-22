@@ -23,6 +23,8 @@ import { HomeScreen } from '../components/HomeScreen';
 import { GameScreen } from '../components/GameScreen';
 import { StatusBar } from '../components/StatusBar';
 import { Immersive } from '../common/Immersive';
+import { ErrorHint, FailKind } from '../common/ErrorHint';
+import { LogExport } from '../common/LogExport';
 import common from '@ohos.app.ability.common';
 
 const DOMAIN = 0x3202;
@@ -68,6 +70,15 @@ interface GameSelection {
   name: string;
 }
 
+/** BIOS 规格检查结果（对应 native 的 checkBios()） */
+interface BiosCheckResult {
+  sizeOk: boolean;
+  signatureOk: boolean;
+  size: number;
+  sizeText: string;
+  message: string;
+}
+
 interface VideoSettingsSelection {
   upscaleMultiplier: number;
 }
@@ -111,6 +122,19 @@ struct Index {
   // 混用会让 UI 判断变得含糊。
   @State loading: boolean = false;
   @State loadingText: string = '';
+
+  // ---- 失败原因分类（改进 1）----
+  // 只显示原始错误串，用户无从判断该重启设备还是该换 BIOS。
+  @State errorKind: number = 0;          // FailKind
+  @State errorAdvice: string = '';
+
+  // ---- BIOS 规格检查结果（改进 2）----
+  @State biosCheckMessage: string = '';
+  @State biosCheckSuspicious: boolean = false;
+  @State biosCheckChecked: boolean = false;
+
+  // ---- 日志导出反馈（改进 3）----
+  @State logExportMessage: string = '';
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State gameFps: number = 0;
@@ -440,6 +464,9 @@ struct Index {
       this.biosPath = parts[0];
       this.biosName = parts[1] + ' (' + parts[2] + ')';
       this.saveBiosSelection(parts[1], this.biosName);
+      // 改进 2：立即做基本规格检查，尽早提示"可能不是有效的 PS2 BIOS"。
+      // 不阻止启动 —— 检查可能误判，用户应有最终决定权。
+      await this.checkBiosSpec(this.biosPath);
     }
   }
 
@@ -656,6 +683,82 @@ struct Index {
     return destPath;
   }
 
+  /**
+   * 设置错误并按类别给出处置建议（改进 1）。
+   *
+   * 用户反馈"我的 BIOS 都能启动，别人不行" —— 根因之一是失败原因
+   * 无法区分（JIT 失效要重启、BIOS 无效要换文件，处置完全不同）。
+   */
+  private setError(raw: string): void {
+    this.statusError = raw;
+    const kind = ErrorHint.classify(raw);
+    this.errorKind = kind;
+    this.errorAdvice = kind === FailKind.None ? '' : ErrorHint.advice(kind);
+  }
+
+  /** 清除错误及其分类。 */
+  private clearError(): void {
+    this.statusError = '';
+    this.errorKind = FailKind.None;
+    this.errorAdvice = '';
+  }
+
+  /**
+   * 对选中的 BIOS 做基本规格检查（改进 2）。
+   *
+   * 目的：用户能选中的 .bin 未必是 PS2 BIOS（其它机种也叫 .bin）。
+   * 尽早提示，胜过等到启动失败才困惑。
+   *
+   * 措辞刻意保守 —— 本检查只能排除明显无效的文件，
+   * 不能证明文件合法或完整。
+   */
+  private async checkBiosSpec(path: string): Promise<void> {
+    try {
+      const raw: string = hps2core.checkBios(path);
+      const r = JSON.parse(raw) as BiosCheckResult;
+      this.biosCheckChecked = true;
+      this.biosCheckMessage = r.message;
+      // 两项都通过才认为"看起来正常"；否则标记为可疑（但仍允许启动）
+      this.biosCheckSuspicious = !(r.sizeOk && r.signatureOk);
+      hilog.info(DOMAIN, TAG, 'checkBios sizeOk=%{public}d sigOk=%{public}d size=%{public}s',
+        r.sizeOk ? 1 : 0, r.signatureOk ? 1 : 0, r.sizeText);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'checkBios failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /**
+   * 导出诊断日志到 Download（改进 3）。
+   *
+   * 项目一直缺少反馈通道：用户只能描述现象，而日志里有明确原因。
+   */
+  private exportLog(): void {
+    try {
+      const extra: Array<string> = [
+        '启动阶段: ' + this.statusStage,
+        '运行中: ' + (this.statusRunning ? '是' : '否'),
+        'JIT 可用: ' + (this.jitAvailable ? '是' : '否'),
+        'JIT 阶段: ' + this.jitStage,
+        'JIT errno: ' + this.jitErrno.toString(),
+        '当前错误: ' + (this.statusError.length > 0 ? this.statusError : '(无)'),
+        '错误类别: ' + ErrorHint.kindLabel(this.errorKind as FailKind),
+        'BIOS 检查: ' + (this.biosCheckChecked ? this.biosCheckMessage : '(未检查)'),
+      ];
+      const content = LogExport.build(this.dataRoot(), extra);
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const saved = LogExport.saveToDownload(ctx, content);
+      if (saved.length > 0) {
+        this.logExportMessage = '日志已保存到 Download：' + saved.split('/').pop();
+      } else {
+        this.logExportMessage = '日志保存失败（见 hilog 的 HPS2_CORE）';
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'exportLog failed: %{public}s', err.message);
+      this.logExportMessage = '日志导出失败：' + err.message;
+    }
+  }
+
   /** 开始一个长任务：显示加载提示。 */
   private beginLoading(text: string): void {
     this.loadingText = text;
@@ -750,18 +853,18 @@ struct Index {
     // native 侧还有一道权威门禁，这里是为了给出即时、明确的反馈。
     // 刻意**不做降级**：不提供"用解释器模式继续"之类的选项。
     if (this.jitChecked && !this.jitAvailable) {
-      this.statusError = `JIT 不可用，已拒绝启动。${this.jitMessage} ${this.jitAction}`;
+      this.setError(`JIT 不可用，已拒绝启动。${this.jitMessage}`);
       return;
     }
 
-    this.statusError = '';
+    this.clearError();
     try {
       // 先锁定窗口方向，再启动 GS，避免 VM 已开始渲染后才发生旋转。
       await this.setGameOrientation(true);
       const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), this.gamePath);
       hilog.info(DOMAIN, TAG, 'startBios returned %{public}d', ok);
       if (ok !== 1) {
-        this.statusError = '核心启动被拒绝，详见日志（tag=HPS2_CORE）';
+        this.setError('核心启动被拒绝，详见日志（tag=HPS2_CORE）');
       }
       // 启动成功后只**挂载**虚拟手柄，不做按键映射。
       //
@@ -873,7 +976,10 @@ struct Index {
       this.statusStage = st.stageName;
       this.statusRunning = st.running;
       this.gameFps = st.fps > 0 ? st.fps : 0;
-      this.statusError = st.error ? st.error : this.statusError;
+      // native 上报的错误也走分类，保证建议一致
+      if (st.error && st.error.length > 0) {
+        this.setError(st.error);
+      }
     } catch (e) {
       // 轮询失败不刷屏
     }
@@ -1110,6 +1216,12 @@ struct Index {
             picking: this.picking,
             statusStage: this.statusStage,
             statusError: this.statusError,
+            errorKindLabel: ErrorHint.kindLabel(this.errorKind as FailKind),
+            errorAdvice: this.errorAdvice,
+            biosCheckChecked: this.biosCheckChecked,
+            biosCheckMessage: this.biosCheckMessage,
+            biosCheckSuspicious: this.biosCheckSuspicious,
+            logExportMessage: this.logExportMessage,
             busy: this.busy,
             jitChecked: this.jitChecked,
             jitAvailable: this.jitAvailable,
@@ -1122,6 +1234,7 @@ struct Index {
             onClearGame: () => { this.clearGame(); },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
+            onExportLog: () => { this.exportLog(); },
             onOpenSettings: () => {
               this.showSettings = true;
               this.refreshControllers();
