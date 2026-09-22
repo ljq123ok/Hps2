@@ -30,6 +30,31 @@ import common from '@ohos.app.ability.common';
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
 
+// ============================================================================
+// 悬浮功能条的固定配色（**刻意不跟随日夜主题**）
+//
+// 为什么：该功能条叠在**游戏画面**之上，而画面内容不可预知
+// （可能雪白也可能漆黑）。若文字颜色跟随 UI 主题，浅色模式下
+// textPri 会变成近黑色，压在固定的深色半透明底上就糊成一片 ——
+// 这是用户在真机上实测到的问题（"只有按键两个字看得清"，
+// 因为那一项恰好用的是亮蓝强调色）。
+//
+// 因此这里用固定色：深色半透明底 + 浅色文字 + 亮色强调，
+// 在任意画面内容上都能看清。与虚拟按键的处理同理。
+// ============================================================================
+/** 半透明深色底：在亮/暗画面上都提供足够反差 */
+const OVERLAY_BG: string = '#B3000000';
+/** 主文字：浅色，压在深底上清晰 */
+const OVERLAY_FG: string = '#F9FAFB';
+/** 次要文字 */
+const OVERLAY_FG_DIM: string = '#B8C0CC';
+/** 强调色（状态正常、已启用） */
+const OVERLAY_OK: string = '#4ADE80';
+/** 强调色（操作类，如当前显示中的开关） */
+const OVERLAY_ACCENT: string = '#60A5FA';
+/** 描边 */
+const OVERLAY_BORDER: string = '#59FFFFFF';
+
 interface BootStatus {
   stage: number;
   stageName: string;
@@ -1479,15 +1504,15 @@ struct Index {
             Column({ space: 8 }) {
               Text(this.statusRunning ? `${this.gameFps.toFixed(0)} FPS` : this.statusStage)
                 .fontSize(11)
-                .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
+                .fontColor(this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM)
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-                .backgroundColor(Theme.overlayChip())
+                .backgroundColor(OVERLAY_BG)
                 .borderRadius(12)
 
               Button('存档')
                 .width(this.ballBtnW()).height(32).fontSize(12)
-                .backgroundColor(Theme.overlayChip())
-                .fontColor(Theme.textPri())
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(OVERLAY_FG)
                 .borderRadius(16)
                 .onClick(() => {
                   this.refreshSaveSlots();
@@ -1498,8 +1523,8 @@ struct Index {
 
               Button(this.showPad ? '隐藏按键' : '显示按键')
                 .width(this.ballBtnW()).height(32).fontSize(12)
-                .backgroundColor(Theme.overlayChip())
-                .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(this.showPad ? OVERLAY_ACCENT : OVERLAY_FG)
                 .borderRadius(16)
                 .onClick(() => {
                   this.showPad = !this.showPad;
@@ -1508,8 +1533,8 @@ struct Index {
 
               Button('设置')
                 .width(this.ballBtnW()).height(32).fontSize(12)
-                .backgroundColor(Theme.overlayChip())
-                .fontColor(Theme.textPri())
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(OVERLAY_FG)
                 .borderRadius(16)
                 .onClick(() => {
                   this.showSettings = true;
@@ -1518,20 +1543,20 @@ struct Index {
 
               Button('返回')
                 .width(this.ballBtnW()).height(32).fontSize(12)
-                .backgroundColor(Theme.overlayChip())
-                .fontColor(Theme.textPri())
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(OVERLAY_FG)
                 .borderRadius(16)
                 .onClick(() => { this.exitGame(); })
 
               Button('收起')
                 .width(this.ballBtnW()).height(28).fontSize(11)
-                .backgroundColor(Theme.overlayChip())
-                .fontColor(Theme.textDim())
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(OVERLAY_FG_DIM)
                 .borderRadius(14)
                 .onClick(() => { this.overlayExpanded = false; })
             }
             .padding(8)
-            .backgroundColor(Theme.overlayChip())
+            .backgroundColor(OVERLAY_BG)
             .borderRadius(Theme.radius)
             .position({ x: this.ballLeft(), y: this.ballTop() })
           } else {
@@ -1540,17 +1565,17 @@ struct Index {
               Text(this.statusRunning ? this.gameFps.toFixed(0) : '--')
                 .fontSize(15)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(this.statusRunning ? Theme.ok() : Theme.textDim())
+                .fontColor(this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM)
               Text('FPS')
                 .fontSize(8)
-                .fontColor(Theme.textDim())
+                .fontColor(OVERLAY_FG_DIM)
             }
             .width(56)
             .height(56)
             .justifyContent(FlexAlign.Center)
-            .backgroundColor(Theme.overlayChip())
+            .backgroundColor(OVERLAY_BG)
             .borderRadius(28)
-            .border({ width: 1, color: Theme.borderHi() })
+            .border({ width: 1, color: OVERLAY_BORDER })
             .position({ x: this.ballLeft(), y: this.ballTop() })
             // 用 PanGesture 而非 onClick 拖动：
             // 点击与拖动在触屏上是同一种手势的不同幅度，用 gesture 统一处理

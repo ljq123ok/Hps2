@@ -75,8 +75,21 @@ namespace Hps2SaveState
 			return r;
 		}
 
+		// ------------------------------------------------------------------
+		// 分步日志：读档曾导致 native 崩溃（cppcrash），但崩溃日志不可达
+		// （shell 访问不到 /data/log）。故在每一步前打日志，
+		// 复现后即可据"最后成功打印的那一步"确定崩溃位置。
+		//
+		// 注意：读档会恢复内存、寄存器与 GS 状态，任何一步都可能崩，
+		// 因此逐步打点比只记录成功/失败更有诊断价值。
+		// ------------------------------------------------------------------
+		SLOGI("LOAD step1: about to call LoadStateFromSlot(%{public}d)", slot);
+
 		Error error;
 		const bool ok = VMManager::LoadStateFromSlot(slot, false, &error);
+
+		SLOGI("LOAD step2: LoadStateFromSlot returned ok=%{public}d", ok ? 1 : 0);
+
 		if (!ok)
 		{
 			r.message = "读档失败：" + error.GetDescription();
@@ -84,6 +97,10 @@ namespace Hps2SaveState
 				slot, error.GetDescription().c_str());
 			return r;
 		}
+
+		// 读档会替换整个 VM 状态。若这一步之后崩溃，说明问题出在
+		// "恢复后的状态被使用"（例如 GS 重放、CPU 恢复执行）而非读取本身。
+		SLOGI("LOAD step3: state restored, VM should continue");
 
 		r.ok = true;
 		r.message = "已读取槽 " + std::to_string(slot);
