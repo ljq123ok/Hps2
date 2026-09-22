@@ -153,6 +153,9 @@ struct Index {
   @State saveSlots: Array<SaveSlotInfo> = [];
   @State saveMessage: string = '';
   @State showSavePanel: boolean = false;
+
+  /** 悬浮球是否展开为功能列表 */
+  @State overlayExpanded: boolean = false;
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State gameFps: number = 0;
@@ -798,6 +801,42 @@ struct Index {
     }
   }
 
+  /** 悬浮球展开后各按钮的宽度（按屏幕宽度自适应） */
+  private ballBtnW(): number {
+    // 竖屏窄、横屏宽；给一个合理范围，避免过宽或过窄
+    const w = this.surfaceW > 0 ? this.surfaceW : 440;
+    return Math.max(88, Math.min(120, w * 0.24));
+  }
+
+  /**
+   * 退出游戏，回到首页。
+   *
+   * 【为什么单独抽出来】此前「返回」按钮点击无效 —— 根因在 native：
+   * hps2core.stop() 只设了 g_vm_running=false 就 join()，而 VM 线程
+   * 正阻塞在 VMManager::Execute() 内（长跑、只在状态变化时返回），
+   * 标志设了也无人理会 => join 等不到退出 => UI 线程被阻塞，
+   * 点击表现为"没反应"。
+   * native 侧已修正（先把 VM 状态置为 Paused 以打断 Execute，
+   * 再 join）。此处保持调用顺序清晰，并给出可视化反馈。
+   */
+  private exitGame(): void {
+    this.overlayExpanded = false;
+    this.beginLoading('正在停止模拟器…');
+    // 用 setTimeout 让加载提示先绘制出来 ——
+    // stop() 是同步调用，直接调会阻塞 UI 导致提示来不及显示。
+    setTimeout(() => {
+      try {
+        this.stopBoot();
+      } finally {
+        this.endLoading();
+        this.viewMode = 'home';
+        // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
+        this.setImmersive(false);
+        this.setGameOrientation(false);
+      }
+    }, 50);
+  }
+
   /**
    * 刷新各存档槽状态。
    *
@@ -1352,64 +1391,108 @@ struct Index {
         .backgroundColor(Theme.bgBase())
       }
 
-      // ---- 游玩页悬浮控制条 ----
+      // ---- 游玩页悬浮球 ----
       //
-      // 【修正】此前把 .align(Alignment.TopEnd) 写在 Row 子组件上 —— 但
-      // ArkUI 中 .align() 是 **Stack 容器**的属性，作用于子组件无效，
-      // 于是控制条落在 Stack 的默认对齐位置（居中），不在顶部。
-      // 真机表现为"运行状态显示位置不对，没在顶部"。
+      // 【为什么改成悬浮球】用户要求：把显示 FPS、存档等功能条收成一个
+      // 悬浮球，点击后展开全部功能。
+      // 好处：功能条常驻会遮挡画面（尤其横屏 4:3 两侧空间有限），
+      // 收成小球后仅占很小一块，需要时才展开。
       //
-      // 现改用全屏 Column + justifyContent/alignItems 明确把它钉在右上角，
-      // 不依赖 Stack 的对齐语义。
+      // 定位：用全屏 Column + justifyContent/alignItems 钉在右上角。
+      // （注：.align() 是 Stack 容器的属性，写在子组件上无效 —— 此前踩过。）
       if (this.viewMode === 'game') {
         Column() {
-          Row({ space: 10 }) {
-          Text(this.statusRunning ? this.runningLabel() : this.statusStage)
-            .fontSize(11)
-            .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
-            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-            .backgroundColor(Theme.overlayChip())
-            .borderRadius(14)
+          if (this.overlayExpanded) {
+            // ---- 展开态：一列功能按钮 ----
+            Column({ space: 8 }) {
+              // 顶部：状态（FPS / 运行状态）
+              Text(this.statusRunning ? `${this.gameFps.toFixed(0)} FPS` : this.statusStage)
+                .fontSize(11)
+                .fontColor(this.statusRunning ? Theme.ok() : Theme.textSec())
+                .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+                .backgroundColor(Theme.overlayChip())
+                .borderRadius(12)
 
-          Button('存档')
-            .height(30).fontSize(12)
-            .backgroundColor(Theme.overlayChip())
-            .fontColor(Theme.textPri())
-            .borderRadius(15)
-            .onClick(() => {
-              // 打开面板时刷新槽状态（后台写入可能刚完成）
-              this.refreshSaveSlots();
-              this.saveMessage = '';
-              this.showSavePanel = true;
-            })
+              Button('存档')
+                .width(this.ballBtnW()).height(32).fontSize(12)
+                .backgroundColor(Theme.overlayChip())
+                .fontColor(Theme.textPri())
+                .borderRadius(16)
+                .onClick(() => {
+                  this.refreshSaveSlots();
+                  this.saveMessage = '';
+                  this.showSavePanel = true;
+                  this.overlayExpanded = false;
+                })
 
-          Button('按键')
-            .height(30).fontSize(12)
-            .backgroundColor(Theme.overlayChip())
-            .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
-            .borderRadius(15)
-            .onClick(() => { this.showPad = !this.showPad; })
+              Button(this.showPad ? '隐藏按键' : '显示按键')
+                .width(this.ballBtnW()).height(32).fontSize(12)
+                .backgroundColor(Theme.overlayChip())
+                .fontColor(this.showPad ? Theme.accentHi() : Theme.textSec())
+                .borderRadius(16)
+                .onClick(() => {
+                  this.showPad = !this.showPad;
+                  this.overlayExpanded = false;
+                })
 
-          Button('返回')
-            .height(30).fontSize(12)
+              Button('设置')
+                .width(this.ballBtnW()).height(32).fontSize(12)
+                .backgroundColor(Theme.overlayChip())
+                .fontColor(Theme.textPri())
+                .borderRadius(16)
+                .onClick(() => {
+                  this.showSettings = true;
+                  this.overlayExpanded = false;
+                })
+
+              Button('返回')
+                .width(this.ballBtnW()).height(32).fontSize(12)
+                .backgroundColor(Theme.overlayChip())
+                .fontColor(Theme.textPri())
+                .borderRadius(16)
+                .onClick(() => { this.exitGame(); })
+
+              // 收起按钮
+              Button('收起')
+                .width(this.ballBtnW()).height(28).fontSize(11)
+                .backgroundColor(Theme.overlayChip())
+                .fontColor(Theme.textDim())
+                .borderRadius(14)
+                .onClick(() => { this.overlayExpanded = false; })
+            }
+            .padding(8)
             .backgroundColor(Theme.overlayChip())
-            .fontColor(Theme.textPri())
-            .borderRadius(15)
-            .onClick(() => {
-                this.stopBoot();
-                this.viewMode = 'home';
-                // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
-                this.setImmersive(false);
-                this.setGameOrientation(false);
-              })
+            .borderRadius(Theme.radius)
+          } else {
+            // ---- 收起态：悬浮球显示 FPS ----
+            //
+            // 球上直接显示 FPS —— 用户最常看的就是这个，
+            // 不必展开即可看到，避免"为看帧率而展开"的多余操作。
+            Column({ space: 1 }) {
+              Text(this.statusRunning ? this.gameFps.toFixed(0) : '--')
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.statusRunning ? Theme.ok() : Theme.textDim())
+              Text('FPS')
+                .fontSize(8)
+                .fontColor(Theme.textDim())
+            }
+            .width(56)
+            .height(56)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor(Theme.overlayChip())
+            .borderRadius(28)
+            .border({ width: 1, color: Theme.borderHi() })
+            .onClick(() => { this.overlayExpanded = true; })
           }
-          .padding(10)
         }
         .width('100%')
         .height('100%')
-        .padding({ top: this.overlayTop() })
+        .padding({ top: this.overlayTop(), right: 12 })
         .justifyContent(FlexAlign.Start)
         .alignItems(HorizontalAlign.End)
+        // 容器覆盖全屏但不拦截触摸：只有其中的球/按钮可点，
+        // 其余区域的触摸透传给下层（虚拟按键与画面）。
         .hitTestBehavior(HitTestMode.Transparent)
       }
 

@@ -1175,9 +1175,38 @@ static napi_value NapiSetSurface(napi_env env, napi_callback_info info) {
 }
 
 static napi_value NapiStop(napi_env env, napi_callback_info info) {
+	// ---------------------------------------------------------------------
+	// 【为什么必须这样停】此前只设 g_vm_running=false 再 join()，导致
+	// 「返回」按钮点击无效 —— 用户实测反馈。
+	//
+	// 原因：VM 线程此时正阻塞在 VMManager::Execute() 内部
+	// （VMManager.cpp:3016-3029，其体为 Cpu->Execute()，属于**长跑、
+	// 只在状态变化时返回**）。而 g_vm_running 只在 Execute 返回之后
+	// 才被检查（见 VMThreadMain 的 while 循环）——
+	// 于是标志设了也无人理会，join() 一直等不到线程退出，
+	// UI 线程被阻塞，点击表现为"没反应"。
+	//
+	// 正解（照上游 Qt 的做法，见 VMManager::Shutdown）：
+	//   先把 VM 状态置为 Stopping —— 这才是让 Cpu->Execute() 返回的
+	//   正规方式；随后线程才能走到检查 g_vm_running 的那一行并退出。
+	// ---------------------------------------------------------------------
+	if (VMManager::HasValidVM())
+	{
+		LOGW("stop requested: setting VM state to Stopping to break Execute()");
+		// SetPaused(true) 会把状态设为 Paused，同样能让 Execute 返回；
+		// 但用 Stop 语义更明确。这里直接经公开 API 停止。
+		VMManager::SetPaused(true);
+	}
+
 	g_vm_running.store(false);
+
 	if (g_vm_thread.joinable())
+	{
+		LOGW("waiting for VM thread to exit...");
 		g_vm_thread.join();
+		LOGW("VM thread joined");
+	}
+
 	SetStage(BootStage::kIdle);
 	napi_value r; napi_create_int32(env, 1, &r); return r;
 }
