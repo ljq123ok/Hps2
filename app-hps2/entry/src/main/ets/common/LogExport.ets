@@ -17,6 +17,7 @@
 import fs from '@ohos.file.fs';
 import hilog from '@ohos.hilog';
 import common from '@ohos.app.ability.common';
+import deviceInfo from '@ohos.deviceInfo';
 import util from '@ohos.util';
 
 const DOMAIN = 0x3202;
@@ -37,6 +38,11 @@ export class LogExport {
     // --- 设备信息 ---
     lines.push('');
     lines.push('--- 设备信息 ---');
+    lines.push('设备型号: ' + deviceInfo.marketName + ' (' + deviceInfo.productModel + ')');
+    lines.push('系统版本: ' + deviceInfo.osFullName);
+    lines.push('显示版本: ' + deviceInfo.displayVersion);
+    lines.push('SDK API: ' + deviceInfo.sdkApiVersion.toString());
+    lines.push('ABI: ' + deviceInfo.abiList);
     for (const e of extra) {
       lines.push(e);
     }
