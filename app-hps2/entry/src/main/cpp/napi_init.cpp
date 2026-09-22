@@ -60,6 +60,7 @@
 #include "hps2_vpad.h"
 #include "hps2_video.h"
 #include "hps2_bioscheck.h"
+#include "hps2_savestate.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -1060,6 +1061,59 @@ static napi_value NapiCheckBios(napi_env env, napi_callback_info info) {
 	return out;
 }
 
+// ---------------------------------------------------------------------------
+// 即时存档 N-API
+//
+// 复用上游 VMManager 的存档槽机制（SaveStateToSlot / LoadStateFromSlot），
+// 无需自行实现序列化。与游戏内的记忆卡存档互不影响。
+// ---------------------------------------------------------------------------
+
+// saveState(slot) -> JSON { ok, message }
+static napi_value NapiSaveState(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t slot = 0;
+	if (argc >= 1)
+		napi_get_value_int32(env, argv[0], &slot);
+
+	const Hps2SaveState::Result r = Hps2SaveState::Save(slot);
+	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
+		+ ",\"message\":\"" + r.message + "\"}";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+	return out;
+}
+
+// loadState(slot) -> JSON { ok, message }
+static napi_value NapiLoadState(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	int32_t slot = 0;
+	if (argc >= 1)
+		napi_get_value_int32(env, argv[0], &slot);
+
+	const Hps2SaveState::Result r = Hps2SaveState::Load(slot);
+	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
+		+ ",\"message\":\"" + r.message + "\"}";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+	return out;
+}
+
+// listSaveSlots() -> JSON 数组 [{slot, hasSave}, ...]
+static napi_value NapiListSaveSlots(napi_env env, napi_callback_info info) {
+	const std::string json = Hps2SaveState::ListSlotsJson();
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+	return out;
+}
+
 // setSurface(surfaceId: string, width: number, height: number) -> 1/0
 //
 // 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
@@ -1207,6 +1261,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"getUpscaleMultiplier", nullptr, NapiGetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"notifyResize", nullptr, NapiNotifyResize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkBios", nullptr, NapiCheckBios, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"saveState", nullptr, NapiSaveState, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"loadState", nullptr, NapiLoadState, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"listSaveSlots", nullptr, NapiListSaveSlots, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},

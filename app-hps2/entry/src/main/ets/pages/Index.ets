@@ -70,6 +70,18 @@ interface GameSelection {
   name: string;
 }
 
+/** 即时存档槽状态（对应 native 的 listSaveSlots()） */
+interface SaveSlotInfo {
+  slot: number;
+  hasSave: boolean;
+}
+
+/** 存档操作结果（对应 native 的 saveState()/loadState()） */
+interface SaveOpResult {
+  ok: boolean;
+  message: string;
+}
+
 /** BIOS 规格检查结果（对应 native 的 checkBios()） */
 interface BiosCheckResult {
   sizeOk: boolean;
@@ -135,6 +147,12 @@ struct Index {
 
   // ---- 日志导出反馈（改进 3）----
   @State logExportMessage: string = '';
+
+  // ---- 即时存档 ----
+  // 与游戏内的记忆卡存档不同：这是整机状态快照，可随时存/读。
+  @State saveSlots: Array<SaveSlotInfo> = [];
+  @State saveMessage: string = '';
+  @State showSavePanel: boolean = false;
   @State statusError: string = '';
   @State statusRunning: boolean = false;
   @State gameFps: number = 0;
@@ -780,6 +798,53 @@ struct Index {
     }
   }
 
+  /**
+   * 刷新各存档槽状态。
+   *
+   * 为什么每次打开面板都刷新：存档是后台线程写入的（zip_on_thread），
+   * 刚存完可能还没落盘；重新查一次能反映真实情况。
+   */
+  private refreshSaveSlots(): void {
+    try {
+      const raw: string = hps2core.listSaveSlots();
+      this.saveSlots = JSON.parse(raw) as Array<SaveSlotInfo>;
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'listSaveSlots failed: %{public}s', JSON.stringify(e));
+      this.saveSlots = [];
+    }
+  }
+
+  /** 即时存档到指定槽。 */
+  private doSaveState(slot: number): void {
+    try {
+      const raw: string = hps2core.saveState(slot);
+      const r = JSON.parse(raw) as SaveOpResult;
+      this.saveMessage = r.message;
+      hilog.info(DOMAIN, TAG, 'saveState(%{public}d) ok=%{public}d', slot, r.ok ? 1 : 0);
+      // 存档在后台压缩写入，稍后再刷新状态更准确
+      setTimeout(() => { this.refreshSaveSlots(); }, 800);
+    } catch (e) {
+      const err = e as BusinessError;
+      this.saveMessage = '存档失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'saveState failed: %{public}s', err.message);
+    }
+  }
+
+  /** 从指定槽读档。 */
+  private doLoadState(slot: number): void {
+    try {
+      const raw: string = hps2core.loadState(slot);
+      const r = JSON.parse(raw) as SaveOpResult;
+      this.saveMessage = r.message;
+      hilog.info(DOMAIN, TAG, 'loadState(%{public}d) ok=%{public}d', slot, r.ok ? 1 : 0);
+      this.refreshSaveSlots();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.saveMessage = '读档失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'loadState failed: %{public}s', err.message);
+    }
+  }
+
   /** 开始一个长任务：显示加载提示。 */
   private beginLoading(text: string): void {
     this.loadingText = text;
@@ -1291,6 +1356,18 @@ struct Index {
             .backgroundColor(Theme.overlayChip())
             .borderRadius(14)
 
+          Button('存档')
+            .height(30).fontSize(12)
+            .backgroundColor(Theme.overlayChip())
+            .fontColor(Theme.textPri())
+            .borderRadius(15)
+            .onClick(() => {
+              // 打开面板时刷新槽状态（后台写入可能刚完成）
+              this.refreshSaveSlots();
+              this.saveMessage = '';
+              this.showSavePanel = true;
+            })
+
           Button('按键')
             .height(30).fontSize(12)
             .backgroundColor(Theme.overlayChip())
@@ -1319,6 +1396,90 @@ struct Index {
         .justifyContent(FlexAlign.Start)
         .alignItems(HorizontalAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // ---- 即时存档面板 ----
+      //
+      // 与游戏内记忆卡存档的区别应在界面上说清，否则用户会混淆：
+      // 这是整机状态快照，可随时存读，与记忆卡互不影响。
+      if (this.showSavePanel) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Text('即时存档').fontSize(17).fontColor(Theme.textPri())
+                .fontWeight(FontWeight.Medium)
+              Blank()
+              Button('关闭')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.showSavePanel = false; })
+            }
+            .width('100%')
+
+            Text('整机状态快照，可随时存读；与游戏内的记忆卡存档互不影响。')
+              .fontSize(11).fontColor(Theme.textDim()).width('100%')
+
+            if (this.saveMessage.length > 0) {
+              Text(this.saveMessage)
+                .fontSize(12).fontColor(Theme.accentHi()).width('100%')
+            }
+
+            // 槽位列表（可滚动，避免槽多时溢出）
+            Scroll() {
+              Column({ space: 8 }) {
+                ForEach(this.saveSlots, (item: SaveSlotInfo) => {
+                  Row({ space: 10 }) {
+                    Text('槽 ' + item.slot.toString())
+                      .fontSize(13).fontColor(Theme.textPri()).width(52)
+
+                    Text(item.hasSave ? '有存档' : '空')
+                      .fontSize(11)
+                      .fontColor(item.hasSave ? Theme.ok() : Theme.textDim())
+                      .layoutWeight(1)
+
+                    Button('存')
+                      .height(32).fontSize(12)
+                      .backgroundColor(Theme.accent())
+                      .fontColor('#FFFFFF')
+                      .borderRadius(Theme.radiusSm)
+                      .onClick(() => { this.doSaveState(item.slot); })
+
+                    Button('读')
+                      .height(32).fontSize(12)
+                      .backgroundColor(item.hasSave ? Theme.bgCardHi() : Theme.bgDeep())
+                      .fontColor(item.hasSave ? Theme.textPri() : Theme.textDim())
+                      .borderRadius(Theme.radiusSm)
+                      .enabled(item.hasSave)
+                      .onClick(() => { this.doLoadState(item.slot); })
+                  }
+                  .width('100%')
+                  .padding({ top: 6, bottom: 6 })
+                }, (item: SaveSlotInfo) => item.slot.toString())
+              }
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .scrollBar(BarState.Off)
+
+            if (this.saveSlots.length === 0) {
+              Text('存档槽状态不可用 —— 可能尚未启动游戏。')
+                .fontSize(11).fontColor(Theme.warn()).width('100%')
+            }
+          }
+          .width('88%')
+          .height('72%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase())
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi() })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        .onClick(() => { this.showSavePanel = false; })
       }
 
       // ---- 加载覆盖层 ----

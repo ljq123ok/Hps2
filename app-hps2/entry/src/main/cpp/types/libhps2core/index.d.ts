@@ -17,3 +17,9 @@ export const getUpscaleMultiplier: () => number;
 export const notifyResize: (width: number, height: number) => number;
 export const stop: () => number;
 export const getStatus: () => string;
+/** 即时存档：存到指定槽（1-based），返回 {ok, message} 的 JSON */
+export const saveState: (slot: number) => string;
+/** 即时存档：从指定槽读取（1-based） */
+export const loadState: (slot: number) => string;
+/** 各槽状态：[{slot, hasSave}, ...] */
+export const listSaveSlots: () => string;
