@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "VMManager.h"
+#include "R5900.h"
 #include "common/Error.h"
 
 #undef LOG_DOMAIN
@@ -154,6 +155,14 @@ namespace Hps2SaveState
 		const bool ok = VMManager::LoadStateFromSlot(slot, false, &error);
 
 		SLOGI("LOAD step4: LoadStateFromSlot returned ok=%{public}d", ok ? 1 : 0);
+
+		// 直接读取 EE 的 PC，判断"状态是否真的恢复了"。
+		// 真机日志显示恢复后 recExecute 打印 pc=0x00000001（非法值：
+		// MIPS 指令必然 4 字节对齐，且 1 不在任何有效内存区）。
+		// 在此处读值可区分两种情况：
+		//   a) 读档刚结束 pc 就是错的 => 恢复流程本身有问题
+		//   b) 读档后 pc 正确、后续被改 => 问题在恢复运行那一步
+		SLOGI("LOAD check: after load, cpuRegs.pc=0x%{public}08X", cpuRegs.pc);
 
 		// 读档完成后恢复运行（仅当读档前本来在运行）。
 		// 这一步同样重要：若不恢复，用户会看到"读档后画面静止"。
