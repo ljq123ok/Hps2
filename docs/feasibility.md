@@ -181,7 +181,7 @@ JIT 代码缓存是纯原生 C++，**不经过 JSVM**。现有公开材料**没�
 
 **这是真机接入后获得的最重要的一条运行期证据**（模拟器上完全没有）。
 
-在真机（HUAWEI Pura X View，HongMeng Kernel 1.13.0）上：
+在 HarmonyOS API 26 arm64 测试设备（设备标识已脱敏）上：
 
 ```bash
 $ hdc -t <device> shell ls /proc/sys/kernel/

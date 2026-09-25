@@ -21,6 +21,7 @@
 #define LOG_TAG "HPS2_VIDEO"
 
 #define VLOGI(...) OH_LOG_Print(LOG_APP, LOG_INFO,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
+#define VLOGW(...) OH_LOG_Print(LOG_APP, LOG_WARN,  LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 #define VLOGE(...) OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN, LOG_TAG, __VA_ARGS__)
 
 namespace Hps2Video
@@ -30,6 +31,10 @@ namespace Hps2Video
 		std::atomic<AspectMode> s_mode{AspectMode::Auto};
 		std::atomic<bool> s_landscape{false};
 		std::atomic<float> s_upscale_multiplier{1.0f};
+
+		// MTVU 状态。默认 false 以保持与我们初始化设置一致
+		// （初始化里显式写了 vuThread=false）。
+		std::atomic<bool> s_vu_thread{false};
 		std::atomic<unsigned int> s_pending_width{0};
 		std::atomic<unsigned int> s_pending_height{0};
 
@@ -95,6 +100,35 @@ namespace Hps2Video
 		return true;
 	}
 
+	// ---------------------------------------------------------------------
+	// MTVU（VU1 独立线程）
+	//
+	// 上游 Config.h:1366 的默认值是 vuThread : 1（开启）。
+	// 我们在初始化时显式设为 false，理由是早期"减少线程依赖"以保证
+	// 能稳定启动 —— 但那是阶段2 的权宜，现已能稳定运行游戏。
+	//
+	// 效果：VU1 是 PS2 三大计算单元之一，把它移到独立线程可让 EE
+	// 与 VU1 并行，典型收益 10~30%。
+	//
+	// 做成开关而非强制开启：MTVU 改变了线程模型，个别游戏可能因此
+	// 出现兼容问题，需要让用户能按游戏切换。
+	// ---------------------------------------------------------------------
+	bool SetVuThread(bool enabled)
+	{
+		s_vu_thread.store(enabled);
+		// 与 upscale/aspect 同理：真正的应用在 CPU 线程上进行
+		// （见 ApplyPendingSettingsOnCPUThread），避免从 ArkUI 直接改
+		// 运行中的 VM 状态。
+		VLOGI("MTVU (vuThread) staged as %{public}d (safe CPU-thread apply)",
+			enabled ? 1 : 0);
+		return true;
+	}
+
+	bool GetVuThread()
+	{
+		return s_vu_thread.load();
+	}
+
 	void ApplyPendingSettingsOnCPUThread()
 	{
 		const float multiplier = s_upscale_multiplier.load();
@@ -104,6 +138,31 @@ namespace Hps2Video
 		EmuConfig.GS.AspectRatio = ar;
 		GSConfig.UpscaleMultiplier = multiplier;
 		EmuConfig.GS.UpscaleMultiplier = multiplier;
+
+		// MTVU：写 EmuConfig.Speedhacks.vuThread。
+		// THREAD_VU1 = REC_VU1 && Speedhacks.vuThread（Config.h:1730）。
+		//
+		// 【重要】MTVU **无法在运行期可靠切换**：
+		//   vu1Thread.Open() 只在 recMicroVU1::Reserve()（VU1 重编译器
+		//   初始化时）调用一次（microVU-arm64.cpp:1934），与 vuThread
+		//   设置无关；而 VU1 的执行路径由 THREAD_VU1 宏在编译 JIT 代码时
+		//   决定。运行期改这个标志会让已编译的 VU1 代码与新的宏取值不一致。
+		//
+		// 因此本设置按"**下次启动游戏生效**"设计，UI 也会如此说明。
+		// 此处只在 VM 尚未启动时写入，避免对运行中的 VM 造成不一致。
+		const bool vu_thread = s_vu_thread.load();
+		if (!VMManager::HasValidVM())
+		{
+			if (EmuConfig.Speedhacks.vuThread != vu_thread)
+			{
+				EmuConfig.Speedhacks.vuThread = vu_thread;
+				VLOGI("MTVU (vuThread) applied at startup: %{public}d", vu_thread ? 1 : 0);
+			}
+		}
+		else if (EmuConfig.Speedhacks.vuThread != vu_thread)
+		{
+			VLOGW("MTVU change deferred: VM is running, takes effect on next game start");
+		}
 
 		if (MTGS::IsOpen())
 		{

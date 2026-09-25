@@ -30,7 +30,10 @@ if(NOT DEFINED ARMSX2_BUILD_DIR)
     set(ARMSX2_BUILD_DIR "$ENV{HPS2_ARMSX2_BUILD_DIR}" CACHE PATH "ARMSX2 OHOS build dir")
 endif()
 if(NOT ARMSX2_BUILD_DIR)
-    set(ARMSX2_BUILD_DIR "/tmp/armsx2-ohos" CACHE PATH "ARMSX2 OHOS build dir" FORCE)
+    # 默认路径从 /tmp 改到 ~/.cache —— 因为 /tmp 会被系统清理
+    # （曾发生整棵 /tmp/armsx2-ohos 被清掉，导致核心库凭空消失、
+    #   HAP 链接失败，而当时误以为是代码问题）。
+    set(ARMSX2_BUILD_DIR "$ENV{HOME}/.cache/hps2-build" CACHE PATH "ARMSX2 OHOS build dir" FORCE)
 endif()
 
 set(CORE_LIB      "${ARMSX2_BUILD_DIR}/lib/libPCSX2core.a")
@@ -101,9 +104,13 @@ add_library(hps2core SHARED
     hps2_host.cpp
     hps2_jitcheck.cpp
     hps2_vpad.cpp
+    hps2_gamepad.cpp
     hps2_video.cpp
     hps2_bioscheck.cpp
     hps2_savestate.cpp
+    # 阶段 0 数据外置探针（临时调试用）。不依赖任何上游类型，
+    # 纯 POSIX 验证公共目录对 native 是否可用。
+    hps2_dataprobe.cpp
 )
 
 # 不把开发机绝对路径编进发布 HAP 的 native 字符串（包括 __FILE__）。

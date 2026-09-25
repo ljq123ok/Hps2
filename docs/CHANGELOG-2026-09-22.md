@@ -1,7 +1,7 @@
 # Hps2 更新日志 —— 2026-09-22
 
 **版本**：0.12（`versionCode` 1000012）
-**设备**：HUAWEI Pura X View（`VOL-AL00`），OpenHarmony-7.0.0.105，API 26，arm64-v8a
+**设备**：HarmonyOS API 26 arm64 测试设备（设备标识已脱敏）
 **提交数**：23 个（含修复与文档）
 
 ---
@@ -181,3 +181,157 @@ getter 基于 `undefined` 计算，诊断代码自身抛
 
 4. **叠在游戏画面上的 UI（虚拟按键、悬浮条）不应跟随日夜主题** ——
    画面内容不可预知（可能雪白也可能漆黑），跟随主题会导致浅色模式下控件"消失"。
+
+---
+
+## 五、性能优化：MTVU（VU1 独立线程）—— 已真机验证
+
+**背景**：上游 `Config.h:1366` 默认 `vuThread = 1`（开启），
+但我们在 `InitializeConfig` 里**显式关闭**了它，理由是阶段 2 为
+"减少线程依赖"以保证能稳定启动 —— 该权宜理由现已过时。
+
+**做法**：做成用户开关（设置 → 性能），默认仍为关闭，
+不擅自改变线程模型。
+
+**技术约束**（已核实）：
+`vu1Thread.Open()` 只在 `recMicroVU1::Reserve()`（VU1 重编译器初始化）
+调用一次（`microVU-arm64.cpp:1934`），而 VU1 执行路径由 `THREAD_VU1`
+宏在**编译 JIT 代码时**决定。故运行期改标志会让已编译代码与新取值不一致。
+⇒ 本设置按"**下次启动游戏生效**"设计，UI 已如实标注。
+
+### 真机实测结果
+
+```
+MTVU setting at boot: 1                     ← 确认已启用
+PerfLog: 59.6 fps | EE 67% GS 75% VU 56% GPU 26%
+```
+
+| 指标 | 开启前 | 开启后 | 变化 |
+|---|---|---|---|
+| EE | 100% | 67% | ↓ 33 点（VU1 负载被卸载）|
+| **VU** | **0%** | **56%** | **↑ 56 点（独立线程跑起来了）** |
+| GS | 81% | 75% | ↓ 6 点 |
+| GPU | 1% | 26% | ↑ 25 点 |
+
+**关键证据是占用分布**：`VU` 从 0% 变为 56%，`EE` 从 100% 降到 67%
+—— 说明 VU1 确实被卸载到了独立线程。
+
+> ⚠️ **不要直接比较 fps**：开启前的 111.1 fps 是"画面卡在左下角"
+> （渲染面积远小于实际）时取得的异常读数；开启后的 59.6 fps 是画面
+> 正常后的数字，已接近 PS2 标准帧率 59.94。
+> 两组不可比。真实结论应看**占用分布的变化**。
+
+### 未做的两项及理由
+
+- **异步 MTGS**：GPU 占用低、GS 非瓶颈，收益有限且需重新验证稳定性
+- **分辨率倍率**：属画质取舍而非性能优化
+- 其它 speedhack（`IntcStat` / `WaitLoop` / `vu1Instant`）
+  **均已为上游默认值**，无需改动
+
+---
+
+## 六、2026-09-24 修复：关闭游戏后再开（三层级联缺陷，已真机验证）
+
+外部测试者反馈「关闭游戏后再开会闪退」。逐层定位后确认是**三个独立缺陷叠加**，
+每修掉一层才暴露下一层。
+
+### 缺陷 A：关闭时 UI 冻结 9.4 秒 → 应用重启
+
+```
+Execute loop ended  (35.507)
+VM thread exited    (44.887)    ← 中间 9.4 秒
+```
+
+**根因**：`monitor` 诊断线程的开头是 6 次 × 3 秒的 `sleep_for`，
+**期间完全不检查 `g_vm_running`** —— 而 `VMThreadMain` 结尾会 `monitor.join()`，
+于是主线程被阻塞。`NapiStop` 是同步 N-API，这 9.4 秒里 UI 线程冻结，
+触发系统无响应判定 → 应用重启。
+
+时间线验证：从 `entering Execute loop` 起算 6×3=18 秒后约 44.5s，
+而 `VM thread exited` 是 44.887 —— 完全吻合。
+
+**修法**：把两处整段 `sleep_for`（诊断循环 + 看门狗循环）切成 100ms 小步，
+每步检查 `g_vm_running`。采样次数与间隔不变，只是变得可中断。
+
+**结果**：停止耗时 **9.4 秒 → 0.275 秒**。
+
+### 缺陷 B：再次启动闪退（进程 abort）
+
+加 `BOOT_SUB` 细粒度打点后一次命中：
+
+```
+BOOT_SUB=1 about to SetBaseSettingsLayer
+（无 BOOT_SUB=2 —— 崩在这一步内部）
+```
+
+**根因**：上游 `Host::Internal::SetBaseSettingsLayer` 带断言
+
+```cpp
+pxAssertRel(GetLayer(LAYER_BASE) == nullptr, "Base layer has already been set");
+```
+
+而 `pxOnAssertFail` 在**非 Windows 平台**会 `AbortWithMessage(...)`
+⇒ **断言失败 = 直接 abort = 闪退**（不是仅打日志）。
+
+上游只在应用启动时调用一次（`QtHost.cpp:1330`），我们却放在 `InitializeConfig` 里
+—— 每次「启动游戏」都调，**第二次必然触发断言**。
+
+**修法**：加一次性标志 `s_base_layer_set`，只在进程内首次设置该层。
+
+### 缺陷 C：再次启动 VM 初始化失败
+
+```
+BOOT_ERROR=VMManager::Initialize failed (result=1)
+```
+
+`result=1` 即 `VMBootResult::StartupFailure`。
+
+**根因**：`VMManager::Initialize` 首句检查（`VMManager.cpp:1521`）
+
+```cpp
+if (s_state.load() != VMState::Shutdown) { ... return StartupFailure; }
+```
+
+而 `VMState::Shutdown` **只在 `VMManager::Shutdown()` 里设置**（`VMManager.cpp:1930`）。
+我们的停止路径只做 `SetPaused → join → CPUThreadShutdown()`，
+**跳过了 `VMManager::Shutdown()`**，`s_state` 停在 `Paused`。
+
+**修法**：照上游 Qt 顺序补齐（`QtHost.cpp:429` 与 `450`）：
+`CPUThreadShutdown()` 之后调 `VMManager::Shutdown(false)`。
+
+### 最终验证
+
+```
+VMManager::Shutdown() done, state=0                 ← 0 = Shutdown
+BOOT_SUB=2 base settings layer already set; skipping (restart)
+resumed; VM state=2
+MONITOR: ee_pc=0x00204420 frame=165 → ee_pc=0x00254d58 frame=344
+```
+
+PC 在变、frame 在涨 ⇒ 第二次启动真正跑起来了。
+
+### 方法论教训
+
+1. **「闪退」与「启动失败」要分开看**：前者进程消失（断言 abort / 崩溃），
+   后者进程活着但返回失败。排查方向完全不同。
+2. **盲区要打点**：与其反复推测，不如先花几步加日志。
+   本次加 `BOOT_SUB` 逐步打点后**一次复现即命中**根因。
+3. **级联缺陷**：每层单独看都像「唯一原因」，修完第一层才暴露第二层。
+
+---
+
+## 七、构建环境变更
+
+**核心构建目录已从 `/tmp/armsx2-ohos` 改为 `~/.cache/hps2-build`。**
+
+原因：`/tmp` 会被系统清理 —— 本次会话中整棵 `/tmp/armsx2-ohos` 被清掉，
+导致核心库凭空消失、HAP 链接失败（`ninja: error: libPCSX2core.a missing`），
+一度被误认为是代码问题。
+
+构建 HAP 需设：
+```bash
+export HPS2_ARMSX2_BUILD_DIR="$HOME/.cache/hps2-build"
+```
+
+若 hvigor 报找不到 `libPCSX2core.a`，先删 `entry/.cxx` 与
+`entry/build/default/intermediates/cmake`（旧路径残留会卡住）。

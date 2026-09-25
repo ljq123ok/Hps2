@@ -25,6 +25,7 @@ import { StatusBar } from '../components/StatusBar';
 import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
+import { runDataProbe } from '../common/DataProbe';
 import common from '@ohos.app.ability.common';
 
 const DOMAIN = 0x3202;
@@ -59,6 +60,7 @@ interface BootStatus {
   stage: number;
   stageName: string;
   running: boolean;
+  paused: boolean;
   error: string;
   fps: number;
   jitAvailable: boolean;
@@ -118,6 +120,8 @@ interface BiosCheckResult {
 
 interface VideoSettingsSelection {
   upscaleMultiplier: number;
+  /** MTVU（VU1 独立线程）；可选以兼容旧版配置文件 */
+  vuThread?: boolean;
 }
 
 interface ControllerInfo {
@@ -194,6 +198,7 @@ struct Index {
   private dragStartY: number = 0;
   @State statusError: string = '';
   @State statusRunning: boolean = false;
+  @State gamePaused: boolean = false;
   @State gameFps: number = 0;
   @State busy: boolean = false;
 
@@ -213,6 +218,8 @@ struct Index {
   @State viewMode: string = 'home';
   /** 是否显示虚拟按键（接入手柄后可关闭） */
   @State showPad: boolean = true;
+  /** 官方原生手柄输入已启用；禁用 ArkUI 焦点接收器以免十字键导航 UI。 */
+  @State nativeGamepad: boolean = false;
   /** 设置弹层 */
   @State showSettings: boolean = false;
   /** SDL 已识别的真实手柄；蓝牙手柄通过系统 HID 进入这里。 */
@@ -220,6 +227,19 @@ struct Index {
   @State controllerStatus: string = '请先启动游戏，再刷新手柄列表';
   /** 画面比例：0=自动 1=保持4:3 2=铺满 3=宽屏16:9 */
   @State aspectMode: number = 0;
+  /**
+   * MTVU（VU1 独立线程）。
+   * 上游默认为开启；我们早期为"减少线程依赖"显式关闭，
+   * 该理由已过时，故开放给用户切换。
+   * **下次启动游戏生效** —— 运行期无法可靠切换，UI 已说明。
+   */
+  @State vuThread: boolean = false;
+
+  /**
+   * 正在停止模拟器。用于在停止期间禁用"启动游戏"，
+   * 避免"停止中又启动"的竞态（曾导致刚启动的 VM 被立刻停掉）。
+   */
+  @State stopping: boolean = false;
   /** 内部渲染倍率：1.0 为原生分辨率 */
   @State upscaleMultiplier: number = 1.0;
 
@@ -285,6 +305,24 @@ struct Index {
     // 启动前先查 JIT 能力：让用户在选 BIOS 之前就知道能不能跑，
     // 而不是点了启动才发现失败。
     this.checkJit();
+
+    // ------------------------------------------------------------------
+    // 阶段 0 数据外置探针（临时；阶段 3 落地后移除这一段即可）。
+    //
+    // 为什么在 aboutToAppear 里跑而非做成按钮：第 3 项的"冷启动后
+    // 能否发现"必须由**每次启动**自动执行才能证明；做成手动按钮就
+    // 只能证明前台刷新。探针本身只写自建的 Hps2Probe/ 子目录，
+    // 不触碰任何真实数据。
+    // ------------------------------------------------------------------
+    try {
+      const report = runDataProbe(this.dataRoot());
+      hilog.info(DOMAIN, TAG,
+        'DATA_PROBE report root=%{public}s dir=%{public}s count=%{public}d',
+        report.publicRoot, report.probeDir, report.results.length);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'DATA_PROBE top-level failed: %{public}s', JSON.stringify(err));
+    }
   }
 
   /*
@@ -837,6 +875,21 @@ struct Index {
     }
   }
 
+  /**
+   * GameControllerKit receives controller input independently of ArkUI.
+   * Consume the matching ArkUI key event at the root before focus traversal,
+   * otherwise D-pad/A can also select or activate the FPS floating overlay.
+   */
+  private consumeNativeGamepadUiKey(event: KeyEvent): boolean {
+    if (!this.nativeGamepad || this.viewMode !== 'game') {
+      return false;
+    }
+    const code = event.keyCode;
+    const isDpad = code >= 2012 && code <= 2015;
+    const isGamepadButton = code >= 2301 && code <= 2315;
+    return isDpad || isGamepadButton;
+  }
+
   /** 屏幕可用宽高（surface 未就绪时给安全默认值） */
   private screenW(): number { return this.surfaceW > 0 ? this.surfaceW : 440; }
   private screenH(): number { return this.surfaceH > 0 ? this.surfaceH : 744; }
@@ -898,6 +951,27 @@ struct Index {
     this.ballY = y;
   }
 
+  /**
+   * 切换 MTVU（VU1 独立线程）并持久化。
+   *
+   * 说明：该设置**下次启动游戏生效**。vu1Thread 在 VU1 重编译器初始化时
+   * 创建一次，运行期改这个标志会让已编译的 VU1 代码与新取值不一致，
+   * 故不做"立即生效"的承诺。
+   */
+  private setVuThread(enabled: boolean): void {
+    this.vuThread = enabled;
+    try {
+      const ok: number = hps2core.setVuThread(enabled);
+      hilog.info(DOMAIN, TAG, 'setVuThread(%{public}d) -> %{public}d',
+        enabled ? 1 : 0, ok);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'setVuThread failed: %{public}s', err.message);
+    }
+    // 与上采样共用同一份配置文件
+    this.saveVideoSettings(this.upscaleMultiplier);
+  }
+
   /** 悬浮球展开后各按钮的宽度（按屏幕宽度自适应） */
   private ballBtnW(): number {
     // 竖屏窄、横屏宽；给一个合理范围，避免过宽或过窄
@@ -916,22 +990,35 @@ struct Index {
    * native 侧已修正（先把 VM 状态置为 Paused 以打断 Execute，
    * 再 join）。此处保持调用顺序清晰，并给出可视化反馈。
    */
+  /**
+   * 退出游戏，回到首页。
+   *
+   * 【此前有一个竞态，已修】原实现用 setTimeout(..., 50) 延迟停止，
+   * 目的是让"正在停止"提示先绘制出来。但那 50ms 窗口内界面已回到首页、
+   * "启动游戏"按钮可点 —— 若用户快速点击启动：
+   *     startBios() 时 VM 仍在运行 -> native 直接返回"已在运行"
+   *     随后 50ms 到期 -> stopBoot() 把**刚启动的** VM 停掉
+   *     => 界面切到游玩页但 VM 已停 => 黑屏/异常
+   *
+   * 现在改为**先停止、再切页**，并在停止期间用 stopping 标志禁用启动，
+   * 从根上消除该窗口。加载提示仍会显示（停止本身很快）。
+   */
   private exitGame(): void {
     this.overlayExpanded = false;
+    // 停止期间禁止再次启动（配合 UI 上的按钮禁用）
+    this.stopping = true;
     this.beginLoading('正在停止模拟器…');
-    // 用 setTimeout 让加载提示先绘制出来 ——
-    // stop() 是同步调用，直接调会阻塞 UI 导致提示来不及显示。
-    setTimeout(() => {
-      try {
-        this.stopBoot();
-      } finally {
-        this.endLoading();
-        this.viewMode = 'home';
-        // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
-        this.setImmersive(false);
-        this.setGameOrientation(false);
-      }
-    }, 50);
+    try {
+      this.stopBoot();
+    } finally {
+      this.endLoading();
+      this.stopping = false;
+      this.gamePaused = false;
+      this.viewMode = 'home';
+      // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
+      this.setImmersive(false);
+      this.setGameOrientation(false);
+    }
   }
 
   /**
@@ -1099,6 +1186,11 @@ struct Index {
   }
 
   private async startBoot(): Promise<void> {
+    // 停止过程中不允许启动 —— 否则会出现"刚启动就被停掉"的竞态
+    if (this.stopping) {
+      this.statusError = '正在停止上一次运行，请稍候再启动。';
+      return;
+    }
     if (!this.biosPath) {
       this.statusError = '请先选择 BIOS 文件';
       return;
@@ -1208,6 +1300,8 @@ struct Index {
         this.statusError = '虚拟手柄初始化失败（见 HPS2_VPAD 日志）';
         return;
       }
+      this.nativeGamepad = hps2core.hasOfficialGamepad() === 1;
+      hilog.info(DOMAIN, TAG, 'native GameControllerKit input=%{public}d', this.nativeGamepad ? 1 : 0);
       // 按键映射不在这里做 —— 见上方注释。native 会在 VM 初始化完成后
       // 自行映射到端口 0（1P）。
     } catch (e) {
@@ -1230,6 +1324,7 @@ struct Index {
       const st = JSON.parse(raw) as BootStatus;
       this.statusStage = st.stageName;
       this.statusRunning = st.running;
+      this.gamePaused = st.paused === true;
       this.gameFps = st.fps > 0 ? st.fps : 0;
       // native 上报的错误也走分类，保证建议一致
       if (st.error && st.error.length > 0) {
@@ -1254,8 +1349,31 @@ struct Index {
   }
 
   private runningLabel(): string {
+    if (this.gamePaused) return '已暂停';
     if (this.gameFps <= 0) return '运行中';
     return '运行中  ' + (Math.round(this.gameFps * 10) / 10) + ' FPS';
+  }
+
+  /** 切换游戏暂停状态；VM 保持在内存中，恢复后从当前帧继续。 */
+  private toggleGamePause(): void {
+    if (!this.statusRunning || this.stopping) {
+      return;
+    }
+    const target = !this.gamePaused;
+    try {
+      const ok: number = hps2core.setPaused(target);
+      if (ok !== 1) {
+        this.statusError = target ? '暂停失败：当前没有可用的游戏核心。' :
+          '继续失败：当前没有可用的游戏核心。';
+        return;
+      }
+      this.gamePaused = target;
+      hilog.info(DOMAIN, TAG, 'setPaused(%{public}d) accepted', target ? 1 : 0);
+    } catch (e) {
+      const err = e as BusinessError;
+      this.statusError = (target ? '暂停失败：' : '继续失败：') + err.message;
+      hilog.error(DOMAIN, TAG, 'setPaused failed: %{public}s', err.message);
+    }
   }
 
   /**
@@ -1295,7 +1413,10 @@ struct Index {
       const file = fs.openSync(this.videoSettingsFile(),
         fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try {
-        const settings: VideoSettingsSelection = { upscaleMultiplier: multiplier };
+        const settings: VideoSettingsSelection = {
+          upscaleMultiplier: multiplier,
+          vuThread: this.vuThread
+        };
         fs.writeSync(file.fd, JSON.stringify(settings));
       } finally {
         fs.closeSync(file);
@@ -1322,6 +1443,15 @@ struct Index {
       if (multiplier !== 1 && multiplier !== 2 && multiplier !== 3) {
         hilog.error(DOMAIN, TAG, 'ignored invalid saved upscale=%{public}f', multiplier);
         return;
+      }
+
+      // 恢复 MTVU（旧配置文件可能没有该字段 -> 保持默认 false）
+      if (settings.vuThread === true) {
+        const vuOk: number = hps2core.setVuThread(true);
+        if (vuOk === 1) {
+          this.vuThread = true;
+          hilog.info(DOMAIN, TAG, 'restored MTVU=enabled');
+        }
       }
 
       const ok: number = hps2core.setUpscaleMultiplier(multiplier);
@@ -1471,6 +1601,7 @@ struct Index {
       GameScreen({
         playing: this.viewMode === 'game',
         showPad: this.showPad,
+        nativeGamepad: this.nativeGamepad,
         onSurfaceSize: (w: number, h: number) => {
           this.surfaceW = w;
           this.surfaceH = h;
@@ -1535,15 +1666,16 @@ struct Index {
           if (this.overlayExpanded) {
             // ---- 展开态：功能列表 ----
             Column({ space: 8 }) {
-              Text(this.statusRunning ? `${this.gameFps.toFixed(0)} FPS` : this.statusStage)
+              Text(this.gamePaused ? '已暂停' : (this.statusRunning ? `${this.gameFps.toFixed(0)} FPS` : this.statusStage))
                 .fontSize(11)
-                .fontColor(this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM)
+                .fontColor(this.gamePaused ? OVERLAY_ACCENT : (this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM))
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
                 .backgroundColor(OVERLAY_BG)
                 .borderRadius(12)
 
               Button('存档')
                 .width(this.ballBtnW()).height(32).fontSize(12)
+                .focusable(false)
                 .backgroundColor(OVERLAY_BG)
                 .fontColor(OVERLAY_FG)
                 .borderRadius(16)
@@ -1554,8 +1686,20 @@ struct Index {
                   this.overlayExpanded = false;
                 })
 
+              Button(this.gamePaused ? '继续' : '暂停')
+                .width(this.ballBtnW()).height(32).fontSize(12)
+                .focusable(false)
+                .backgroundColor(OVERLAY_BG)
+                .fontColor(this.gamePaused ? OVERLAY_OK : OVERLAY_ACCENT)
+                .borderRadius(16)
+                .onClick(() => {
+                  this.toggleGamePause();
+                  this.overlayExpanded = false;
+                })
+
               Button(this.showPad ? '隐藏按键' : '显示按键')
                 .width(this.ballBtnW()).height(32).fontSize(12)
+                .focusable(false)
                 .backgroundColor(OVERLAY_BG)
                 .fontColor(this.showPad ? OVERLAY_ACCENT : OVERLAY_FG)
                 .borderRadius(16)
@@ -1566,6 +1710,7 @@ struct Index {
 
               Button('设置')
                 .width(this.ballBtnW()).height(32).fontSize(12)
+                .focusable(false)
                 .backgroundColor(OVERLAY_BG)
                 .fontColor(OVERLAY_FG)
                 .borderRadius(16)
@@ -1576,6 +1721,7 @@ struct Index {
 
               Button('返回')
                 .width(this.ballBtnW()).height(32).fontSize(12)
+                .focusable(false)
                 .backgroundColor(OVERLAY_BG)
                 .fontColor(OVERLAY_FG)
                 .borderRadius(16)
@@ -1583,11 +1729,13 @@ struct Index {
 
               Button('收起')
                 .width(this.ballBtnW()).height(28).fontSize(11)
+                .focusable(false)
                 .backgroundColor(OVERLAY_BG)
                 .fontColor(OVERLAY_FG_DIM)
                 .borderRadius(14)
                 .onClick(() => { this.overlayExpanded = false; })
             }
+            .focusable(false)
             .padding(8)
             .backgroundColor(OVERLAY_BG)
             .borderRadius(Theme.radius)
@@ -1595,14 +1743,15 @@ struct Index {
           } else {
             // ---- 收起态：FPS 悬浮球（可拖动）----
             Column({ space: 1 }) {
-              Text(this.statusRunning ? this.gameFps.toFixed(0) : '--')
+              Text(this.gamePaused ? '暂停' : (this.statusRunning ? this.gameFps.toFixed(0) : '--'))
                 .fontSize(15)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM)
+                .fontColor(this.gamePaused ? OVERLAY_ACCENT : (this.statusRunning ? OVERLAY_OK : OVERLAY_FG_DIM))
               Text('FPS')
                 .fontSize(8)
                 .fontColor(OVERLAY_FG_DIM)
             }
+            .focusable(false)
             .width(56)
             .height(56)
             .justifyContent(FlexAlign.Center)
@@ -1634,6 +1783,7 @@ struct Index {
             .onClick(() => { this.overlayExpanded = true; })
           }
         }
+        .focusable(false)
         .width('100%')
         .height('100%')
         // 容器不拦截触摸：只有球/列表可点，其余区域透传给下层
@@ -1911,6 +2061,32 @@ struct Index {
             .backgroundColor(Theme.bgCard())
             .border({ width: 1, color: Theme.border() })
 
+            // ---- 性能：MTVU ----
+            Column({ space: 10 }) {
+              Text('性能').fontSize(14).fontColor(Theme.textPri()).width('100%')
+
+              Row() {
+                Column({ space: 2 }) {
+                  Text('MTVU（VU1 独立线程）').fontSize(13).fontColor(Theme.textSec())
+                  Text('把 VU1 移到独立线程，可提升帧率；个别游戏可能不兼容')
+                    .fontSize(10).fontColor(Theme.textDim())
+                  Text('下次启动游戏生效')
+                    .fontSize(10).fontColor(Theme.warn())
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.vuThread })
+                  .onChange((on: boolean) => { this.setVuThread(on); })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .padding(Theme.pad)
+            .backgroundColor(Theme.bgCard())
+            .borderRadius(Theme.radius)
+            .border({ width: 1, color: Theme.border() })
+
             // ---- 虚拟按键 ----
             Column({ space: 10 }) {
               Text('虚拟按键').fontSize(14).fontColor(Theme.textPri()).width('100%')
@@ -1957,5 +2133,8 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor(Theme.bgBase())
+    .onKeyEventDispatch((event: KeyEvent): boolean => {
+      return this.consumeNativeGamepadUiKey(event);
+    })
   }
 }

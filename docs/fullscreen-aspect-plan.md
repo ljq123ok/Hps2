@@ -68,7 +68,7 @@ void MTGS::ResizeDisplayWindow(u32 width, u32 height, float scale)
 
 ## 2. 本机设备的实际数字
 
-设备：Pura X View（`VOL-AL00`），比例 16:9.5 ≈ **1.68:1**
+设备：折叠屏测试设备，比例 16:9.5 ≈ **1.68:1**
 
 ### 竖屏
 

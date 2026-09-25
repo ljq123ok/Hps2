@@ -84,7 +84,7 @@
 6. 现象：不闪退，但画面卡死（frame 仍在涨、PC 不变）
 ```
 
-**设备**：HUAWEI Pura X View（`VOL-AL00`），OpenHarmony-7.0.0.105，
+**设备**：HarmonyOS API 26 arm64 测试设备（设备标识已脱敏），OpenHarmony-7.0.0.105，
 API 26，arm64-v8a，4KB 页。
 
 ---

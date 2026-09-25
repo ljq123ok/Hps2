@@ -65,6 +65,17 @@ namespace Hps2Video
 	/// 必须在 GS 线程上下文可用后调用（即 VM 启动后）。
 	bool NotifyResize(unsigned int width, unsigned int height);
 
+	/// 是否启用 MTVU（VU1 独立线程）。
+	///
+	/// 为什么做成开关而非直接开启：它会改变线程模型，
+	/// 部分游戏在 MTVU 下可能出现兼容问题。上游默认为开启，
+	/// 我们早期为"减少线程依赖"显式关闭 —— 该理由已过时，
+	/// 故开放给用户按游戏切换。
+	bool SetVuThread(bool enabled);
+
+	/// 读取当前 MTVU 状态。
+	bool GetVuThread();
+
 	/// 根据当前方向与模式，返回"应该使用"的具体宽高比模式。
 	/// 用于「自动」模式下按横竖屏选择。
 	AspectMode ResolveForOrientation(bool landscape);

@@ -60,9 +60,11 @@
 
 #include "hps2_surface.h"
 #include "hps2_vpad.h"
+#include "hps2_gamepad.h"
 #include "hps2_video.h"
 #include "hps2_bioscheck.h"
 #include "hps2_savestate.h"
+#include "hps2_dataprobe.h"
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
@@ -166,6 +168,10 @@ std::string g_last_error;
 std::thread g_vm_thread;
 
 MemorySettingsInterface s_settings_interface;
+
+// base settings layer 是否已注册。**只能设一次** ——
+// 重复设置会触发上游断言并 abort（见 InitializeConfig 中的说明）。
+static bool s_base_layer_set = false;
 std::string s_data_root;
 std::string s_bios_dir;
 std::string s_game_path;   // 空 = 只启动 BIOS；非空 = 启动该游戏镜像
@@ -287,6 +293,7 @@ bool RevalidateJitAlive() {
 }
 
 bool InitializeConfig() {
+	LOGI("BOOT_SUB=0 InitializeConfig enter (re-entry check)");
 	// ---------------------------------------------------------------------
 	// 【临时验证开关】强制解释器模式
 	//
@@ -376,8 +383,53 @@ bool InitializeConfig() {
 	}
 
 	SetStage(BootStage::kSettingsLayer);
-	Host::Internal::SetBaseSettingsLayer(&s_settings_interface);
+
+	// ---------------------------------------------------------------------
+	// 细粒度日志：这一区间此前是**盲区**（无任何日志输出），
+	// 而"再次启动闪退"的崩溃正落在这里 ——
+	// 已知最后一个成功阶段是 settings-layer，之后到下一个日志点之间
+	// 只有下面这几步，且没有任何输出可供区分。
+	//
+	// 每步独立打点后，复现一次即可精确知道崩在哪一行，
+	// 不必再靠推测。
+	// ---------------------------------------------------------------------
+	// ---------------------------------------------------------------------
+	// 【根因修复】base settings layer 只能设置一次。
+	//
+	// 上游 Host::Internal::SetBaseSettingsLayer 带断言：
+	//     pxAssertRel(GetLayer(LAYER_BASE) == nullptr, "Base layer has already been set");
+	// 而 pxOnAssertFail 在非 Windows 平台会直接
+	//     fputs("\nAborting application.\n"); AbortWithMessage(...);
+	// 即**断言失败 = 进程 abort = 闪退**（不是仅打日志）。
+	//
+	// 上游只在应用启动时调用一次（QtHost.cpp:1330），
+	// 而我们把它放在 InitializeConfig 里 —— 每次"启动游戏"都会调，
+	// 于是**第二次启动必然触发断言并闪退**。
+	//
+	// 真机日志证据（2026-09-24 12:59:11）：
+	//     BOOT_SUB=0 InitializeConfig enter
+	//     BOOT_SUB=1 about to SetBaseSettingsLayer
+	//     （无 BOOT_SUB=2 —— 崩在这一步内部）
+	//
+	// 修法：用一次性标志，只在进程内首次设置该层。
+	// base layer 的内容（s_settings_interface）本身是复用的全局对象，
+	// 重启时无需重新注册 —— 后续的 SetDefaultSettings/LoadStartupSettings
+	// 会正常读写同一对象。
+	// ---------------------------------------------------------------------
+	LOGI("BOOT_SUB=1 about to SetBaseSettingsLayer");
+	if (!s_base_layer_set)
+	{
+		Host::Internal::SetBaseSettingsLayer(&s_settings_interface);
+		s_base_layer_set = true;
+		LOGI("BOOT_SUB=2 base settings layer set (first time)");
+	}
+	else
+	{
+		LOGI("BOOT_SUB=2 base settings layer already set; skipping (restart)");
+	}
+
 	VMManager::SetDefaultSettings(s_settings_interface, true, true, true, true, true);
+	LOGI("BOOT_SUB=3 SetDefaultSettings done");
 
 	// 与 Android 一致：BIOS 目录经 settings 传入，而非只设 Folders 变量
 	if (!s_bios_dir.empty())
@@ -420,9 +472,25 @@ bool InitializeConfig() {
 	// GS 同步在 CPU 线程上执行。异步 MTGS 需要独立的呈现线程，
 	// 现阶段保持同步更可控；画面稳定后再评估打开异步的收益。
 	s_settings_interface.SetBoolValue("EmuCore/GS", "SynchronousMTGS", true);
-	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", false);
 
+	// MTVU（VU1 独立线程）—— 用 Hps2Video 中保存的状态，而非硬编码。
+	//
+	// 背景：上游 Config.h:1366 默认 vuThread=1（开启），我们早期为
+	// "减少线程依赖"显式关闭以保证能稳定启动 —— 那是阶段2 的权宜。
+	// 现已能稳定运行游戏，故开放给用户切换（默认仍为关闭以保持行为一致，
+	// 用户可在设置中开启）。
+	//
+	// 注意：MTVU 只在**启动游戏时**生效（vu1Thread 在 VU1 重编译器
+	// 初始化时创建一次，运行期无法可靠切换），UI 已如此说明。
+	{
+		const bool vu_thread = Hps2Video::GetVuThread();
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", vu_thread);
+		LOGI("MTVU setting at boot: %{public}d", vu_thread ? 1 : 0);
+	}
+
+	LOGI("BOOT_SUB=4 about to LoadStartupSettings");
 	VMManager::Internal::LoadStartupSettings();
+	LOGI("BOOT_SUB=5 LoadStartupSettings done");
 	// Keep the selected multiplier in the same settings layer that the later
 	// VMManager::ApplySettings() reloads.  The CPU-thread injection below is
 	// still needed because this frontend has no persistent PCSX2 ini file.
@@ -726,8 +794,38 @@ void VMThreadMain() {
 			EmuConfig.Cpu.Recompiler.EnableVU1 ? 1 : 0,
 			EmuConfig.Cpu.Recompiler.EnableFastmem ? 1 : 0);
 
-		for (int i = 0; i < 6; ++i) {
-			std::this_thread::sleep_for(std::chrono::seconds(3));
+		// ------------------------------------------------------------------
+		// 诊断采样：每 3 秒一次，共 6 次。
+		//
+		// 【此前的严重缺陷】原实现是 `sleep_for(3s)` 循环 —— **中间不检查
+		// g_vm_running**。于是这段最长 18 秒的诊断期里，monitor 线程无法
+		// 响应退出请求；而 VMThreadMain 结尾会 `monitor.join()`，
+		// 导致停止时 main 线程被**阻塞最长 18 秒**。
+		//
+		// 真机实测（2026-09-23）：
+		//   13:02:35.507 Execute loop ended
+		//   13:02:44.887 VM thread exited     <- 中间 9.4 秒全耗在等 monitor
+		// 期间 NapiStop 是同步调用 -> ArkTS 的 stopBoot() 卡住 ->
+		// 整个 UI 冻结 -> 触发系统无响应判定 / 应用重启。
+		// 这正是外部反馈"关闭游戏后出现闪退"的直接原因。
+		//
+		// 修法：把 3 秒切成 100ms 小步，每步检查 g_vm_running，
+		// 一旦收到退出请求立即结束诊断。
+		// ------------------------------------------------------------------
+		constexpr int kSampleCount = 6;
+		constexpr int kSampleIntervalMs = 3000;
+		constexpr int kStepMs = 100;
+		for (int i = 0; i < kSampleCount && g_vm_running.load(); ++i)
+		{
+			int waited = 0;
+			while (waited < kSampleIntervalMs && g_vm_running.load())
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
+				waited += kStepMs;
+			}
+			if (!g_vm_running.load())
+				break;
+
 			LOGI("MONITOR: ee_pc=0x%{public}08x frame=%{public}llu vm_state=%{public}d",
 				cpuRegs.pc,
 				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()),
@@ -747,7 +845,18 @@ void VMThreadMain() {
 		// ---------------------------------------------------------------
 		int watchdog_tick = 0;
 		while (g_vm_running.load()) {
-			std::this_thread::sleep_for(std::chrono::seconds(3));
+			// 同样切成小步：3 秒的整段 sleep 会让退出请求最多延迟 3 秒，
+			// 而 monitor.join() 正在等它（与上面的诊断循环同一类缺陷）。
+			{
+				int waited = 0;
+				while (waited < 3000 && g_vm_running.load())
+				{
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+					waited += 100;
+				}
+				if (!g_vm_running.load())
+					break;
+			}
 			++watchdog_tick;
 
 			// 每 10 次采样（约 30 秒）复检一次，避免高频 mprotect 影响模拟性能。
@@ -945,6 +1054,29 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	SysMemory::ReserveMemory();
 
 	SetStage(BootStage::kStartingThread);
+
+	// ---------------------------------------------------------------------
+	// 【关键】赋值前必须确保 g_vm_thread 不可 joinable。
+	//
+	// std::thread 的赋值运算符要求左侧**不可 joinable**，否则会调用
+	// std::terminate() —— 表现为**立即闪退且无常规崩溃日志**。
+	//
+	// 这正是外部反馈"关闭游戏后再开会闪退"的可疑主因：
+	// 若上一次停止因任何原因未走到 join（异常路径、失败分支、
+	// 或前端的 stop/start 竞态），此处就会踩到该终止条件。
+	//
+	// 这里做防御性清理：若仍可 join，先请求停止再 join，
+	// 而不是直接覆盖赋值。
+	// ---------------------------------------------------------------------
+	if (g_vm_thread.joinable())
+	{
+		LOGW("startBios: previous VM thread still joinable; stopping it first");
+		VMManager::SetPaused(true);
+		g_vm_running.store(false);
+		g_vm_thread.join();
+		LOGW("startBios: previous VM thread joined");
+	}
+
 	g_vm_running.store(true);
 	g_vm_thread = std::thread(VMThreadMain);
 
@@ -966,6 +1098,15 @@ static napi_value NapiInitVirtualPad(napi_env env, napi_callback_info info) {
 		napi_value r; napi_create_int32(env, 0, &r); return r;
 	}
 	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
+// hasOfficialGamepad() -> 1 when GameControllerKit owns controller input.
+// ArkUI must not also request gamepad focus in that case: D-pad keys would
+// otherwise navigate the floating overlay while controlling the PS2.
+static napi_value NapiHasOfficialGamepad(napi_env env, napi_callback_info info) {
+	napi_value r;
+	napi_create_int32(env, Hps2Gamepad::IsAvailable() ? 1 : 0, &r);
+	return r;
 }
 
 // mapVirtualPad(port) -> 1/0  为手柄端口做自动按键映射
@@ -1228,6 +1369,31 @@ static napi_value NapiListSaveSlots(napi_env env, napi_callback_info info) {
 	return out;
 }
 
+// setVuThread(enabled) -> 1/0
+//
+// MTVU（VU1 独立线程）。上游默认为开启，我们早期为稳定性关闭。
+// **下次启动游戏生效** —— vu1Thread 在 VU1 重编译器初始化时创建一次，
+// 运行期改这个标志会让已编译的 VU1 代码与新取值不一致。
+static napi_value NapiSetVuThread(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	bool enabled = false;
+	if (argc >= 1)
+		napi_get_value_bool(env, argv[0], &enabled);
+
+	const bool ok = Hps2Video::SetVuThread(enabled);
+	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
+}
+
+// getVuThread() -> 1/0
+static napi_value NapiGetVuThread(napi_env env, napi_callback_info info) {
+	napi_value r;
+	napi_create_int32(env, Hps2Video::GetVuThread() ? 1 : 0, &r);
+	return r;
+}
+
 // setSurface(surfaceId: string, width: number, height: number) -> 1/0
 //
 // 由 ArkTS 在 XComponent 就绪后调用，把 ArkUI 的 surfaceId 转成
@@ -1321,8 +1487,105 @@ static napi_value NapiStop(napi_env env, napi_callback_info info) {
 		LOGW("VM thread joined");
 	}
 
+	// ---------------------------------------------------------------------
+	// 【关键】调用 VMManager::Shutdown() 让 VM 状态回到 Shutdown。
+	//
+	// 此前只调 CPUThreadShutdown()，**跳过了 VMManager::Shutdown()** ——
+	// 而 VMState::Shutdown 只在该函数里设置（VMManager.cpp:1930）：
+	//     s_state.store(VMState::Shutdown, std::memory_order_release);
+	//
+	// 于是 s_state 停在 Paused，第二次启动时 VMManager::Initialize 首句检查：
+	//     if (s_state.load() != VMState::Shutdown) {
+	//         Error::SetString(error, "The virtual machine is already running.");
+	//         return VMBootResult::StartupFailure;      // = result 1
+	//     }
+	// 直接失败。
+	//
+	// 真机日志证据（2026-09-24 13:29:36）：
+	//     第二次启动 BOOT_ERROR=VMManager::Initialize failed (result=1)
+	//   而 result=1 正是 VMBootResult::StartupFailure。
+	//
+	// 上游 Qt 的顺序（QtHost.cpp:429 与 450）：
+	//     CPUThreadShutdown() 在 CPU 线程循环退出后调；
+	//     VMManager::Shutdown() 随后在 UI 线程调（负责完整拆解 + 置 Shutdown）。
+	// 我们照此顺序执行。
+	//
+	// save_resume_state=false：不写 resume 存档
+	// （本应用不提供"恢复上次会话"功能，避免在沙箱里留下额外文件）。
+	// ---------------------------------------------------------------------
+	LOGW("calling VMManager::Shutdown() to reset VM state");
+	VMManager::Shutdown(false);
+	LOGW("VMManager::Shutdown() done, state=%{public}d",
+		static_cast<int>(VMManager::GetState()));
+
+	// ---------------------------------------------------------------------
+	// 重置静态状态。
+	//
+	// 此前只 join 线程，以下状态**全部残留**，污染下一次启动：
+	//   g_vm_in_execute    - 若残留 true，读档的握手等待会误判"仍在执行"
+	//   g_vm_task_pending  - 残留会让下一次 RunOnVmThread 误判"任务忙"
+	//   g_vm_task_running  - 同上
+	//   g_last_error       - 旧错误串会显示在新一轮启动的界面上
+	//   g_jit_available    - 旧判定会掩盖新的 JIT 失效
+	// 这些都是"关闭后再开"出现异常的直接来源。
+	// ---------------------------------------------------------------------
+	g_vm_in_execute.store(false);
+	g_last_error.clear();
+
+	{
+		std::lock_guard<std::mutex> lk(g_vm_task_mutex);
+		g_vm_pending_task = nullptr;
+		g_vm_task_pending = false;
+		g_vm_task_running = false;
+	}
+	g_vm_task_cv.notify_all();
+	g_vm_task_done_cv.notify_all();
+
+	LOGW("stop: static state reset (in_execute/task/error)");
+
 	SetStage(BootStage::kIdle);
 	napi_value r; napi_create_int32(env, 1, &r); return r;
+}
+
+// setPaused(paused) -> 1 when the VM accepted the requested state, 0 when no
+// running VM is available.  VMManager::SetPaused() updates the state consumed
+// by the CPU execution loop, so this is a real emulation pause rather than
+// just a UI overlay.
+static napi_value NapiSetPaused(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	bool paused = false;
+	if (argc < 1 || argv[0] == nullptr || napi_get_value_bool(env, argv[0], &paused) != napi_ok) {
+		napi_value r;
+		napi_create_int32(env, 0, &r);
+		return r;
+	}
+
+	if (!g_vm_running.load() || !VMManager::HasValidVM()) {
+		LOGW("setPaused(%{public}d) rejected: no valid VM", paused ? 1 : 0);
+		napi_value r;
+		napi_create_int32(env, 0, &r);
+		return r;
+	}
+
+	const VMState before = VMManager::GetState();
+	const VMState requested = paused ? VMState::Paused : VMState::Running;
+	if (before != requested) {
+		LOGI("setPaused(%{public}d): state %{public}d -> %{public}d",
+			paused ? 1 : 0, static_cast<int>(before), static_cast<int>(requested));
+		VMManager::SetPaused(paused);
+	}
+
+	const bool accepted = VMManager::GetState() == requested;
+	if (!accepted)
+		LOGW("setPaused(%{public}d) did not reach requested state; current=%{public}d",
+			paused ? 1 : 0, static_cast<int>(VMManager::GetState()));
+
+	napi_value r;
+	napi_create_int32(env, accepted ? 1 : 0, &r);
+	return r;
 }
 
 static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
@@ -1347,6 +1610,8 @@ static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
 	json += "\"stage\":" + std::to_string(stage);
 	json += ",\"stageName\":\"" + std::string(StageName(static_cast<BootStage>(stage))) + "\"";
 	json += ",\"running\":" + std::string(g_vm_running.load() ? "true" : "false");
+	const bool paused = g_vm_running.load() && VMManager::GetState() == VMState::Paused;
+	json += ",\"paused\":" + std::string(paused ? "true" : "false");
 	json += ",\"error\":\"" + esc(err) + "\"";
 	const float fps = g_vm_running.load() ? PerformanceMetrics::GetFPS() : 0.0f;
 	json += ",\"fps\":" + std::to_string(std::isfinite(fps) && fps > 0.0f ? fps : 0.0f);
@@ -1387,12 +1652,118 @@ static napi_value NapiCheckJit(napi_env env, napi_callback_info info) {
 	return out;
 }
 
+// ===========================================================================
+// 阶段 0：数据外置探针的 N-API 入口（临时调试用，见 hps2_dataprobe.h）
+//
+// 为什么放在这里而不是独立 .so：探针必须跑在**本应用的 UID 与 SELinux
+// 上下文**下才有效；同 bundle 的调试构建既能实测真实策略，又能用
+// install -r 更新安装，从而**保住沙箱里已有的 10GB 游戏与存档**。
+// ===========================================================================
+
+// runDataProbe(root) -> JSON。第 4 项：Native POSIX 读写探测。
+static napi_value NapiRunDataProbe(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string root;
+	if (argc < 1 || argv[0] == nullptr)
+	{
+		napi_create_string_utf8(env,
+			"{\"ok\":false,\"error\":\"runDataProbe requires (root)\"}",
+			NAPI_AUTO_LENGTH, &argv[0]);
+		return argv[0];
+	}
+	{
+		size_t len = 0;
+		napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+		root.resize(len + 1);
+		napi_get_value_string_utf8(env, argv[0], root.data(), len + 1, &len);
+		root.resize(len);
+	}
+
+	LOGI("DATA_PROBE run_native root=%{public}s", root.c_str());
+	std::string json;
+	Hps2DataProbe::RunNativeProbe(root, json);
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// statDataPath(path) -> JSON。只读诊断：存在性、可枚举性、属主与权限位。
+static napi_value NapiStatDataPath(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string path;
+	if (argc >= 1 && argv[0] != nullptr)
+	{
+		size_t len = 0;
+		napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+		path.resize(len + 1);
+		napi_get_value_string_utf8(env, argv[0], path.data(), len + 1, &len);
+		path.resize(len);
+	}
+
+	const std::string json = Hps2DataProbe::StatPathJson(path);
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// probePathChain(path) -> JSON。逐级祖先诊断：定位访问断在哪一层。
+static napi_value NapiProbePathChain(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string path;
+	if (argc >= 1 && argv[0] != nullptr)
+	{
+		size_t len = 0;
+		napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+		path.resize(len + 1);
+		napi_get_value_string_utf8(env, argv[0], path.data(), len + 1, &len);
+		path.resize(len);
+	}
+
+	const std::string json = Hps2DataProbe::ProbePathChain(path);
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// listDataDir(path) -> JSON。只读枚举目录条目（用于确认应用可见的挂载点）。
+static napi_value NapiListDataDir(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string path;
+	if (argc >= 1 && argv[0] != nullptr)
+	{
+		size_t len = 0;
+		napi_get_value_string_utf8(env, argv[0], nullptr, 0, &len);
+		path.resize(len + 1);
+		napi_get_value_string_utf8(env, argv[0], path.data(), len + 1, &len);
+		path.resize(len);
+	}
+
+	const std::string json = Hps2DataProbe::ListDirJson(path);
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
 	napi_property_descriptor desc[] = {
 		{"startBios", nullptr, NapiStartBios, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"initVirtualPad", nullptr, NapiInitVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"hasOfficialGamepad", nullptr, NapiHasOfficialGamepad, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"mapVirtualPad", nullptr, NapiMapVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"enumerateControllers", nullptr, NapiEnumerateControllers, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"mapController", nullptr, NapiMapController, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1402,15 +1773,24 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"getAspectMode", nullptr, NapiGetAspectMode, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setUpscaleMultiplier", nullptr, NapiSetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getUpscaleMultiplier", nullptr, NapiGetUpscaleMultiplier, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setVuThread", nullptr, NapiSetVuThread, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"getVuThread", nullptr, NapiGetVuThread, nullptr, nullptr, nullptr, napi_default, nullptr},
+
 		{"notifyResize", nullptr, NapiNotifyResize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkBios", nullptr, NapiCheckBios, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"saveState", nullptr, NapiSaveState, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"loadState", nullptr, NapiLoadState, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"deleteSaveState", nullptr, NapiDeleteSaveState, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listSaveSlots", nullptr, NapiListSaveSlots, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setPaused", nullptr, NapiSetPaused, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},
+		// 阶段 0 数据外置探针（临时；阶段 3 落地后可移除）
+		{"runDataProbe",  nullptr, NapiRunDataProbe,  nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"statDataPath",  nullptr, NapiStatDataPath,  nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"probePathChain", nullptr, NapiProbePathChain, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"listDataDir", nullptr, NapiListDataDir, nullptr, nullptr, nullptr, napi_default, nullptr},
 	};
 	napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 	return exports;

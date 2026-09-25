@@ -23,11 +23,11 @@
   "material": {
     "certpath":   "~/.ohos/config/default_arktunnel_*.cer",
     "keyAlias":   "debugKey",
-    "keyPassword":"0000001A34662E9E...(hex 密文)",
+    "keyPassword":"<redacted DevEco ciphertext>",
     "profile":    "~/.ohos/config/default_arktunnel_*.p7b",
     "signAlg":    "SHA256withECDSA",
     "storeFile":  "~/.ohos/config/default_arktunnel_*.p12",
-    "storePassword":"0000001A5EE8F8C9...(hex 密文)"
+    "storePassword":"<redacted DevEco ciphertext>"
   }
 }]
 ```

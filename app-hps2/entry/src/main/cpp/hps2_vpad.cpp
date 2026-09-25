@@ -7,6 +7,7 @@
  */
 
 #include "hps2_vpad.h"
+#include "hps2_gamepad.h"
 
 #include <hilog/log.h>
 
@@ -65,6 +66,8 @@ namespace Hps2VPad
 				case SDL_GAMEPAD_BUTTON_START: return PadDualshock2::PAD_START;
 				case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return PadDualshock2::PAD_L1;
 				case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return PadDualshock2::PAD_R1;
+				case SDL_GAMEPAD_BUTTON_LEFT_STICK: return PadDualshock2::PAD_L3;
+				case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return PadDualshock2::PAD_R3;
 				case SDL_GAMEPAD_BUTTON_DPAD_UP: return PadDualshock2::PAD_UP;
 				case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return PadDualshock2::PAD_DOWN;
 				case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return PadDualshock2::PAD_LEFT;
@@ -93,6 +96,8 @@ namespace Hps2VPad
 	{
 		if (device.empty() || port < 0)
 			return false;
+		if (Hps2Gamepad::IsOfficialDeviceId(device))
+			return Hps2Gamepad::SelectDevice(device, port);
 
 		InputSource* source = InputManager::GetInputSourceInterface(InputSourceType::SDL);
 		if (source == nullptr || !source->IsInitialized())
@@ -140,8 +145,6 @@ namespace Hps2VPad
 	std::string EnumerateControllersJson()
 	{
 		InputSource* source = InputManager::GetInputSourceInterface(InputSourceType::SDL);
-		if (source == nullptr || !source->IsInitialized())
-			return "[]";
 
 		auto escape = [](const std::string& value) {
 			std::string out;
@@ -159,12 +162,17 @@ namespace Hps2VPad
 			return out;
 		};
 
-		const std::vector<std::pair<std::string, std::string>> devices = source->EnumerateDevices();
+		std::vector<std::pair<std::string, std::string>> devices = Hps2Gamepad::EnumerateDevices();
+		if (source != nullptr && source->IsInitialized())
+		{
+			const auto sdl_devices = source->EnumerateDevices();
+			devices.insert(devices.end(), sdl_devices.begin(), sdl_devices.end());
+		}
 		std::string json = "[";
 		bool first = true;
 		for (const auto& [identifier, name] : devices)
 		{
-			if (identifier.rfind("SDL-", 0) != 0)
+			if (identifier.rfind("SDL-", 0) != 0 && !Hps2Gamepad::IsOfficialDeviceId(identifier))
 				continue;
 			if (!first)
 				json += ',';
@@ -186,6 +194,8 @@ namespace Hps2VPad
 
 		s_ready.store(true);
 		VLOGI("virtual pad direct input initialized");
+		const bool official_gamepad = Hps2Gamepad::Initialize();
+		VLOGI("official gamepad input initialized=%{public}d", official_gamepad ? 1 : 0);
 		return true;
 	}
 

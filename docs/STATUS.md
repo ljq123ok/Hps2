@@ -4,7 +4,7 @@
 **当前阶段**：阶段 0 已完成；阶段 1 **模拟器验证通过（PASS=8 / FAIL=1，返回 123）**；
 真机**已接入并采集完整设备事实**，但**因签名信任根受限无法安装 HAP**，探针未能在真机运行。
 
-> **真机事实已确认**（不再是推测）：HUAWEI Pura X View / `VOL-AL00` /
+> **真机事实已确认**（不再是推测）：HarmonyOS API 26 arm64 测试设备（标识已脱敏）/
 > **OpenHarmony-7.0.0.105 / API 26** / arm64-v8a / 形态 phone /
 > **HongMeng Kernel 1.13.0**（**非** Linux）。
 
@@ -37,12 +37,12 @@
 | SDK Native 版本 | 6.1.1.125 | `native/oh-uni-package.json` |
 | NDK clang | 15.0.4 | `build/cmake/ohos.toolchain.cmake` |
 | 宿主 | macOS 26.6.1，arm64 | `sw_vers` / `uname -m` |
-| **真机** | **HUAWEI Pura X View（`VOL-AL00`）** | `param get const.product.name` |
+| **真机** | **HarmonyOS API 26 arm64 测试设备（标识已脱敏）** | `param get const.product.name` |
 | 真机系统 | **OpenHarmony-7.0.0.105 / API 26**，安全补丁 2026/07/01 | `param get const.ohos.fullname` |
 | 真机架构 | **arm64-v8a**，形态 `phone` | `param get const.product.cpu.abilist` |
 | 真机内核 | **HongMeng Kernel 1.13.0**（aarch64） | `uname -a` |
-| 真机软件版本 | `VOL-AL00 7.0.0.105(SP12C00E8R5P3)` | `const.product.software.version` |
-| 真机硬件版本 | HL1VGDM | `const.product.hardwareversion` |
+| 真机软件版本 | `7.0.0.105（具体构建标识已脱敏）` | `const.product.software.version` |
+| 真机硬件版本 | （已脱敏） | `const.product.hardwareversion` |
 | 模拟器 | OpenHarmony-6.1.1.125 / API 24（emulator） | `param get const.ohos.fullname` |
 
 > ⚠️ **关于「HarmonyOS 7」**：本机 **SDK** 为 6.1.1 / API 24（`sdk-pkg.json` 中
@@ -99,7 +99,7 @@
 
 | # | 测试 | 结果 | 实测数据 |
 |---|---|---|---|
-| 1.1 | `mmap(RW)` | ✅ | addr=547624173568 |
+| 1.1 | `mmap(RW)` | ✅ | 地址已脱敏 |
 | 1.2 | `mprotect(RW→RX)` + icache flush | ✅ | 提交成功 |
 | 1.3 | **执行生成代码并校验返回值** | ✅ | **返回 123，期望 123** |
 | 2.1 | 重复执行 10000 次 | ✅ | sum=770000，期望 770000 |
@@ -387,7 +387,7 @@ HarmonyOS 的内存/权限策略上。这是阶段 1 失败诊断的关键前提
 | # | 问题 | 状态 |
 |---|---|---|
 | Q1 | **真机 RW→RX 分步映射是否被允许？**（唯一不依赖 AGC 审批的突破口；模拟器已验证可行） | **仍待真机确认** —— 阻塞于签名，探针未能在真机运行 |
-| Q2 | 真机型号 / 系统版本 / CPU 架构 | ✅ **已确认**：HUAWEI Pura X View / `VOL-AL00` / OpenHarmony-7.0.0.105 / API 26 / arm64-v8a |
+| Q2 | 真机型号 / 系统版本 / CPU 架构 | ✅ **已确认**：HarmonyOS API 26 arm64 测试设备 / OpenHarmony-7.0.0.105 / API 26 / arm64-v8a（标识已脱敏） |
 | Q3 | 真机形态判定 | ✅ **已确认**：`const.product.devicetype = phone` |
 | Q4 | 真机是否开启坚盾守护模式 | 未确认（相关 param 均不可读） |
 | Q5 | `ALLOW_EXECUTABLE_FORT_MEMORY` 能否覆盖非 JSVM 原生 JIT | 需官方澄清 |

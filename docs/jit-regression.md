@@ -21,7 +21,7 @@
 ### 1.1 失败模式完全一致
 
 ```
-[OK]   1.1 mmap(RW) | addr=388336443392          ← mmap 成功
+[OK]   1.1 mmap(RW) | addr=<redacted>          ← mmap 成功
 [FAIL] 1.3 mprotect(RX) 失败: Invalid argument (errno=22)
 [FAIL] 2.1 mprotect 失败: Invalid argument (errno=22)
 [FAIL] 3.1 三次重建结果=0,0,0
@@ -44,7 +44,7 @@
 | 1 | 签名流程出错 | **同一个 HAP 文件**先 PASS 后 FAIL | ❌ 排除 |
 | 2 | 改名 Hps2 / 换图标 | 回装**未改名**的原始包，同样失败 | ❌ 排除 |
 | 3 | SELinux 域变化 | 域字符串逐字符相同：`o:r:debug_hap:s0:x53,x335,x512,x868,x1024` | ❌ 排除 |
-| 4 | 系统版本/补丁变化 | `OpenHarmony-7.0.0.105` / API 26 / 补丁 `2026/07/01` / `VOL-AL00 7.0.0.105(SP12C00E8R5P3)` 全部一致 | ❌ 排除 |
+| 4 | 系统版本/补丁变化 | `OpenHarmony-7.0.0.105` / API 26 / 补丁 `2026/07/01` / 构建标识已脱敏 | ❌ 排除 |
 | 5 | appspawn 重启导致标志重载 | `appspawn` PID 592 自 **09:09:02** 起未变；PASS(17:21) 与 FAIL(19:14) 属同一进程 | ❌ 排除 |
 | 6 | **坚盾守护模式**（全局禁 JIT） | 其它应用 ArkTS 引擎**仍启用 JIT**：<br>`com.tencent.wechat ... jit: 1`<br>`com.huawei.hmos.photos ... jit: 1` | ❌ 排除 |
 | 7 | 本应用 ArkTS 引擎异常 | 本应用同样 `jit: 1`，与其它应用一致 | ❌ 排除 |

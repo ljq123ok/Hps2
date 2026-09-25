@@ -27,6 +27,8 @@ export struct GameScreen {
   @Prop showPad: boolean = true;
   /** 由父组件传入是否在游玩中（决定是否叠加按键） */
   @Prop playing: boolean = false;
+  /** 官方 GameControllerKit 已接管实体手柄；此时不能再让 ArkUI 抢焦点。 */
+  @Prop nativeGamepad: boolean = false;
 
   /** surface 回调：把尺寸交给父组件，由父组件统一 push 给 native */
   onSurfaceSize?: (w: number, h: number) => void;
@@ -149,7 +151,7 @@ export struct GameScreen {
       // 三家手柄（Xbox / PlayStation / Switch）通用：
       // 系统层按键码统一，差异只在物理标注，按位置映射即可。
       // 映射表见 common/GamepadKeyMap.ets。
-      if (this.playing) {
+      if (this.playing && !this.nativeGamepad) {
         GamepadCatcher({
           padEnabled: true,
           onFirstEvent: () => {

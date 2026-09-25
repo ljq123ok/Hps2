@@ -7,6 +7,13 @@
 **/.preview/
 *.hap
 *.har
+*.hsp
+*.apk
+*.ipa
+*.dmp
+*.pcap
+*.trace
+*.log
 
 # 上游源码（按提交号可重现；不纳入本仓库历史）
 upstream/
@@ -27,6 +34,10 @@ stage1-jitprobe/host-test/encode_check
 
 # release 签名私钥与证书 —— 绝不入库
 .release-signing/
+
+# 真机数据备份（含用户存档：memcards/sstates）—— 绝不入库。
+# 这是阶段 0 探针前的预防性备份，属个人数据，不入仓库。
+.backup-probe-precaution/
 
 # 第三方交叉编译产物（可从源码重建）
 thirdparty-ohos/src/
