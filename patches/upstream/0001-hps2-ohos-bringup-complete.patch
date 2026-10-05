@@ -1,0 +1,2177 @@
+diff --git a/3rdparty/cpuinfo/CMakeLists.txt b/3rdparty/cpuinfo/CMakeLists.txt
+index 6bb4687cde..d4d4da30ff 100644
+--- a/3rdparty/cpuinfo/CMakeLists.txt
++++ b/3rdparty/cpuinfo/CMakeLists.txt
+@@ -108,7 +108,7 @@ IF(NOT CMAKE_SYSTEM_NAME)
+       "Target operating system is not specified. "
+       "cpuinfo will compile, but cpuinfo_initialize() will always fail.")
+   SET(CPUINFO_SUPPORTED_PLATFORM FALSE)
+-ELSEIF(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|WindowsStore|CYGWIN|MSYS|Darwin|Linux|Android|FreeBSD|Emscripten)$")
++ELSEIF(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|WindowsStore|CYGWIN|MSYS|Darwin|Linux|Android|OHOS|FreeBSD|Emscripten)$")
+   IF(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.14" AND NOT IS_APPLE_OS)
+     MESSAGE(WARNING
+       "Target operating system \"${CMAKE_SYSTEM_NAME}\" is not supported in cpuinfo. "
+@@ -173,7 +173,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM)
+       src/x86/cache/init.c
+       src/x86/cache/descriptor.c
+       src/x86/cache/deterministic.c)
+-    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+       LIST(APPEND CPUINFO_SRCS
+         src/x86/linux/init.c
+         src/x86/linux/cpuinfo.c)
+@@ -193,7 +193,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM)
+     LIST(APPEND CPUINFO_SRCS
+       src/arm/uarch.c
+       src/arm/cache.c)
+-    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+       LIST(APPEND CPUINFO_SRCS
+         src/arm/linux/init.c
+         src/arm/linux/cpuinfo.c
+@@ -219,7 +219,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM)
+   ELSEIF(CPUINFO_TARGET_PROCESSOR MATCHES "^(riscv(32|64))$")
+     LIST(APPEND CPUINFO_SRCS
+       src/riscv/uarch.c)
+-    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++    IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+       LIST(APPEND CPUINFO_SRCS
+         src/riscv/linux/init.c
+ 	src/riscv/linux/riscv-hw.c
+@@ -232,7 +232,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM)
+       src/emscripten/init.c)
+   ENDIF()
+ 
+-  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+     LIST(APPEND CPUINFO_SRCS
+       src/linux/smallfile.c
+       src/linux/multiline.c
+@@ -304,7 +304,7 @@ TARGET_COMPILE_DEFINITIONS(cpuinfo_internals PRIVATE "CPUINFO_LOG_TO_STDIO=1")
+ 
+ IF(CPUINFO_SUPPORTED_PLATFORM)
+   TARGET_COMPILE_DEFINITIONS(cpuinfo INTERFACE CPUINFO_SUPPORTED_PLATFORM=1)
+-  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+     TARGET_LINK_LIBRARIES(cpuinfo PUBLIC ${CMAKE_THREAD_LIBS_INIT})
+     TARGET_LINK_LIBRARIES(cpuinfo_internals PUBLIC ${CMAKE_THREAD_LIBS_INIT})
+     TARGET_COMPILE_DEFINITIONS(cpuinfo PRIVATE _GNU_SOURCE=1)
+@@ -377,7 +377,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM AND CPUINFO_BUILD_MOCK_TESTS)
+   IF(CPUINFO_TARGET_PROCESSOR MATCHES "^(i[3-6]86|AMD64|x86(_64)?)$")
+     LIST(APPEND CPUINFO_MOCK_SRCS src/x86/mockcpuid.c)
+   ENDIF()
+-  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+     LIST(APPEND CPUINFO_MOCK_SRCS src/linux/mockfile.c)
+   ENDIF()
+ 
+@@ -390,7 +390,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM AND CPUINFO_BUILD_MOCK_TESTS)
+   TARGET_COMPILE_DEFINITIONS(cpuinfo_mock PUBLIC "CPUINFO_MOCK=1")
+   TARGET_COMPILE_DEFINITIONS(cpuinfo_mock PRIVATE "CPUINFO_LOG_LEVEL=5")
+   TARGET_COMPILE_DEFINITIONS(cpuinfo_mock PRIVATE "CPUINFO_LOG_TO_STDIO=1")
+-  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+     TARGET_LINK_LIBRARIES(cpuinfo_mock PUBLIC ${CMAKE_THREAD_LIBS_INIT})
+     TARGET_COMPILE_DEFINITIONS(cpuinfo_mock PRIVATE _GNU_SOURCE=1)
+   ENDIF()
+@@ -815,7 +815,7 @@ IF(CPUINFO_SUPPORTED_PLATFORM AND CPUINFO_BUILD_UNIT_TESTS)
+   TARGET_LINK_LIBRARIES(init-test PRIVATE cpuinfo gtest gtest_main)
+   ADD_TEST(NAME init-test COMMAND init-test)
+ 
+-  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
++  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+     ADD_EXECUTABLE(get-current-test test/get-current.cc)
+     CPUINFO_TARGET_ENABLE_CXX11(get-current-test)
+     CPUINFO_TARGET_RUNTIME_LIBRARY(get-current-test)
+diff --git a/3rdparty/glad/include/EGL/eglplatform.h b/3rdparty/glad/include/EGL/eglplatform.h
+index 6786afd90b..1ff1f3b3e4 100644
+--- a/3rdparty/glad/include/EGL/eglplatform.h
++++ b/3rdparty/glad/include/EGL/eglplatform.h
+@@ -103,6 +103,23 @@ typedef void*                           EGLNativeDisplayType;
+ typedef struct egl_native_pixmap_t*     EGLNativePixmapType;
+ typedef struct ANativeWindow*           EGLNativeWindowType;
+ 
++#elif defined(OHOS_PLATFORM)
++
++/* [Hps2] HarmonyOS/OpenHarmony.
++ *
++ * Without this branch OHOS falls through to the generic `__unix__` case below,
++ * which defines EGLNativeWindowType as `khronos_uintptr_t` (an integer). That
++ * makes `static_cast<EGLNativeWindowType>(OHNativeWindow*)` ill-formed and,
++ * worse, would silently truncate the pointer on a platform where the window
++ * really is a pointer. The OHOS EGL header (sysroot
++ * usr/include/EGL/eglplatform.h) defines these as pointers under
++ * OHOS_PLATFORM; keep the two consistent. */
++struct NativeWindow;
++
++typedef void*                   EGLNativeDisplayType;
++typedef void*                   EGLNativePixmapType;
++typedef struct NativeWindow*    EGLNativeWindowType;
++
+ #elif defined(USE_OZONE)
+ 
+ typedef intptr_t EGLNativeDisplayType;
+diff --git a/cmake/Pcsx2Utils.cmake b/cmake/Pcsx2Utils.cmake
+index 813722edd1..abd9160d0d 100644
+--- a/cmake/Pcsx2Utils.cmake
++++ b/cmake/Pcsx2Utils.cmake
+@@ -21,6 +21,15 @@ function(detect_operating_system)
+ 		# udev, D-Bus and a runtime page-size probe, none of which exist under
+ 		# the NDK — so Android must not answer to LINUX anywhere.
+ 		message(STATUS "Building for Android.")
++	elseif(OHOS_BUILD OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
++		# [Hps2] HarmonyOS. Same reasoning as Android above: OHOS defines
++		# __OHOS__ + __linux__ but NOT __ANDROID__, so without this branch the
++		# build would answer to LINUX and reach for D-Bus / X11 / libcurl, none
++		# of which exist in the OHOS sysroot. Kept as its own platform so the
++		# LINUX-guarded paths can be avoided explicitly.
++		set(OHOS TRUE)
++		set(OHOS TRUE PARENT_SCOPE)
++		message(STATUS "Building for HarmonyOS (OHOS).")
+ 	elseif(LINUX)
+ 		message(STATUS "Building for Linux.")
+ 	elseif(BSD)
+diff --git a/cmake/SearchForStuff.cmake b/cmake/SearchForStuff.cmake
+index e1d43e031d..3d92d45fa1 100644
+--- a/cmake/SearchForStuff.cmake
++++ b/cmake/SearchForStuff.cmake
+@@ -38,6 +38,13 @@ if (WIN32)
+ 	add_subdirectory(3rdparty/winpixeventruntime EXCLUDE_FROM_ALL)
+ 	add_subdirectory(3rdparty/winwil EXCLUDE_FROM_ALL)
+ 	find_package(Vtune)
++elseif(OHOS)
++	# [Hps2] HarmonyOS: no libcurl and no libpcap in the OHOS sysroot.
++	# HTTP is provided by the native net_http stack — see
++	# common/HTTPDownloaderOHOS.cpp. PCAP is only used for the optional
++	# packet-capture debug tooling, which is not part of this port.
++	# Vtune is Intel-only and never present here.
++	message(STATUS "OHOS: skipping CURL/PCAP/Vtune (using native net_http instead)")
+ else()
+ 	find_package(CURL REQUIRED)
+ 	if(NOT IOS)
+diff --git a/cmake/ohos.toolchain.cmake b/cmake/ohos.toolchain.cmake
+new file mode 100644
+index 0000000000..d4338835d0
+--- /dev/null
++++ b/cmake/ohos.toolchain.cmake
+@@ -0,0 +1,126 @@
++# HarmonyOS (OHOS) 交叉编译 toolchain for ARMSX2 / Hps2
++#
++# 设计原则：
++#   1. 不做"猜宏"式移植 —— OHOS 定义 __OHOS__ + __linux__，
++#      不定义 __ANDROID__/__APPLE__/_WIN32，因此上游会把它当普通 Linux，
++#      从而拉入 D-Bus / X11 / libcurl。这些在本 toolchain 中被显式关闭。
++#   2. 尽量复用上游构建系统，不手工维护源文件列表。
++#
++# 用法：
++#   cmake -DCMAKE_TOOLCHAIN_FILE=<this file> ...
++
++set(CMAKE_SYSTEM_NAME OHOS)
++set(CMAKE_SYSTEM_PROCESSOR aarch64)
++
++# --- SDK 定位 ---
++if(NOT DEFINED OHOS_SDK_NATIVE)
++    set(OHOS_SDK_NATIVE "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native")
++endif()
++
++set(OHOS_TOOLCHAIN "${OHOS_SDK_NATIVE}/llvm")
++set(OHOS_SYSROOT   "${OHOS_SDK_NATIVE}/sysroot")
++
++set(CMAKE_C_COMPILER   "${OHOS_TOOLCHAIN}/bin/clang")
++set(CMAKE_CXX_COMPILER "${OHOS_TOOLCHAIN}/bin/clang++")
++set(CMAKE_AR           "${OHOS_TOOLCHAIN}/bin/llvm-ar"      CACHE FILEPATH "")
++set(CMAKE_RANLIB       "${OHOS_TOOLCHAIN}/bin/llvm-ranlib"  CACHE FILEPATH "")
++set(CMAKE_STRIP        "${OHOS_TOOLCHAIN}/bin/llvm-strip"   CACHE FILEPATH "")
++
++set(CMAKE_SYSROOT "${OHOS_SYSROOT}")
++
++# --- 编译/链接标志 ---
++# --target 与 sysroot 必须成对出现，否则会误用宿主 libc
++add_compile_options(
++    --target=aarch64-linux-ohos
++    -D__OHOS__=1
++)
++add_link_options(--target=aarch64-linux-ohos)
++
++# OHOS 使用 musl libc；与 glibc 的差异（如缺少 _SC_LEVEL1_*CACHE_LINESIZE）
++# 由平台层在源码内适配，这里只做能力声明。
++add_compile_definitions(
++    __MUSL__=1
++    OHOS_PLATFORM=1
++)
++
++# --- 查找行为 ---
++#
++# 必须把 sysroot 与"第三方库安装前缀"都放进搜索根，且 MODE 用 BOTH。
++#
++# 实测教训（两个独立子代理分别踩到并报告）：
++#   若只用 MODE_*=ONLY 且 ROOT_PATH 仅含 sysroot，则 CMAKE_PREFIX_PATH
++#   会被 re-root 到 sysroot 之下，导致已交叉编译好的第三方库
++#   （lz4/libjpeg/libpng/webp/freetype/zstd）全部不可见，报错形如
++#       Could NOT find JPEG (missing: JPEG_LIBRARY JPEG_INCLUDE_DIR)
++#       Could NOT find Freetype (missing: FREETYPE_LIBRARY FREETYPE_INCLUDE_DIRS)
++#   ARMSX2 的 cmake/Find*.cmake 走的是 module 模式（find_path/find_library），
++#   它们依赖搜索路径能覆盖我们的前缀。
++#
++# 误链宿主库的风险由 --target=aarch64-linux-ohos + CMAKE_SYSROOT 控制，
++# 不需要靠 ONLY 来兜底。
++set(CMAKE_FIND_ROOT_PATH "${OHOS_SYSROOT}")
++
++# Hps2 第三方依赖前缀（由 thirdparty-ohos/ 交叉编译产出）
++if(NOT DEFINED HPS2_OHOS_PREFIX)
++    set(HPS2_OHOS_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../../thirdparty-ohos/prefix")
++endif()
++if(EXISTS "${HPS2_OHOS_PREFIX}")
++    list(APPEND CMAKE_FIND_ROOT_PATH "${HPS2_OHOS_PREFIX}")
++    list(APPEND CMAKE_PREFIX_PATH "${HPS2_OHOS_PREFIX}")
++    message(STATUS "Hps2: OHOS third-party prefix = ${HPS2_OHOS_PREFIX}")
++else()
++    message(WARNING "Hps2: OHOS third-party prefix not found at ${HPS2_OHOS_PREFIX}; "
++                    "cross-compile the deps in thirdparty-ohos/ first.")
++endif()
++
++# PROGRAM 用 NEVER：构建期需要在宿主执行代码生成器（如 libpng 的 genout）
++set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
++set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
++set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
++set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
++
++# --- OHOS 的架构专属目录（关键）---
++#
++# OHOS sysroot 把库放在带架构后缀的子目录里：
++#     usr/lib/aarch64-linux-ohos/       <- 实际位置
++#     usr/include/aarch64-linux-ohos/
++# 而 CMake 默认只找 <root>/usr/lib，因此会出现
++#     Could NOT find ZLIB (missing: ZLIB_LIBRARY)
++# 即便 libz.so 明明就在那里。
++#
++# 设置 CMAKE_LIBRARY_ARCHITECTURE 让 CMake 自动带上该后缀子目录，
++# 一次性修好所有 find_library/find_package，无需逐个手写 hint。
++set(CMAKE_LIBRARY_ARCHITECTURE "aarch64-linux-ohos")
++list(APPEND CMAKE_LIBRARY_PATH "${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos")
++list(APPEND CMAKE_INCLUDE_PATH "${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos")
++
++# --- 关闭 OHOS 上不存在的可选依赖 ---
++# 这些开关由 Hps2 平台层设定，目的是避免上游 else() 分支拉入不可用依赖。
++set(OHOS_BUILD 1 CACHE BOOL "Building for HarmonyOS" FORCE)
++set(USE_DBUS   OFF CACHE BOOL "D-Bus not available on OHOS" FORCE)
++set(X11_API    OFF CACHE BOOL "X11 not available on OHOS" FORCE)
++set(USE_BACKTRACE OFF CACHE BOOL "libbacktrace unavailable on OHOS" FORCE)
++
++# --- 关键：编译期页大小必须与内核运行时页大小一致 ---
++#
++# 上游 Pcsx2Defs.h 对 ARCH_ARM64 硬编码 __pagesize = 0x4000（16KB），
++# 注释写的是 "Apple Silicon uses 16KB pages" —— 这是把 iOS/macOS 的
++# 假设套用到了所有 ARM64。HarmonyOS 真机实测为 4KB 页
++# （/proc/self/smaps: KernelPageSize/MMUPageSize = 4 kB），
++# 于是 VMManager::PerformEarlyHardwareChecks 报
++#   "Page size mismatch. This build cannot run on your system."
++#
++# 上游已提供 OVERRIDE_HOST_PAGE_SIZE 机制，Android/iOS 前端都用它
++# （见 platforms/android/.../BuildParameters.cmake），OHOS 同样使用。
++#
++# 缓存行大小同样需要覆盖：ARM64 默认 128 字节（同为 Apple 假设），
++# 而 ARM 通用实现通常是 64 字节。
++set(HPS2_OHOS_PAGE_SIZE "0x1000" CACHE STRING "Compile-time OHOS host page size")
++set(HPS2_OHOS_CACHE_LINE_SIZE "64" CACHE STRING "Compile-time OHOS host cache line size")
++
++add_compile_definitions(
++    OVERRIDE_HOST_PAGE_SIZE=${HPS2_OHOS_PAGE_SIZE}
++    OVERRIDE_HOST_CACHE_LINE_SIZE=${HPS2_OHOS_CACHE_LINE_SIZE}
++)
++
++message(STATUS "Hps2: host page size = ${HPS2_OHOS_PAGE_SIZE}, cache line = ${HPS2_OHOS_CACHE_LINE_SIZE}")
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 6e49c6b640..e3aed7dd71 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -229,7 +229,7 @@ if (USE_GCC AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+ 	set_source_files_properties(FastJmp.cpp PROPERTIES COMPILE_FLAGS -fno-lto)
+ endif()
+ 
+-if(NOT WIN32 AND NOT ANDROID AND NOT IOS)
++if(NOT WIN32 AND NOT ANDROID AND NOT IOS AND NOT OHOS)
+ 	# libcurl-based HTTPDownloader (Android uses HTTPDownloaderAndroid instead)
+ 	target_sources(common PRIVATE
+ 		HTTPDownloaderCurl.cpp
+@@ -240,6 +240,19 @@ if(NOT WIN32 AND NOT ANDROID AND NOT IOS)
+ 	)
+ endif()
+ 
++if(OHOS)
++	# [Hps2] HarmonyOS uses its own native HTTP stack (network/netstack/net_http.h,
++	# since API 20) instead of libcurl, which the OHOS sysroot does not provide.
++	# Same approach as Android's HTTPDownloaderAndroid (which goes through JNI),
++	# except OHOS exposes a pure C API so no ArkTS/Java layer is involved.
++	target_sources(common PRIVATE
++		HTTPDownloaderOHOS.cpp
++	)
++	target_link_libraries(common PRIVATE
++		net_http
++	)
++endif()
++
+ target_link_libraries(common PRIVATE
+ 	${LIBC_LIBRARIES}
+ 	JPEG::JPEG
+diff --git a/common/HTTPDownloaderOHOS.cpp b/common/HTTPDownloaderOHOS.cpp
+new file mode 100644
+index 0000000000..478d544917
+--- /dev/null
++++ b/common/HTTPDownloaderOHOS.cpp
+@@ -0,0 +1,220 @@
++/*
++ * Hps2 — HarmonyOS (OHOS) 原生 HTTPDownloader
++ *
++ * 为什么需要它：
++ *   ARMSX2 在非 Windows 平台默认使用 HTTPDownloaderCurl（依赖 libcurl）。
++ *   OHOS sysroot **不提供 libcurl**，而上游 cmake/SearchForStuff.cmake 的
++ *   else() 分支无条件 find_package(CURL REQUIRED)，导致配置失败。
++ *   上游 Android 平台的做法是另写 HTTPDownloaderAndroid（经 JNI 走 Java
++ *   HttpClient）以绕开 curl。OHOS 采用同思路，但**不用 JNI** ——
++ *   OHOS 提供纯 C 的原生 HTTP 接口（network/netstack/net_http.h，
++ *   since API 20），直接使用，无需经过 ArkTS/Java 层。
++ *
++ * API 事实（已核对 net_http.h / net_http_type.h，非推测）：
++ *   Http_Request *OH_Http_CreateRequest(const char *url);
++ *   int  OH_Http_Request(Http_Request*, Http_ResponseCallback, Http_EventsHandler);
++ *   void OH_Http_Destroy(Http_Request**);
++ *   回调签名均**不带 userdata**：
++ *     void (*Http_ResponseCallback)(Http_Response*, uint32_t errCode);
++ *     void (*Http_OnDataReceiveCallback)(const char *data, size_t length);
++ *   响应体位于 Http_Response.body（{const char* buffer; uint32_t length;}）。
++ *
++ * 因回调无 userdata，无法在回调间传递上下文。本实现的处理方式：
++ *   用 thread_local 指针记录"当前线程正在处理的请求累积器"。
++ *   OH_Http_Request 在工作线程内同步完成、回调亦在该线程触发，
++ *   因此 thread_local 是安全且正确的上下文载体。
++ *
++ * 已知限制（明确声明，非静默降级）：
++ *   POST 未实现 —— 返回失败，而不是静默当作 GET 发出。
++ *   当前 PCSX2 的成就/资源下载路径均为 GET，不影响阶段 2 目标。
++ */
++
++#include "common/HTTPDownloader.h"
++
++#include "common/Console.h"
++
++#include <memory>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "fmt/format.h"
++
++#include <network/netstack/net_http.h>
++
++namespace {
++
++struct ResponseAccumulator
++{
++	std::vector<u8> body;
++	std::string content_type;
++};
++
++// 回调不带 userdata，故用 thread_local 承接当前请求的上下文。
++thread_local ResponseAccumulator* t_acc = nullptr;
++
++void OnDataReceive(const char* data, size_t length)
++{
++	if (t_acc == nullptr || data == nullptr || length == 0)
++		return;
++
++	const auto* bytes = reinterpret_cast<const u8*>(data);
++	t_acc->body.insert(t_acc->body.end(), bytes, bytes + length);
++}
++
++void OnResponse(Http_Response* response, uint32_t errCode)
++{
++	if (t_acc == nullptr || errCode != 0 || response == nullptr)
++		return;
++
++	if (response->headers != nullptr)
++	{
++		if (Http_HeaderValue* v = OH_Http_GetHeaderValue(response->headers, "content-type"))
++		{
++			if (v->value != nullptr)
++				t_acc->content_type = v->value;
++		}
++	}
++
++	// 兜底：若 onDataReceive 未触发，则从 body 直接取一次
++	if (t_acc->body.empty() && response->body.buffer != nullptr && response->body.length > 0)
++	{
++		const auto* bytes = reinterpret_cast<const u8*>(response->body.buffer);
++		t_acc->body.assign(bytes, bytes + response->body.length);
++	}
++}
++
++} // namespace
++
++class HTTPDownloaderOHOS final : public HTTPDownloader
++{
++public:
++	HTTPDownloaderOHOS() = default;
++	~HTTPDownloaderOHOS() override;
++
++	bool Initialize(std::string user_agent);
++
++protected:
++	Request* InternalCreateRequest() override;
++	void InternalPollRequests() override;
++	bool StartRequest(Request* request) override;
++	void CloseRequest(Request* request) override;
++
++private:
++	struct OHOSRequest final : public Request
++	{
++		std::thread worker;
++		std::string result_content_type;
++		Request::Data result_data;
++	};
++
++	std::string m_user_agent;
++};
++
++HTTPDownloaderOHOS::~HTTPDownloaderOHOS()
++{
++	std::unique_lock<std::mutex> lock(m_pending_http_request_lock);
++	for (Request* req : m_pending_http_requests)
++	{
++		auto* oreq = static_cast<OHOSRequest*>(req);
++		if (oreq->worker.joinable())
++			oreq->worker.join();
++	}
++}
++
++bool HTTPDownloaderOHOS::Initialize(std::string user_agent)
++{
++	m_user_agent = std::move(user_agent);
++	Console.WriteLn("HTTPDownloaderOHOS: using HarmonyOS native net_http (no libcurl needed)");
++	return true;
++}
++
++HTTPDownloader::Request* HTTPDownloaderOHOS::InternalCreateRequest()
++{
++	return new OHOSRequest();
++}
++
++void HTTPDownloaderOHOS::InternalPollRequests()
++{
++	// 工作线程完成时置 state=Complete，
++	// 基类轮询观察到原子状态变化后触发回调，无需额外协调。
++}
++
++bool HTTPDownloaderOHOS::StartRequest(Request* request)
++{
++	auto* oreq = static_cast<OHOSRequest*>(request);
++
++	// 明确拒绝 POST，而非静默当作 GET
++	if (oreq->type == Request::Type::Post)
++	{
++		Console.Error("HTTPDownloaderOHOS: POST is not implemented on the OHOS native path");
++		return false;
++	}
++
++	oreq->state.store(Request::State::Started);
++	const std::string url = oreq->url;
++	const std::string ua = m_user_agent;
++
++	oreq->worker = std::thread([oreq, url, ua]() {
++		auto acc = std::make_unique<ResponseAccumulator>();
++		t_acc = acc.get();
++
++		Http_Request* req = OH_Http_CreateRequest(url.c_str());
++		if (req == nullptr)
++		{
++			Console.Error(fmt::format("HTTPDownloaderOHOS: OH_Http_CreateRequest failed: {}", url));
++			t_acc = nullptr;
++			oreq->state.store(Request::State::Complete);
++			return;
++		}
++
++		if (req->options != nullptr)
++		{
++			if (Http_Headers* h = OH_Http_CreateHeaders())
++			{
++				if (!ua.empty())
++					OH_Http_SetHeaderValue(h, "User-Agent", ua.c_str());
++				req->options->headers = h;
++			}
++			req->options->connectTimeout = 30000; // ms
++			req->options->readTimeout = 30000;
++		}
++
++		Http_EventsHandler handler{};
++		handler.onDataReceive = &OnDataReceive;
++
++		const int ret = OH_Http_Request(req, &OnResponse, handler);
++		if (ret != 0)
++		{
++			Console.Error(fmt::format("HTTPDownloaderOHOS: OH_Http_Request failed ret={} url={}", ret, url));
++			OH_Http_Destroy(&req);
++			t_acc = nullptr;
++			oreq->state.store(Request::State::Complete);
++			return;
++		}
++
++		OH_Http_Destroy(&req);
++
++		oreq->result_content_type = acc->content_type;
++		oreq->result_data = std::move(acc->body);
++		t_acc = nullptr;
++		oreq->state.store(Request::State::Complete);
++	});
++
++	return true;
++}
++
++void HTTPDownloaderOHOS::CloseRequest(Request* request)
++{
++	auto* oreq = static_cast<OHOSRequest*>(request);
++	if (oreq->worker.joinable())
++		oreq->worker.join();
++}
++
++std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string user_agent)
++{
++	auto inst = std::make_unique<HTTPDownloaderOHOS>();
++	if (!inst->Initialize(std::move(user_agent)))
++		return {};
++	return inst;
++}
+diff --git a/common/HarmonyOS/ohos_libcxx_compat.h b/common/HarmonyOS/ohos_libcxx_compat.h
+new file mode 100644
+index 0000000000..4f3bac42fe
+--- /dev/null
++++ b/common/HarmonyOS/ohos_libcxx_compat.h
+@@ -0,0 +1,242 @@
++/*
++ * Hps2 — HarmonyOS (OHOS) C++ 标准库补丁
++ *
++ * 背景：
++ *   OHOS 的 libc++ 为 15004（LLVM 15），其 <algorithm> **不提供**
++ *   C++20 的 std::lexicographical_compare_three_way。
++ *
++ * 已实测确认（非推测）：
++ *   - 该函数在 OHOS toolchain 下编译报
++ *       error: no member named 'lexicographical_compare_three_way' in namespace 'std'
++ *   - 同样的代码在宿主 macOS 上编译通过（HOST EXIT=0）
++ *   - OHOS 的 <compare> **存在**，且运算符 **<=> 可用**
++ *     （实测 (1 <=> 2) 编译通过）
++ *   - libc++ 的 <version> 中 __cpp_lib_three_way_comparison 被注释掉，
++ *     说明该库的 three-way comparison 支持不完整
++ *
++ * 因此本补丁**只补缺失的那一个函数**，不改变上游代码的语义：
++ *   operator<=> 的实现本就期望返回一个与 0 可比较的比较结果，
++ *   这里用等价的 std::compare_three_way 逐元素比较实现，
++ *   对满足 three-way-comparable 的类型与原标准实现语义一致。
++ *
++ * 仅在 OHOS 上生效；其他平台继续使用标准库实现。
++ */
++
++#pragma once
++
++#if defined(__OHOS__)
++
++#include <algorithm>
++#include <array>
++#include <compare>
++#include <iterator>
++#include <memory>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace std
++{
++
++// C++20 std::lexicographical_compare_three_way 的等价实现。
++// 语义：按字典序比较两个区间，返回首个不等元素的比较结果；
++//       若一方是另一方的前缀，则较短者更小。
++template <class InputIt1, class InputIt2, class Cmp = compare_three_way>
++constexpr auto lexicographical_compare_three_way(
++	InputIt1 first1, InputIt1 last1,
++	InputIt2 first2, InputIt2 last2,
++	Cmp comp = Cmp{})
++	-> decltype(comp(*first1, *first2))
++{
++	using ret_type = decltype(comp(*first1, *first2));
++
++	for (; first1 != last1 && first2 != last2; ++first1, ++first2)
++	{
++		if (auto cmp_result = comp(*first1, *first2); cmp_result != 0)
++			return cmp_result;
++	}
++
++	// 前缀关系：长度更短的一方更小
++	if (first1 == last1 && first2 == last2)
++		return ret_type::equivalent;
++
++	// 借助 strong_ordering 表达"短者小"
++	return (first1 == last1) ? ret_type::less : ret_type::greater;
++}
++
++} // namespace std
++
++
++
++// ---------------------------------------------------------------------------
++// 第二部分：补齐标准容器/字符串的 operator<=>
++//
++// 实测发现 OHOS libc++ 15004 的 three-way comparison 支持**不完整**：
++//   std::pair       ✅ 有
++//   std::tuple      ✅ 有
++//   std::vector     ❌ 无
++//   std::string     ❌ 无
++//   std::array      ❌ 无
++//   std::optional   ❌ 无
++//
++// 影响：任何 `operator<=> = default` 且成员含上述类型的结构体，
++// 其 <=> 会被**隐式删除**，导致编译失败。实测样例：
++//   pcsx2/Config.h:1395
++//     note: defaulted 'operator<=>' is implicitly deleted because there is no
++//           viable three-way comparison function for member 'SymbolSources'
++//           std::vector<DebugSymbolSource> SymbolSources;
++//
++// 这里为缺失的类型补上等价实现。选择补类型而非改调用点，理由：
++//   1. 修的是根因，新增代码自动受益，不必逐个追改；
++//   2. 上游 4 处 defaulted <=> 无需改动，减少与上游分叉；
++//   3. 语义与标准库一致（字符串比较用 compare()，容器用字典序）。
++// ---------------------------------------------------------------------------
++
++namespace std
++{
++
++inline strong_ordering operator<=>(const string& lhs, const string& rhs)
++{
++	const int r = lhs.compare(rhs);
++	return (r < 0) ? strong_ordering::less : ((r > 0) ? strong_ordering::greater : strong_ordering::equal);
++}
++
++template <class T, class Alloc>
++inline auto operator<=>(const vector<T, Alloc>& lhs, const vector<T, Alloc>& rhs)
++{
++	return lexicographical_compare_three_way(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
++}
++
++template <class T, size_t N>
++inline auto operator<=>(const array<T, N>& lhs, const array<T, N>& rhs)
++{
++	return lexicographical_compare_three_way(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
++}
++
++template <class T>
++inline auto operator<=>(const optional<T>& lhs, const optional<T>& rhs)
++{
++	if (lhs.has_value() != rhs.has_value())
++		return lhs.has_value() ? strong_ordering::greater : strong_ordering::less;
++	if (!lhs.has_value())
++		return strong_ordering::equal;
++	return *lhs <=> *rhs;
++}
++
++} // namespace std
++
++
++
++// ---------------------------------------------------------------------------
++// 第三部分：补齐缺失的 C++20 工厂函数
++//
++// 实测确认 OHOS libc++ 15004 缺少 std::make_unique_for_overwrite
++// （宿主 clang 21 可用，OHOS 编译报
++//   "no member named 'make_unique_for_overwrite' in namespace 'std'"）。
++// 工程内共 7 处使用（GSLzma / AdapterUtils / FlatFileReader / ChdFileReader 等）。
++//
++// 语义差异说明：标准实现用 new T（默认初始化，标量不置零），
++// 比 make_unique 的 new T() 更快。补的实现保持同样语义：
++//   - 数组形式用 new T[n]（默认初始化）
++//   - 单对象形式用 new T（默认初始化）
++// 调用方只是拿一块未初始化缓冲来填，语义一致。
++// ---------------------------------------------------------------------------
++
++namespace std
++{
++
++template <class T>
++inline unique_ptr<T> make_unique_for_overwrite()
++{
++	return unique_ptr<T>(new T);
++}
++
++template <class T>
++inline unique_ptr<T> make_unique_for_overwrite(size_t n)
++{
++	return unique_ptr<T>(new remove_extent_t<T>[n]);
++}
++
++} // namespace std
++
++
++
++// ---------------------------------------------------------------------------
++// 第四部分：补齐缺失的 std::ranges 算法
++//
++// 实测确认 OHOS libc++ 15004 缺少下列 <algorithm> 的 ranges 版本
++// （宿主 clang 21 可用）。工程内实际用到 3 个，全部缺失。
++//
++// 需要的重载形式（按实际调用点确定，非猜测）：
++//   all_of       range 形式      all_of(ids, pred)
++//   stable_sort  range 形式      stable_sort(slots, comp)
++//   equal        iterator 形式   equal(f1, l1, f2, l2, pred)
++// 为稳妥起见，两种形式都提供。
++//
++// 实现方式：直接转调对应的迭代器版本（std::all_of / std::equal /
++// std::stable_sort），不重新实现算法，语义一致。
++// ---------------------------------------------------------------------------
++
++namespace std::ranges
++{
++
++// ---- all_of：range 形式 + iterator 形式 ----
++template <class Range, class Pred>
++inline constexpr bool all_of(Range&& r, Pred pred)
++{
++	return std::all_of(std::begin(r), std::end(r), pred);
++}
++
++template <class InputIt, class Pred>
++inline constexpr bool all_of(InputIt first, InputIt last, Pred pred)
++{
++	return std::all_of(first, last, pred);
++}
++
++// ---- equal：iterator 形式（含谓词）+ range 形式 ----
++template <class InputIt1, class InputIt2>
++inline constexpr bool equal(InputIt1 first1, InputIt1 last1, InputIt2 first2, InputIt2 last2)
++{
++	return std::equal(first1, last1, first2, last2);
++}
++
++template <class InputIt1, class InputIt2, class Pred>
++inline constexpr bool equal(InputIt1 first1, InputIt1 last1, InputIt2 first2, InputIt2 last2, Pred pred)
++{
++	return std::equal(first1, last1, first2, last2, pred);
++}
++
++template <class Range1, class Range2>
++inline constexpr bool equal(Range1&& r1, Range2&& r2)
++{
++	return std::equal(std::begin(r1), std::end(r1), std::begin(r2), std::end(r2));
++}
++
++// ---- stable_sort：range 形式 + iterator 形式 ----
++template <class Range, class Comp>
++inline void stable_sort(Range&& r, Comp comp)
++{
++	std::stable_sort(std::begin(r), std::end(r), comp);
++}
++
++template <class Range>
++inline void stable_sort(Range&& r)
++{
++	std::stable_sort(std::begin(r), std::end(r));
++}
++
++template <class RandIt, class Comp>
++inline void stable_sort(RandIt first, RandIt last, Comp comp)
++{
++	std::stable_sort(first, last, comp);
++}
++
++template <class RandIt>
++inline void stable_sort(RandIt first, RandIt last)
++{
++	std::stable_sort(first, last);
++}
++
++} // namespace std::ranges
++
++#endif // __OHOS__
+diff --git a/common/HeapArray.h b/common/HeapArray.h
+index 367256ddf6..48913b83df 100644
+--- a/common/HeapArray.h
++++ b/common/HeapArray.h
+@@ -5,6 +5,12 @@
+ 
+ #include "common/Assertions.h"
+ 
++// [Hps2] OHOS libc++ (15004/LLVM 15) lacks std::lexicographical_compare_three_way,
++// which operator<=> below relies on. The compat header supplies an equivalent
++// implementation, verified on OHOS and semantics-tested on the host.
++// No-op on non-OHOS platforms.
++#include "common/HarmonyOS/ohos_libcxx_compat.h"
++
+ #include <algorithm>
+ #include <cassert>
+ #include <cstdlib>
+diff --git a/common/HostSys.h b/common/HostSys.h
+index 5635b060f1..95bf608c74 100644
+--- a/common/HostSys.h
++++ b/common/HostSys.h
+@@ -93,12 +93,29 @@ namespace HostSys
+ {
+ 	extern void MemProtect(void* baseaddr, size_t size, const PageProtectionMode& mode);
+ 
++	// Diagnostic counters for profiling protection changes on HarmonyOS/Linux.
++	struct MemProtectStats
++	{
++		u64 calls = 0;
++		u64 failures = 0;
++		u64 total_nanoseconds = 0;
++		u64 max_nanoseconds = 0;
++		u64 begin_code_write_calls = 0;
++		u64 end_code_write_calls = 0;
++	};
++	MemProtectStats GetMemProtectStats();
++
+ 	extern std::string GetFileMappingName(const char* prefix);
+ 	extern void* CreateSharedMemory(const char* name, size_t size);
+ 	extern void DestroySharedMemory(void* ptr);
+ 
+ 	/// JIT write protect for Apple Silicon. Needs to be called prior to writing to any RWX pages.
+-#if !defined(__APPLE__) || !defined(ARCH_ARM64)
++#if defined(__OHOS__)
++	void BeginCodeWrite();
++	void EndCodeWrite();
++	void BeginCodeWriteRange(void* address, size_t size);
++	void EndCodeWriteRange(void* address, size_t size);
++#elif !defined(__APPLE__) || !defined(ARCH_ARM64)
+ 	// clang-format -off
+ 	[[maybe_unused]] __fi static void BeginCodeWrite() {}
+ 	[[maybe_unused]] __fi static void EndCodeWrite() {}
+diff --git a/common/Linux/LnxHostSys.cpp b/common/Linux/LnxHostSys.cpp
+index 6e3e240c34..b974eb6859 100644
+--- a/common/Linux/LnxHostSys.cpp
++++ b/common/Linux/LnxHostSys.cpp
+@@ -16,6 +16,8 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <mutex>
++#include <atomic>
++#include <chrono>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #ifdef __APPLE__
+@@ -28,10 +30,28 @@
+ 
+ #include "fmt/format.h"
+ 
+-#if defined(__ANDROID__)
++namespace
++{
++	std::atomic<u64> s_memprotect_calls{0};
++	std::atomic<u64> s_memprotect_failures{0};
++	std::atomic<u64> s_memprotect_total_ns{0};
++	std::atomic<u64> s_memprotect_max_ns{0};
++	std::atomic<u64> s_begin_code_write_calls{0};
++	std::atomic<u64> s_end_code_write_calls{0};
++}
++
++#if defined(__ANDROID__) || defined(__OHOS__)
+ #include <sys/syscall.h>
+ // bionic lacks shm_open until API 30; memfd_create is a libc wrapper only from
+ // API 30 too, but the raw syscall works from API 26 (our minSdk).
++//
++// [Hps2] OHOS has the same problem for a different reason: the NDK header
++// declares shm_open(), but a sandboxed HAP has no writable /dev/shm, so the
++// call fails at runtime with ENOENT/EACCES and boot dies in
++// SysMemory::AllocateMemoryMap(). memfd_create() creates an anonymous
++// file-backed mapping that needs no filesystem path, which is exactly what
++// this code needs (see the shm_unlink() immediately below on the shm_open
++// path -- the mapping is never shared across processes).
+ static int memfd_create_wrapper(const char* name, unsigned int flags)
+ {
+ 	return static_cast<int>(syscall(__NR_memfd_create, name, flags));
+@@ -62,10 +82,56 @@ void HostSys::MemProtect(void* baseaddr, size_t size, const PageProtectionMode&
+ 
+ 	const u32 lnxmode = LinuxProt(mode);
+ 
++	const auto started = std::chrono::steady_clock::now();
+ 	const int result = mprotect(baseaddr, size, lnxmode);
++	const u64 elapsed_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++		std::chrono::steady_clock::now() - started).count());
++	s_memprotect_calls.fetch_add(1, std::memory_order_relaxed);
++	s_memprotect_total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
++	u64 max_ns = s_memprotect_max_ns.load(std::memory_order_relaxed);
++	while (elapsed_ns > max_ns && !s_memprotect_max_ns.compare_exchange_weak(
++		max_ns, elapsed_ns, std::memory_order_relaxed))
++	{}
+ 	if (result != 0)
++	{
++		s_memprotect_failures.fetch_add(1, std::memory_order_relaxed);
+ 		pxFail("mprotect() failed");
++	}
++}
++
++HostSys::MemProtectStats HostSys::GetMemProtectStats()
++{
++	MemProtectStats stats;
++	stats.calls = s_memprotect_calls.load(std::memory_order_relaxed);
++	stats.failures = s_memprotect_failures.load(std::memory_order_relaxed);
++	stats.total_nanoseconds = s_memprotect_total_ns.load(std::memory_order_relaxed);
++	stats.max_nanoseconds = s_memprotect_max_ns.load(std::memory_order_relaxed);
++	stats.begin_code_write_calls = s_begin_code_write_calls.load(std::memory_order_relaxed);
++	stats.end_code_write_calls = s_end_code_write_calls.load(std::memory_order_relaxed);
++	return stats;
++}
++
++#if defined(__OHOS__)
++void HostSys::BeginCodeWrite()
++{
++	s_begin_code_write_calls.fetch_add(1, std::memory_order_relaxed);
++}
++
++void HostSys::EndCodeWrite()
++{
++	s_end_code_write_calls.fetch_add(1, std::memory_order_relaxed);
++}
++
++void HostSys::BeginCodeWriteRange(void*, size_t)
++{
++	s_begin_code_write_calls.fetch_add(1, std::memory_order_relaxed);
++}
++
++void HostSys::EndCodeWriteRange(void*, size_t)
++{
++	s_end_code_write_calls.fetch_add(1, std::memory_order_relaxed);
+ }
++#endif
+ 
+ std::string HostSys::GetFileMappingName(const char* prefix)
+ {
+@@ -135,8 +201,10 @@ static int CreateIOSFileBackedSharedMemory(const char* name, size_t size, int sh
+ 
+ void* HostSys::CreateSharedMemory(const char* name, size_t size)
+ {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(__OHOS__)
+ 	// Android: memfd_create available since API 26 (our minSdk), no shm_open until API 30.
++	// OHOS: shm_open exists in the header but a sandboxed HAP has no /dev/shm,
++	// so use the anonymous fd instead. See the wrapper's comment above.
+ 	const int fd = memfd_create_wrapper(name, 0);
+ 	if (fd < 0)
+ 	{
+@@ -202,9 +270,18 @@ size_t HostSys::GetRuntimeCacheLineSize()
+ 
+ 	return static_cast<size_t>(max_line_size);
+ #else
+-	int l1i = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+-	int l1d = sysconf(_SC_LEVEL1_ICACHE_LINESIZE);
+-	int res = (l1i > l1d) ? l1i : l1d;
++	// [Hps2] OHOS (HarmonyOS) uses musl, which does NOT define the glibc-only
++	// sysconf names _SC_LEVEL1_{D,I}CACHE_LINESIZE. Rather than hardcode a value
++	// (which would silently corrupt any cache-line-sensitive JIT logic), we skip
++	// the sysconf probe and rely solely on the /sys cache topology read below.
++	// If that also fails, we return 0 — which callers must treat as "unknown"
++	// rather than as a valid line size.
++	int res = 0;
++#if !defined(__OHOS__)
++	const int l1i = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
++	const int l1d = sysconf(_SC_LEVEL1_ICACHE_LINESIZE);
++	res = (l1i > l1d) ? l1i : l1d;
++#endif
+ 	for (int index = 0; index < 16; index++)
+ 	{
+ 		char buf[128];
+@@ -213,9 +290,13 @@ size_t HostSys::GetRuntimeCacheLineSize()
+ 		if (!fp)
+ 			break;
+ 
+-		std::fread(buf, sizeof(buf), 1, fp);
++		std::memset(buf, 0, sizeof(buf));
++		const size_t read_bytes = std::fread(buf, 1, sizeof(buf) - 1, fp);
+ 		std::fclose(fp);
+-		int val = std::atoi(buf);
++		if (read_bytes == 0)
++			break;
++
++		const int val = std::atoi(buf);
+ 		res = (val > res) ? val : res;
+ 	}
+ 
+diff --git a/common/Linux/LnxMisc.cpp b/common/Linux/LnxMisc.cpp
+index 3cd74865d2..a3bdbd69eb 100644
+--- a/common/Linux/LnxMisc.cpp
++++ b/common/Linux/LnxMisc.cpp
+@@ -13,7 +13,7 @@
+ 
+ #include "fmt/format.h"
+ 
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ #include <dbus/dbus.h>
+ #endif
+ #include <spawn.h>
+@@ -191,7 +191,7 @@ std::string GetOSVersionString()
+ #endif
+ }
+ 
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ static bool SetScreensaverInhibitDBus(const bool inhibit_requested, const char* program_name, const char* reason)
+ {
+ 	static dbus_uint32_t s_cookie;
+@@ -383,7 +383,7 @@ void Common::DetachMousePositionCb()
+ }
+ #endif // X11_API
+ 
+-#else // __ANDROID__
++#else // __ANDROID__ || __OHOS__
+ 
+ // Android has no X11 or D-Bus screensaver/session service; these are no-ops.
+ bool Common::InhibitScreensaver(bool inhibit)
+@@ -404,11 +404,11 @@ void Common::DetachMousePositionCb()
+ {
+ }
+ 
+-#endif // !__ANDROID__
++#endif // !(__ANDROID__ || __OHOS__)
+ 
+ // Desktop-Linux only: the aplay/gstreamer approach uses posix_spawnp (bionic API 30+)
+ // and external audio tools. Android provides its own Common::PlaySoundAsync (native-lib).
+-#ifndef __ANDROID__
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ bool Common::PlaySoundAsync(const char* path)
+ {
+ #ifdef __linux__
+@@ -445,7 +445,18 @@ bool Common::PlaySoundAsync(const char* path)
+ 	return false;
+ #endif
+ }
+-#endif // !__ANDROID__ (PlaySoundAsync — Android impl lives in native-lib.cpp)
++#else // __ANDROID__ || __OHOS__
++// [Hps2] OHOS (like Android) has no aplay / gst-play-1.0 / gst-launch-1.0 and no
++// posix_spawnp-based shell audio pipeline, so the desktop-Linux implementation
++// above is excluded. The symbol is still referenced by the UI and the
++// achievements code, so provide the "cannot play" behaviour here: report no
++// sound rather than failing to link. Real audio output goes through the OHOS
++// audio backend, not through this helper.
++bool Common::PlaySoundAsync(const char* path)
++{
++	return false;
++}
++#endif // !(__ANDROID__ || __OHOS__) (PlaySoundAsync — desktop Linux only)
+ 
+ void Threading::Sleep(int ms)
+ {
+diff --git a/common/WindowInfo.h b/common/WindowInfo.h
+index e4ba615294..f2a953e68f 100644
+--- a/common/WindowInfo.h
++++ b/common/WindowInfo.h
+@@ -18,6 +18,10 @@ struct WindowInfo
+ 		MacOS,
+ 		Android,
+ 
++		// [Hps2] HarmonyOS/OpenHarmony: the frontend supplies an OHNativeWindow*
++		// (obtained from an ArkUI XComponent surface callback) in window_handle.
++		OHOS,
++
+ 		// Vulkan VK_KHR_display direct-to-monitor (no compositor / no GBM
+ 		// intermediate). Frontend supplies no native window handle; the
+ 		// renderer enumerates displays itself. surface_width/surface_height
+diff --git a/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp b/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp
+new file mode 100644
+index 0000000000..b0d616ff66
+--- /dev/null
++++ b/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp
+@@ -0,0 +1,105 @@
++/*
++ * Hps2 — HarmonyOS (OHOS) IOCtlSrc stub
++ *
++ * 背景：
++ *   pcsx2/CDVD/CDVDdiscReader.cpp **无条件**编译并引用 IOCtlSrc，
++ *   而 IOCtlSrc 只有三个平台实现：
++ *       CDVD/Linux/IOCtlSrc.cpp     （if(LINUX) 才加入构建）
++ *       CDVD/Darwin/IOCtlSrc.cpp    （if(APPLE) 才加入构建）
++ *       CDVD/Windows/...            （if(WIN32) 才加入构建）
++ *
++ *   我们的 OHOS 平台分支刻意**不设 LINUX**（因为 OHOS 没有 X11/D-Bus 等
++ *   桌面 Linux 依赖，这与上游 Android 分支的取舍一致），因此三个实现
++ *   都不会被编入，链接期出现 IOCtlSrc 的 11 个未定义符号。
++ *
++ * 为什么用 stub 而不是移植 Linux 实现：
++ *   Linux/Darwin 版本通过 ioctl(CDROMREADTOCENTRY) 等接口读取**物理光驱**。
++ *   OHOS 设备没有光驱，也没提供这些 ioctl；照搬只会引入无意义的依赖。
++ *   本项目的游戏镜像加载走 FlatFileReader / ChdFileReader（文件路径），
++ *   与光驱无关。
++ *
++ * 因此这里提供全部接口的"无光驱"实现：所有查询返回失败/空，
++ * 使调用方走各自已有的错误分支，而不是崩溃或产生未定义行为。
++ * 这与"没有光驱"这一事实相符。
++ */
++
++#include "CDVD/CDVDdiscReader.h"
++
++#include "common/Console.h"
++#include "common/Error.h"
++
++// 仅 OHOS 需要本 stub：其他平台由各自的 IOCtlSrc 实现提供。
++#if defined(__OHOS__)
++
++IOCtlSrc::IOCtlSrc(std::string filename)
++	: m_filename(std::move(filename))
++{
++	Console.Warning("IOCtlSrc: optical drive support is not available on HarmonyOS; "
++	                "use a disc image file instead.");
++}
++
++IOCtlSrc::~IOCtlSrc() = default;
++
++bool IOCtlSrc::Reopen(Error* error)
++{
++	if (error)
++		error->SetString("Optical drives are not available on HarmonyOS.");
++	return false;
++}
++
++u32 IOCtlSrc::GetSectorCount() const
++{
++	return 0;
++}
++
++const std::vector<toc_entry>& IOCtlSrc::ReadTOC() const
++{
++	return m_toc;
++}
++
++bool IOCtlSrc::ReadSectors2048(u32 sector, u32 count, u8* buffer) const
++{
++	return false;
++}
++
++bool IOCtlSrc::ReadSectors2352(u32 sector, u32 count, u8* buffer) const
++{
++	return false;
++}
++
++bool IOCtlSrc::ReadTrackSubQ(cdvdSubQ* subq) const
++{
++	return false;
++}
++
++u32 IOCtlSrc::GetLayerBreakAddress() const
++{
++	return 0;
++}
++
++s32 IOCtlSrc::GetMediaType() const
++{
++	return 0;
++}
++
++void IOCtlSrc::SetSpindleSpeed(bool restore_defaults) const
++{
++}
++
++bool IOCtlSrc::DiscReady()
++{
++	return false;
++}
++
++// 无光驱可枚举 —— 返回空列表，调用方据此提示用户改用镜像文件。
++std::vector<std::string> GetOpticalDriveList()
++{
++	return {};
++}
++
++void GetValidDrive(std::string& drive)
++{
++	drive.clear();
++}
++
++#endif // __OHOS__
+diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
+index 5ccf72c2e9..371728df03 100644
+--- a/pcsx2/CMakeLists.txt
++++ b/pcsx2/CMakeLists.txt
+@@ -344,7 +344,7 @@ set(pcsx2DEV9Sources
+ # LTO release builds surface even though a debug build's --gc-sections hides it).
+ # iOS also skips find_package(PCAP) in SearchForStuff.cmake, so PCAP::PCAP doesn't
+ # even exist to link against there.
+-if(NOT ANDROID AND NOT IOS)
++if(NOT ANDROID AND NOT IOS AND NOT OHOS)
+ 	list(APPEND pcsx2DEV9Sources DEV9/pcap_io.cpp)
+ endif()
+ 
+@@ -995,6 +995,10 @@ set(pcsx2HostSources
+ 	Host/CubebAudioStream.cpp
+ 	Host/SDLAudioStream.cpp)
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
++	list(APPEND pcsx2HostSources Host/OHAudioStream.cpp)
++endif()
++
+ set(pcsx2HostHeaders
+ 	Host/AudioStream.h
+ 	Host/AudioStreamTypes.h)
+@@ -1281,6 +1285,19 @@ if(ARCH_ARM64 OR ANDROID OR ARMSX2_IOS)
+ 		SPU2/spu2_neon.h)
+ endif()
+ 
++if(OHOS)
++	# [Hps2] HarmonyOS exposes OpenGL ES (libGLESv3.so) and EGL (libEGL.so).
++	# Same shape as the Android block below, but the native window is an
++	# OHNativeWindow* from an ArkUI XComponent surface callback rather than an
++	# ANativeWindow*, and the geometry call differs (see GLContextEGLOHOS.cpp).
++	list(APPEND pcsx2GSSources
++		GS/Renderers/OpenGL/GLContextEGL.cpp
++		GS/Renderers/OpenGL/GLContextEGLOHOS.cpp)
++	list(APPEND pcsx2GSHeaders
++		GS/Renderers/OpenGL/GLContextEGL.h
++		GS/Renderers/OpenGL/GLContextEGLOHOS.h)
++endif()
++
+ if(ANDROID)
+ 	list(APPEND pcsx2GSSources
+ 		GS/Renderers/OpenGL/GLContextEGL.cpp
+@@ -1331,6 +1348,14 @@ if(ARMSX2_IOS)
+ 		Android/AndroidPcapStubs.cpp)
+ endif()
+ 
++if(OHOS)
++	# [Hps2] HarmonyOS has no libpcap either. Same treatment as iOS: pcap_io.cpp is
++	# excluded above and the platform-agnostic Android stub supplies the PCAPAdapter
++	# definitions DEV9 references. Networking itself is not part of this port's scope.
++	list(APPEND pcsx2Sources
++		Android/AndroidPcapStubs.cpp)
++endif()
++
+ # These ones benefit a lot from LTO
+ set(pcsx2LTOSources
+ 	${pcsx2Sources}
+@@ -1492,7 +1517,17 @@ target_sources(PCSX2 PRIVATE
+ )
+ 
+ # platform sources
+-if(LINUX)
++if(OHOS)
++	# [Hps2] HarmonyOS: no optical drive, and the OHOS platform branch
++	# deliberately does not set LINUX (same reasoning as the Android branch —
++	# no X11/D-Bus). CDVDdiscReader.cpp nonetheless needs IOCtlSrc
++	# unconditionally, so supply a no-drive stub instead of the Linux/Darwin
++	# ioctl-based implementations. Disc images still load via
++	# FlatFileReader / ChdFileReader.
++	target_sources(PCSX2 PRIVATE
++		CDVD/HarmonyOS/IOCtlSrcOHOS.cpp
++		)
++elseif(LINUX)
+ 	target_sources(PCSX2 PRIVATE
+ 		${pcsx2LinuxSources}
+ 		${pcsx2LinuxHeaders}
+@@ -1577,7 +1612,7 @@ if(WIN32)
+ 		dwmapi.lib
+ 		OneCore.lib
+ 	)
+-elseif(NOT ANDROID AND NOT IOS)
++elseif(NOT ANDROID AND NOT IOS AND NOT OHOS)
+ 	# Android and iOS have no system libpcap; DEV9 uses Android/AndroidPcapStubs.cpp
+ 	# instead, so they must NOT link PCAP::PCAP. iOS additionally skips
+ 	# find_package(PCAP) (SearchForStuff.cmake), so the PCAP::PCAP target doesn't
+@@ -1921,3 +1956,28 @@ source_group(Resources/GUI FILES ${pcsx2GuiResources})
+ source_group(Resources/PAD FILES ${pcsx2PADResources})
+ source_group(Resources/Recording FILES ${pcsx2RecordingVirtualPadResources})
+ source_group(Resources REGULAR_EXPRESSION ${CMAKE_CURRENT_BINARY_DIR}/*)
++
++# ---------------------------------------------------------------------------
++# [Hps2] HarmonyOS: aggregate the core into a linkable static library.
++#
++# Why this is needed:
++#   Under DISABLE_ADVANCE_SIMD (which the OHOS build sets) PCSX2 is declared as
++#   an OBJECT library, so no archive is produced and an external consumer such
++#   as the HAP's native layer cannot link against it. Qt/SDL/eerunner all live
++#   inside this same CMake project and simply link the OBJECT target directly,
++#   which is not an option for the out-of-tree app-hps2 build.
++#
++# This target does not change PCSX2 itself -- it only packages the objects that
++# PCSX2 already produces, so upstream behaviour is untouched.
++#
++# Only created for OHOS so other platforms are unaffected.
++# ---------------------------------------------------------------------------
++if(OHOS)
++	add_library(PCSX2_CORE_STATIC STATIC $<TARGET_OBJECTS:PCSX2>)
++	target_link_libraries(PCSX2_CORE_STATIC PUBLIC PCSX2_FLAGS)
++	set_target_properties(PCSX2_CORE_STATIC PROPERTIES
++		OUTPUT_NAME "PCSX2core"
++		ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
++	)
++	message(STATUS "Hps2: PCSX2_CORE_STATIC -> ${CMAKE_BINARY_DIR}/lib/libPCSX2core.a")
++endif()
+diff --git a/pcsx2/Config.h b/pcsx2/Config.h
+index e0ea5bcb27..3bd6ae28b4 100644
+--- a/pcsx2/Config.h
++++ b/pcsx2/Config.h
+@@ -1183,6 +1183,8 @@ struct Pcsx2Config
+ 		static constexpr s32 MAX_VOLUME = 200;
+ #ifdef ARMSX2_USE_OBOE
+ 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Oboe;
++#elif defined(__OHOS__)
++		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::OHAudio;
+ #else
+ 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Cubeb;
+ #endif
+diff --git a/pcsx2/EeFpuModel.h b/pcsx2/EeFpuModel.h
+index 4866055af5..1ec153dbe2 100644
+--- a/pcsx2/EeFpuModel.h
++++ b/pcsx2/EeFpuModel.h
+@@ -19,7 +19,22 @@
+ 	spill. C linkage would carry the attribute past the mangler, at the price of
+ 	one flat scope for both namespaces, where EeFpuModel::RecipSqrt and
+ 	VuEfuModel::RecipSqrt share a name.  */
+-#if defined(__has_attribute) && __has_attribute(preserve_all) && !defined(_MSC_VER)
++/*	[Hps2] Clang version gate.
++
++	__has_attribute(preserve_all) answers *true* on the OHOS toolchain's clang
++	15.0.4, but that version's AArch64 backend cannot actually emit the
++	convention — every declaration carrying it dies in codegen with
++	"fatal error: error in backend: Unsupported calling convention."
++	Upstream only guards _MSC_VER, so the check is a false positive there.
++
++	Minimal repro (fails on clang 15, compiles on clang 21):
++	    __attribute__((preserve_all)) int f(int a){ return a+1; }
++
++	So require clang >= 17 as well. When the attribute is unavailable the
++	fallback below is exactly what upstream already does for MSVC: plain AAPCS
++	plus a widened caller-saved spill, which is correct — only slower. */
++#if defined(__has_attribute) && __has_attribute(preserve_all) && !defined(_MSC_VER) && \
++    defined(__clang__) && (__clang_major__ >= 17)
+ #define EEFPU_MODEL_CALL __attribute__((preserve_all))
+ #define EEFPU_MODEL_CALL_SPARES_MOST 1
+ #else
+diff --git a/pcsx2/GS/Renderers/OpenGL/GLContext.cpp b/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
+index 0df49981f4..e722d31147 100644
+--- a/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
++++ b/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
+@@ -2,9 +2,12 @@
+ // SPDX-License-Identifier: GPL-3.0+
+ 
+ #include "GS/Renderers/OpenGL/GLContext.h"
+-#ifdef __ANDROID__
++#if defined(__ANDROID__)
+ #include "GS/Renderers/OpenGL/GLContextEGLAndroid.h"
+ #endif
++#ifdef __OHOS__
++#include "GS/Renderers/OpenGL/GLContextEGLOHOS.h"
++#endif
+ 
+ #if defined(_WIN32)
+ #include "GS/Renderers/OpenGL/GLContextWGL.h"
+@@ -28,8 +31,15 @@
+ 
+ static bool ShouldPreferESContext()
+ {
++#ifdef __OHOS__
++	// [Hps2] HarmonyOS exposes OpenGL ES only (libGLESv3.so); there is no
++	// desktop GL to fall back to. Requesting a desktop core profile would
++	// simply fail, so always prefer ES here.
++	return true;
++#else
+ 	const char* value = std::getenv("PREFER_GLES_CONTEXT");
+ 	return (value && std::strcmp(value, "1") == 0);
++#endif
+ }
+ 
+ GLContext::GLContext(const WindowInfo& wi)
+@@ -90,6 +100,10 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
+ 	if (!context && wi.type == WindowInfo::Type::Android)
+ 		context = GLContextEGLAndroid::Create(wi, versions_to_try, num_versions_to_try);
+ #endif
++#ifdef __OHOS__
++	if (!context && wi.type == WindowInfo::Type::OHOS)
++		context = GLContextEGLOHOS::Create(wi, versions_to_try, num_versions_to_try);
++#endif
+ #if defined(_WIN32)
+ 	if (!context)
+ 		context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp b/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
+index 775328a7ee..a5d07f3a90 100644
+--- a/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
++++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
+@@ -162,11 +162,17 @@ EGLNativeWindowType GLContextEGL::GetNativeWindow(EGLConfig config)
+ 
+ bool GLContextEGL::SetDisplay()
+ {
+-#if defined(__ANDROID__)
+-	// Android has no Mesa platform-display path, so bind the default display up front.
+-	// On desktop this is a no-op so GetPlatformDisplay() below stays authoritative and
+-	// the canonical Initialize() path (no eglGetDisplay pre-step, no extra abort gate)
+-	// is preserved byte-for-byte.
++#if defined(__ANDROID__) || defined(__OHOS__)
++	// Android and HarmonyOS have no Mesa platform-display path, so bind the
++	// default display up front. On desktop this is a no-op so GetPlatformDisplay()
++	// below stays authoritative and the canonical Initialize() path (no
++	// eglGetDisplay pre-step, no extra abort gate) is preserved byte-for-byte.
++	//
++	// [Hps2] OHOS: without this the code would first try
++	// EGL_MESA_platform_surfaceless, which OHOS's libEGL does not advertise, and
++	// then fall back -- working, but printing a spurious warning and doing a
++	// pointless failed lookup. Binding here matches what Android does and keeps
++	// the log clean for on-device debugging.
+ 	m_display = eglGetDisplay(static_cast<EGLNativeDisplayType>(m_wi.display_connection));
+ 	if (!m_display)
+ 	{
+@@ -518,6 +524,14 @@ bool GLContextEGL::CreateContext(const Version& version, EGLContext share_contex
+ 	surface_attribs[nsurface_attribs++] = 8;
+ 	surface_attribs[nsurface_attribs++] = EGL_BLUE_SIZE;
+ 	surface_attribs[nsurface_attribs++] = 8;
++#if defined(__OHOS__)
++	// XComponent-backed OHNativeWindow on the target device reports
++	// NATIVEBUFFER_PIXEL_FMT_RGBA_8888.  Without an alpha constraint,
++	// eglChooseConfig() selects the otherwise valid RGBX_8888 config
++	// (EGL_NATIVE_VISUAL_ID 11), which is incompatible with that window.
++	surface_attribs[nsurface_attribs++] = EGL_ALPHA_SIZE;
++	surface_attribs[nsurface_attribs++] = 8;
++#endif
+ 	surface_attribs[nsurface_attribs++] = EGL_NONE;
+ 	surface_attribs[nsurface_attribs++] = 0;
+ 
+diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
+new file mode 100644
+index 0000000000..430cf311c6
+--- /dev/null
++++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
+@@ -0,0 +1,116 @@
++// SPDX-FileCopyrightText: 2026 Hps2 Dev Team
++// SPDX-License-Identifier: GPL-3.0+
++
++#include "GLContextEGLOHOS.h"
++
++#include "common/Console.h"
++
++#include <native_window/external_window.h>
++
++#include <EGL/egl.h>
++
++GLContextEGLOHOS::GLContextEGLOHOS(const WindowInfo& wi) : GLContextEGL(wi) {}
++GLContextEGLOHOS::~GLContextEGLOHOS() = default;
++
++std::unique_ptr<GLContext> GLContextEGLOHOS::Create(const WindowInfo& wi, const Version* versions_to_try,
++	size_t num_versions_to_try)
++{
++	std::unique_ptr<GLContextEGLOHOS> context = std::make_unique<GLContextEGLOHOS>(wi);
++	if (!context->Initialize(std::span<const Version>(versions_to_try, num_versions_to_try), nullptr))
++		return nullptr;
++
++	return context;
++}
++
++std::unique_ptr<GLContext> GLContextEGLOHOS::CreateSharedContext(const WindowInfo& wi, Error* error)
++{
++	std::unique_ptr<GLContextEGLOHOS> context = std::make_unique<GLContextEGLOHOS>(wi);
++	context->m_display = m_display;
++
++	if (!context->CreateContextAndSurface(m_version, m_context, false))
++		return nullptr;
++
++	return context;
++}
++
++void GLContextEGLOHOS::ResizeSurface(u32 new_surface_width, u32 new_surface_height)
++{
++	// ---------------------------------------------------------------------
++	// 为什么必须在这里重建 EGL surface（而不是只更新尺寸字段）
++	//
++	// 上游 GLContextEGL::ResizeSurface() 只做一件事：把新尺寸写进 m_wi
++	// （GLContextEGL.cpp:343-344），**不重建 EGLSurface**。
++	// 对桌面平台这没问题 —— 窗口系统的 surface 会自己跟着窗口变。
++	//
++	// 但在 HarmonyOS 上，底层是 OHNativeWindow：旋转或改变窗口尺寸时，
++	// 它的图形缓冲区会换成新尺寸，而 EGLSurface 仍绑在旧缓冲上。
++	// 结果是呈现时尺寸不匹配 —— 真机表现为**黑屏**
++	// （模拟器仍在跑：emulog 里 PerfLog 62fps、GS 在编译着色器）。
++	//
++	// 因此这里销毁旧 surface 并按新尺寸重建。
++	// 尺寸本身仍交给基类处理，保持一致。
++	// ---------------------------------------------------------------------
++	const bool size_changed =
++		(new_surface_width != 0 && new_surface_height != 0 &&
++			(new_surface_width != m_wi.surface_width || new_surface_height != m_wi.surface_height));
++
++	GLContextEGL::ResizeSurface(new_surface_width, new_surface_height);
++
++	if (!size_changed)
++		return;
++
++	// 没有 window / display 的场合（例如 Surfaceless）无需重建
++	if (m_display == EGL_NO_DISPLAY || m_surface == EGL_NO_SURFACE || !m_wi.window_handle)
++		return;
++
++	OHNativeWindow* window = static_cast<OHNativeWindow*>(m_wi.window_handle);
++	EGLNativeWindowType native_window = reinterpret_cast<EGLNativeWindowType>(window);
++	if (!native_window)
++		return;
++
++	// 先解绑并销毁旧 surface，再按同一 config 重建
++	eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++	if (!eglDestroySurface(m_display, m_surface))
++		Console.WarningFmt("GLContextEGLOHOS: eglDestroySurface() failed: 0x{:x}", eglGetError());
++
++	m_surface = eglCreateWindowSurface(m_display, m_config, native_window, nullptr);
++	if (m_surface == EGL_NO_SURFACE)
++	{
++		Console.ErrorFmt("GLContextEGLOHOS: eglCreateWindowSurface() failed on resize: 0x{:x} "
++		                 "(size {}x{})", eglGetError(), m_wi.surface_width, m_wi.surface_height);
++		return;
++	}
++
++	// 重新绑定上下文到新 surface，否则后续绘制会落到已销毁的旧 surface
++	if (!eglMakeCurrent(m_display, m_surface, m_surface, m_context))
++	{
++		Console.ErrorFmt("GLContextEGLOHOS: eglMakeCurrent() failed after resize: 0x{:x}",
++			eglGetError());
++		return;
++	}
++
++	Console.WriteLn("GLContextEGLOHOS: EGL surface recreated at %ux%u after window resize",
++		m_wi.surface_width, m_wi.surface_height);
++}
++
++EGLNativeWindowType GLContextEGLOHOS::GetNativeWindow(EGLConfig)
++{
++	OHNativeWindow* window = static_cast<OHNativeWindow*>(m_wi.window_handle);
++	if (!window)
++	{
++		Console.Error("GLContextEGLOHOS: no OHNativeWindow in WindowInfo (frontend did not supply one)");
++		return 0;
++	}
++
++	if (m_wi.surface_width == 0 || m_wi.surface_height == 0)
++	{
++		Console.Warning("GLContextEGLOHOS: window is %ux%u, expected the frontend to supply "
++		                "the size from OH_NativeXComponent_GetXComponentSize",
++			m_wi.surface_width, m_wi.surface_height);
++	}
++
++	Console.WriteLn("GLContextEGLOHOS: using OHNativeWindow %p, surface %ux%u",
++		static_cast<void*>(window), m_wi.surface_width, m_wi.surface_height);
++
++	return static_cast<EGLNativeWindowType>(window);
++}
+diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h
+new file mode 100644
+index 0000000000..c5f76a32f9
+--- /dev/null
++++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h
+@@ -0,0 +1,26 @@
++// SPDX-FileCopyrightText: 2026 Hps2 Dev Team
++// SPDX-License-Identifier: GPL-3.0+
++
++#pragma once
++#include "GLContextEGL.h"
++
++/// [Hps2] HarmonyOS/OpenHarmony EGL context.
++///
++/// Mirrors GLContextEGLAndroid: the frontend hands us an OHNativeWindow*
++/// (from an ArkUI XComponent surface callback) via WindowInfo::window_handle
++/// and passes it to EGL as an EGLNativeWindowType.
++class GLContextEGLOHOS final : public GLContextEGL
++{
++public:
++	GLContextEGLOHOS(const WindowInfo& wi);
++	~GLContextEGLOHOS() override;
++
++	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, const Version* versions_to_try,
++		size_t num_versions_to_try);
++
++	std::unique_ptr<GLContext> CreateSharedContext(const WindowInfo& wi, Error* error) override;
++	void ResizeSurface(u32 new_surface_width = 0, u32 new_surface_height = 0) override;
++
++protected:
++	EGLNativeWindowType GetNativeWindow(EGLConfig config) override;
++};
+diff --git a/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp b/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
+index 3f1893d317..9f4ec496c7 100644
+--- a/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
++++ b/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
+@@ -1609,7 +1609,7 @@ void GSDeviceOGL::PopTimestampQuery()
+ {
+ 	while (m_waiting_timestamp_queries > 0)
+ 	{
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(__OHOS__)
+ 		// GLES doesn't expose glGetQueryObjectiv / glGetQueryObjectui64v; both
+ 		// availability and result use the u32 form. Caps at ~4.29s of
+ 		// nanoseconds — fine for per-frame timing. Provided by the
+@@ -1683,15 +1683,15 @@ float GSDeviceOGL::GetAndResetAccumulatedGPUTime()
+ 	return value;
+ }
+ 
+-// NOTE: These GL pipeline-statistics queries are desktop-GL only. GLES (Android)
++// NOTE: These GL pipeline-statistics queries are desktop-GL only. GLES (Android/OpenHarmony)
+ // has neither GL_ARB_pipeline_statistics_query nor the glGetQueryObjectiv /
+ // glGetQueryObjectui64v result readers (see PopTimestampQuery for the same
+-// GLES gap), so the whole path is compiled out under __ANDROID__. On Android
++// GLES gap), so the whole path is compiled out under mobile GLES targets. On mobile
+ // m_gpu_pipeline_statistics_supported stays false and these are never invoked;
+ // the OSD line just shows 0 / degrades to n/a. Real stats come from Vulkan.
+ void GSDeviceOGL::PopPipelineStatisticsQuery()
+ {
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ 	while (m_waiting_pipeline_statistics_queries > 0)
+ 	{
+ 		GLint available[2] = {};
+@@ -1724,7 +1724,7 @@ void GSDeviceOGL::PopPipelineStatisticsQuery()
+ 
+ void GSDeviceOGL::KickPipelineStatisticsQuery()
+ {
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ 	if (m_pipeline_statistics_query_started || m_waiting_pipeline_statistics_queries == NUM_PIPELINE_STATISTICS_QUERIES)
+ 		return;
+ 
+@@ -1736,7 +1736,7 @@ void GSDeviceOGL::KickPipelineStatisticsQuery()
+ 
+ void GSDeviceOGL::CreatePipelineStatisticsQueries()
+ {
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ 	for (int i = 0; i < NUM_PIPELINE_STATISTICS_QUERIES; i++)
+ 	{
+ 		glGenQueries(2, m_pipeline_statistics_queries[i].data());
+@@ -1747,7 +1747,7 @@ void GSDeviceOGL::CreatePipelineStatisticsQueries()
+ 
+ void GSDeviceOGL::DestroyPipelineStatisticsQueries()
+ {
+-#if !defined(__ANDROID__)
++#if !defined(__ANDROID__) && !defined(__OHOS__)
+ 	if (m_pipeline_statistics_queries[0][0] == 0)
+ 		return;
+ 
+diff --git a/pcsx2/Host/AudioStream.cpp b/pcsx2/Host/AudioStream.cpp
+index b87755926b..7f3a182eea 100644
+--- a/pcsx2/Host/AudioStream.cpp
++++ b/pcsx2/Host/AudioStream.cpp
+@@ -124,6 +124,9 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
+ 			return CreateOboeAudioStream(sample_rate, parameters, stretch_enabled, error);
+ #endif
+ 
++		case AudioBackend::OHAudio:
++			return CreateOHAudioStream(sample_rate, parameters, stretch_enabled, error);
++
+ 		case AudioBackend::Null:
+ 			return CreateNullStream(sample_rate, parameters.buffer_ms);
+ 
+@@ -155,12 +158,14 @@ static constexpr const std::array s_backend_names = {
+ 	"Cubeb",
+ 	"SDL",
+ 	"Oboe",
++	"OHAudio",
+ };
+ static constexpr const std::array s_backend_display_names = {
+ 	TRANSLATE_NOOP("AudioStream", "Null (No Output)"),
+ 	TRANSLATE_NOOP("AudioStream", "Cubeb"),
+ 	TRANSLATE_NOOP("AudioStream", "SDL"),
+ 	TRANSLATE_NOOP("AudioStream", "Oboe"),
++	TRANSLATE_NOOP("AudioStream", "OpenHarmony Audio"),
+ };
+ 
+ std::optional<AudioBackend> AudioStream::ParseBackendName(const char* str)
+diff --git a/pcsx2/Host/AudioStream.h b/pcsx2/Host/AudioStream.h
+index d81e4dca62..e917a9a8fe 100644
+--- a/pcsx2/Host/AudioStream.h
++++ b/pcsx2/Host/AudioStream.h
+@@ -156,6 +156,10 @@ private:
+ 	static std::unique_ptr<AudioStream> CreateOboeAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
+ 		bool stretch_enabled, Error* error);
+ 
++	// OpenHarmony native audio backend. Defined in Host/OHAudioStream.cpp.
++	static std::unique_ptr<AudioStream> CreateOHAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
++		bool stretch_enabled, Error* error);
++
+ 	void AllocateBuffer();
+ 	void DestroyBuffer();
+ 
+diff --git a/pcsx2/Host/AudioStreamTypes.h b/pcsx2/Host/AudioStreamTypes.h
+index 9cd1bcf818..ebedae92ea 100644
+--- a/pcsx2/Host/AudioStreamTypes.h
++++ b/pcsx2/Host/AudioStreamTypes.h
+@@ -15,6 +15,7 @@ enum class AudioBackend : u8
+ 	Cubeb,
+ 	SDL,
+ 	Oboe,
++	OHAudio,
+ 	Count
+ };
+ 
+diff --git a/pcsx2/Host/OHAudioStream.cpp b/pcsx2/Host/OHAudioStream.cpp
+new file mode 100644
+index 0000000000..2bb26fc57a
+--- /dev/null
++++ b/pcsx2/Host/OHAudioStream.cpp
+@@ -0,0 +1,309 @@
++// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
++// SPDX-License-Identifier: GPL-3.0+
++
++// OpenHarmony native audio output. SDL3 currently has no OHOS audio driver in
++// this tree and its fallback driver is intentionally silent, so the emulator
++// must use libohaudio directly on OHOS.
++
++#include "Host/AudioStream.h"
++
++#include "common/Error.h"
++#include "common/Console.h"
++
++#include <ohaudio/native_audiostreambuilder.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <memory>
++
++namespace
++{
++class OHAudioStream final : public AudioStream
++{
++public:
++	OHAudioStream(u32 sample_rate, const AudioStreamParameters& parameters)
++		: AudioStream(sample_rate, parameters)
++	{
++	}
++
++	~OHAudioStream() override
++	{
++		if (m_builder)
++		{
++			OH_AudioStreamBuilder_Destroy(m_builder);
++			m_builder = nullptr;
++		}
++		if (m_renderer)
++		{
++			OH_AudioRenderer_Stop(m_renderer);
++			OH_AudioRenderer_Release(m_renderer);
++			m_renderer = nullptr;
++		}
++	}
++
++	bool Initialize(bool stretch_enabled, Error* error)
++	{
++		OH_AudioStream_Result result = OH_AudioStreamBuilder_Create(&m_builder, AUDIOSTREAM_TYPE_RENDERER);
++		if (result != AUDIOSTREAM_SUCCESS)
++			return Fail(error, "OH_AudioStreamBuilder_Create", result);
++
++		if (!Check(OH_AudioStreamBuilder_SetSamplingRate(m_builder, static_cast<int32_t>(m_sample_rate)),
++			"OH_AudioStreamBuilder_SetSamplingRate", error) ||
++			!Check(OH_AudioStreamBuilder_SetChannelCount(m_builder, 2),
++				"OH_AudioStreamBuilder_SetChannelCount", error) ||
++			// S16LE is supported since API 10.  F32LE was added later, and a
++			// negotiated integer format must never receive float samples.
++			!Check(OH_AudioStreamBuilder_SetSampleFormat(m_builder, AUDIOSTREAM_SAMPLE_S16LE),
++				"OH_AudioStreamBuilder_SetSampleFormat", error) ||
++			!Check(OH_AudioStreamBuilder_SetEncodingType(m_builder, AUDIOSTREAM_ENCODING_TYPE_RAW),
++				"OH_AudioStreamBuilder_SetEncodingType", error) ||
++			!Check(OH_AudioStreamBuilder_SetRendererInfo(m_builder, AUDIOSTREAM_USAGE_GAME),
++				"OH_AudioStreamBuilder_SetRendererInfo", error) ||
++			!Check(OH_AudioStreamBuilder_SetLatencyMode(m_builder,
++				m_parameters.minimal_output_latency ? AUDIOSTREAM_LATENCY_MODE_FAST : AUDIOSTREAM_LATENCY_MODE_NORMAL),
++				"OH_AudioStreamBuilder_SetLatencyMode", error) ||
++			!Check(OH_AudioStreamBuilder_SetRendererWriteDataCallback(m_builder, &WriteCallback, this),
++				"OH_AudioStreamBuilder_SetRendererWriteDataCallback", error))
++		{
++			return false;
++		}
++
++		result = OH_AudioStreamBuilder_GenerateRenderer(m_builder, &m_renderer);
++		OH_AudioStreamBuilder_Destroy(m_builder);
++		m_builder = nullptr;
++		if (result != AUDIOSTREAM_SUCCESS || !m_renderer)
++			return Fail(error, "OH_AudioStreamBuilder_GenerateRenderer", result);
++
++		// The renderer may negotiate a device format different from the request.
++		// A mismatch here changes the audio clock and produces gradual A/V drift,
++		// so make it visible in the device log instead of silently accepting it.
++		int32_t actual_rate = 0;
++		int32_t actual_channels = 0;
++		OH_AudioStream_SampleFormat actual_format = AUDIOSTREAM_SAMPLE_S16LE;
++		int32_t callback_frames = 0;
++		const OH_AudioStream_Result rate_result = OH_AudioRenderer_GetSamplingRate(m_renderer, &actual_rate);
++		const OH_AudioStream_Result channels_result = OH_AudioRenderer_GetChannelCount(m_renderer, &actual_channels);
++		const OH_AudioStream_Result format_result = OH_AudioRenderer_GetSampleFormat(m_renderer, &actual_format);
++		const OH_AudioStream_Result frame_result = OH_AudioRenderer_GetFrameSizeInCallback(m_renderer, &callback_frames);
++		if (rate_result == AUDIOSTREAM_SUCCESS && channels_result == AUDIOSTREAM_SUCCESS &&
++			format_result == AUDIOSTREAM_SUCCESS)
++		{
++			m_sample_format = actual_format;
++			INFO_LOG("OpenHarmony audio negotiated format: {} Hz, {} channels, sample format {}, callback frames {} "
++				"(requested {} Hz, 2 channels, S16LE)",
++				actual_rate, actual_channels, static_cast<int>(actual_format),
++				frame_result == AUDIOSTREAM_SUCCESS ? callback_frames : 0, m_sample_rate);
++			if (actual_rate != static_cast<int32_t>(m_sample_rate) || actual_channels != 2)
++				WARNING_LOG("OpenHarmony audio format mismatch may cause A/V drift");
++		}
++		else
++		{
++			WARNING_LOG("OpenHarmony audio could not query negotiated format: rate={}, channels={}, format={}, frames={}",
++				static_cast<int>(rate_result), static_cast<int>(channels_result),
++				static_cast<int>(format_result), static_cast<int>(frame_result));
++		}
++
++		// Allocate this before the real-time callback starts.  Integer output
++		// formats are converted from the core's float samples without allocating
++		// on the audio thread.
++		m_callback_buffer_frames = std::max<u32>(callback_frames > 0 ? static_cast<u32>(callback_frames) : 1024u, 1024u);
++		m_callback_float_buffer = std::make_unique<float[]>(m_callback_buffer_frames * 2);
++
++		// ------------------------------------------------------------------
++		// 【爆音修复】核心环形缓冲的水位必须 >= 单次回调的请求量。
++		//
++		// 核心的目标水位由 buffer_ms 决定（AudioStream.cpp:420）：
++		//     m_target_buffer_size = rate * buffer_ms / 1000
++		// 而 ReadFrames 在 available < requested 时会**掺入静音**
++		// （silence_frames = frames_to_read - available_frames），
++		// 并置 m_filling —— 下一次回调整段返回静音。
++		// 声音与静音交替 = 听感上的**爆音 / 咔哒**。
++		//
++		// 真机实测（HarmonyOS API 26 测试设备）：
++		//     buffer = 50 (ms) -> 目标水位 2400 帧
++		//     callback frames = 4458 帧 (= 92.9 ms)
++		//     即单次请求是目标水位的 **1.86 倍**
++		// 于是每次回调都欠载 -> 持续掺静音 -> 爆音。
++		//
++		// 修法：在**得知实际回调帧数之后**（此处），按需抬高 buffer_ms，
++		// 使目标水位覆盖单次回调，并留出安全余量。
++		// 注意必须在本函数内、BaseInitialize() 之前调整 ——
++		// 因为环形缓冲正是在 BaseInitialize -> AllocateBuffer() 中按
++		// m_parameters.buffer_ms 分配的，之后再改无效。
++		// ------------------------------------------------------------------
++		if (callback_frames > 0)
++		{
++			const u32 requested_frames = static_cast<u32>(callback_frames);
++			// 用 m_sample_rate：核心环形缓冲就是按它分配的（见 AllocateBuffer），
++			// 必须与之一致，否则算出的水位对不上。
++			const u32 rate = static_cast<u32>(m_sample_rate);
++			const u32 current_target =
++				(static_cast<u32>(m_parameters.buffer_ms) * rate) / 1000u;
++			if (requested_frames > current_target)
++			{
++				// 目标水位 = 单次回调量 + 50% 余量，向上取整到毫秒
++				const u32 safe_frames = requested_frames + requested_frames / 2;
++				const u32 needed_ms =
++					(safe_frames * 1000u + rate - 1u) / rate;
++				INFO_LOG("OpenHarmony audio: callback requests {} frames but buffer_ms {} only "
++					"covers {} frames; raising buffer_ms to {} to avoid underrun (crackling)",
++					requested_frames, m_parameters.buffer_ms, current_target, needed_ms);
++				m_parameters.buffer_ms = static_cast<u16>(needed_ms);
++			}
++		}
++
++		// The core's AudioStream ring buffer must be ready before the system
++		// callback can start pulling frames.
++		BaseInitialize(&StereoSampleReaderImpl, stretch_enabled);
++		result = OH_AudioRenderer_SetVolume(m_renderer, 1.0f);
++		if (result != AUDIOSTREAM_SUCCESS)
++			return Fail(error, "OH_AudioRenderer_SetVolume", result);
++
++		// SPU2 calls SetPaused() immediately after CreateStream(). Delay the
++		// renderer start until that point so the native callback cannot consume
++		// silence before the VM has established its running state.
++		m_running = false;
++		INFO_LOG("OpenHarmony audio stream prepared: {} Hz, stereo format {}", m_sample_rate,
++			static_cast<int>(m_sample_format));
++		return true;
++	}
++
++	void SetPaused(bool paused) override
++	{
++		if (!m_renderer || paused == !m_running)
++		{
++			AudioStream::SetPaused(paused);
++			return;
++		}
++
++		const OH_AudioStream_Result result = paused ? OH_AudioRenderer_Pause(m_renderer)
++			: OH_AudioRenderer_Start(m_renderer);
++		if (result == AUDIOSTREAM_SUCCESS)
++			m_running = !paused;
++		else
++			WARNING_LOG("OpenHarmony audio {} failed: {}", paused ? "pause" : "resume", static_cast<int>(result));
++
++		AudioStream::SetPaused(paused);
++	}
++
++private:
++	static OH_AudioData_Callback_Result WriteCallback(OH_AudioRenderer*, void* user_data,
++		void* audio_data, int32_t audio_data_size)
++	{
++		auto* self = static_cast<OHAudioStream*>(user_data);
++		if (!self || !audio_data || audio_data_size <= 0)
++			return AUDIO_DATA_CALLBACK_RESULT_INVALID;
++
++		const u32 bytes_per_sample = BytesPerSample(self->m_sample_format);
++		if (bytes_per_sample == 0 || (audio_data_size % static_cast<int32_t>(bytes_per_sample * 2)) != 0)
++			return AUDIO_DATA_CALLBACK_RESULT_INVALID;
++
++		const u32 frames = static_cast<u32>(audio_data_size) / (bytes_per_sample * 2);
++		if (self->m_sample_format == AUDIOSTREAM_SAMPLE_F32LE)
++		{
++			self->ReadFrames(static_cast<float*>(audio_data), frames);
++		}
++		else
++		{
++			if (!self->m_callback_float_buffer || frames > self->m_callback_buffer_frames)
++				return AUDIO_DATA_CALLBACK_RESULT_INVALID;
++
++			self->ReadFrames(self->m_callback_float_buffer.get(), frames);
++			self->ConvertSamples(audio_data, self->m_callback_float_buffer.get(), frames);
++		}
++		return AUDIO_DATA_CALLBACK_RESULT_VALID;
++	}
++
++	static u32 BytesPerSample(OH_AudioStream_SampleFormat format)
++	{
++		switch (format)
++		{
++			case AUDIOSTREAM_SAMPLE_U8: return 1;
++			case AUDIOSTREAM_SAMPLE_S16LE: return 2;
++			case AUDIOSTREAM_SAMPLE_S24LE: return 3;
++			case AUDIOSTREAM_SAMPLE_S32LE:
++			case AUDIOSTREAM_SAMPLE_F32LE: return 4;
++			default: return 0;
++		}
++	}
++
++	static int32_t ClampS32(float value)
++	{
++		return static_cast<int32_t>(std::lrintf(std::clamp(value, -1.0f, 1.0f) * 2147483647.0f));
++	}
++
++	void ConvertSamples(void* output, const float* input, u32 frames)
++	{
++		const u32 samples = frames * 2;
++		switch (m_sample_format)
++		{
++			case AUDIOSTREAM_SAMPLE_U8:
++			{
++				auto* dst = static_cast<uint8_t*>(output);
++				for (u32 i = 0; i < samples; i++)
++					dst[i] = static_cast<uint8_t>(std::clamp(128 + std::lrintf(std::clamp(input[i], -1.0f, 1.0f) * 127.0f), 0l, 255l));
++				break;
++			}
++			case AUDIOSTREAM_SAMPLE_S16LE:
++			{
++				auto* dst = static_cast<int16_t*>(output);
++				for (u32 i = 0; i < samples; i++)
++					dst[i] = static_cast<int16_t>(std::lrintf(std::clamp(input[i], -1.0f, 1.0f) * 32767.0f));
++				break;
++			}
++			case AUDIOSTREAM_SAMPLE_S24LE:
++			{
++				auto* dst = static_cast<uint8_t*>(output);
++				for (u32 i = 0; i < samples; i++)
++				{
++					const int32_t value = ClampS32(input[i]) >> 8;
++					dst[i * 3 + 0] = static_cast<uint8_t>(value & 0xff);
++					dst[i * 3 + 1] = static_cast<uint8_t>((value >> 8) & 0xff);
++					dst[i * 3 + 2] = static_cast<uint8_t>((value >> 16) & 0xff);
++				}
++				break;
++			}
++			case AUDIOSTREAM_SAMPLE_S32LE:
++			{
++				auto* dst = static_cast<int32_t*>(output);
++				for (u32 i = 0; i < samples; i++)
++					dst[i] = ClampS32(input[i]);
++				break;
++			}
++			default:
++				break;
++		}
++	}
++
++	bool Check(OH_AudioStream_Result result, const char* operation, Error* error)
++	{
++		if (result == AUDIOSTREAM_SUCCESS)
++			return true;
++		return Fail(error, operation, result);
++	}
++
++	bool Fail(Error* error, const char* operation, OH_AudioStream_Result result)
++	{
++		Error::SetStringFmt(error, "{} failed (result={})", operation, static_cast<int>(result));
++		ERROR_LOG("OpenHarmony audio: {} failed (result={})", operation, static_cast<int>(result));
++		return false;
++	}
++
++	OH_AudioStreamBuilder* m_builder = nullptr;
++	OH_AudioRenderer* m_renderer = nullptr;
++	OH_AudioStream_SampleFormat m_sample_format = AUDIOSTREAM_SAMPLE_S16LE;
++	std::unique_ptr<float[]> m_callback_float_buffer;
++	u32 m_callback_buffer_frames = 0;
++	bool m_running = false;
++};
++} // namespace
++
++std::unique_ptr<AudioStream> AudioStream::CreateOHAudioStream(u32 sample_rate,
++	const AudioStreamParameters& parameters, bool stretch_enabled, Error* error)
++{
++	std::unique_ptr<OHAudioStream> stream = std::make_unique<OHAudioStream>(sample_rate, parameters);
++	if (!stream->Initialize(stretch_enabled, error))
++		return nullptr;
++	return stream;
++}
+diff --git a/pcsx2/ImGui/ImGuiOverlays.cpp b/pcsx2/ImGui/ImGuiOverlays.cpp
+index 12d22f48c7..75a17498ab 100644
+--- a/pcsx2/ImGui/ImGuiOverlays.cpp
++++ b/pcsx2/ImGui/ImGuiOverlays.cpp
+@@ -864,8 +864,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
+ 				return std::pair(lo, hi);
+ 			};
+ 
+-			auto [initial_lo, initial_hi] = compute_window_extents(history);
+-			auto [min_val, max_val] = [&]() {
++			// [Hps2] OHOS clang 15 cannot capture structured bindings in a lambda
++			// (a C++20 feature implemented in clang 16). Use named variables so the
++			// lambdas below can capture them. Semantics unchanged.
++			const auto initial_extents = compute_window_extents(history);
++			const float initial_lo = initial_extents.first;
++			const float initial_hi = initial_extents.second;
++			// [Hps2] OHOS clang 15 cannot capture structured bindings in a lambda
++			// (C++20 feature landed in clang 16). Bind to a named pair, then take
++			// mutable names so the code below can still assign to them.
++			const auto min_max_pair = [&]() {
+ 				float lo = initial_lo;
+ 				float hi = initial_hi;
+ 				if (hi < lo)
+@@ -879,6 +887,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
+ 				}
+ 				return std::pair(lo, std::max(hi, lo + 1.0f));
+ 			}();
++			float min_val = min_max_pair.first;
++			float max_val = min_max_pair.second;
+ 
+ 			PerformanceMetrics::FrameTimeHistory ft_history = history;
+ 
+@@ -911,8 +921,12 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
+ 			for (u32 i = 0; i < sample_count; i++)
+ 				vps_history[i] = (ft_history[i] >= 0.01f) ? std::min(10000.0f, 1000.0f / ft_history[i]) : 0.0f;
+ 
+-			auto [vps_initial_lo, vps_initial_hi] = compute_window_extents(vps_history);
+-			auto [vps_scale_min, vps_scale_max] = [&]() {
++			// [Hps2] See note above: named variables instead of structured bindings.
++			const auto vps_initial_extents = compute_window_extents(vps_history);
++			const float vps_initial_lo = vps_initial_extents.first;
++			const float vps_initial_hi = vps_initial_extents.second;
++			// [Hps2] See note above: named pair instead of a structured binding.
++			const auto vps_scale_pair = [&]() {
+ 				float lo = vps_initial_lo;
+ 				float hi = vps_initial_hi;
+ 				if (hi < lo)
+@@ -926,6 +940,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
+ 				}
+ 				return std::pair(lo, hi);
+ 			}();
++			float vps_scale_min = vps_scale_pair.first;
++			float vps_scale_max = vps_scale_pair.second;
+ 
+ 			static float s_ft_min = DEFAULT_FT_MIN;
+ 			static float s_ft_max = DEFAULT_FT_MAX;
+diff --git a/pcsx2/Memory.cpp b/pcsx2/Memory.cpp
+index 575ed999a0..1dd37f9492 100644
+--- a/pcsx2/Memory.cpp
++++ b/pcsx2/Memory.cpp
+@@ -68,6 +68,7 @@ namespace SysMemory
+ 	static u8* s_data_memory;
+ 	static void* s_data_memory_file_handle;
+ 	static u8* s_code_memory;
++	static bool s_interpreter_only;
+ 	static std::unique_ptr<SharedMemoryMappingArea> s_memory_mapping_area;
+ 	static std::unique_ptr<SharedMemoryMappingArea> s_code_mapping_area;
+ } // namespace SysMemory
+@@ -194,14 +195,18 @@ bool SysMemory::AllocateMemoryMap()
+ 	else
+ #endif
+ 	{
+-		if (!(s_code_mapping_area = SharedMemoryMappingArea::Create(HostMemoryMap::CodeSize, true, kArenaBase ? kArenaBase + HostMemoryMap::MainSize : 0)))
++		if (s_interpreter_only)
++		{
++			Console.WriteLn("[Hps2] Interpreter-only policy: skipping executable code-memory allocation");
++			s_code_memory = nullptr;
++		}
++		else if (!(s_code_mapping_area = SharedMemoryMappingArea::Create(HostMemoryMap::CodeSize, true, kArenaBase ? kArenaBase + HostMemoryMap::MainSize : 0)))
+ 		{
+ 			Host::ReportErrorAsync("Error", "Failed to map code memory.");
+ 			ReleaseMemoryMap();
+ 			return false;
+ 		}
+-
+-		if ((s_code_memory = s_code_mapping_area->Map(nullptr, 0, s_code_mapping_area->BasePointer(), HostMemoryMap::CodeSize, PageAccess_Any())) == nullptr)
++		else if ((s_code_memory = s_code_mapping_area->Map(nullptr, 0, s_code_mapping_area->BasePointer(), HostMemoryMap::CodeSize, PageAccess_Any())) == nullptr)
+ 		{
+ 			Host::ReportErrorAsync("Error", "Failed to allocate code memory.");
+ 			ReleaseMemoryMap();
+@@ -219,12 +224,15 @@ bool SysMemory::AllocateMemoryMap()
+ 	// leaving the VIF/SW-renderer tail alone. A/B off-arm: launch under
+ 	// prctl(PR_SET_THP_DISABLE) (see tools/perf/fx15_thp_ab.sh) — it
+ 	// survives execve, so no in-tree gate is needed.
+-	static_assert(HostMemoryMap::IOPrecOffset == HostMemoryMap::EErecOffset + HostMemoryMap::EErecSize);
+-	static_assert(HostMemoryMap::mVU1recOffset == HostMemoryMap::mVU0recOffset + HostMemoryMap::mVU0recSize);
+-	madvise(s_code_memory + HostMemoryMap::EErecOffset,
+-		HostMemoryMap::EErecSize + HostMemoryMap::IOPrecSize, MADV_HUGEPAGE);
+-	madvise(s_code_memory + HostMemoryMap::mVU0recOffset,
+-		HostMemoryMap::mVU0recSize + HostMemoryMap::mVU1recSize, MADV_HUGEPAGE);
++	if (s_code_memory)
++	{
++		static_assert(HostMemoryMap::IOPrecOffset == HostMemoryMap::EErecOffset + HostMemoryMap::EErecSize);
++		static_assert(HostMemoryMap::mVU1recOffset == HostMemoryMap::mVU0recOffset + HostMemoryMap::mVU0recSize);
++		madvise(s_code_memory + HostMemoryMap::EErecOffset,
++			HostMemoryMap::EErecSize + HostMemoryMap::IOPrecSize, MADV_HUGEPAGE);
++		madvise(s_code_memory + HostMemoryMap::mVU0recOffset,
++			HostMemoryMap::mVU0recSize + HostMemoryMap::mVU1recSize, MADV_HUGEPAGE);
++	}
+ #endif
+ 
+ 	HostMemoryMap::EEmem = (uptr)(s_data_memory + HostMemoryMap::EEmemOffset);
+@@ -317,6 +325,17 @@ void SysMemory::ReserveMemory()
+ 		AllocateMemoryMap();
+ }
+ 
++void SysMemory::SetInterpreterOnly(bool enabled)
++{
++	pxAssertRel(!s_data_memory_file_handle, "Interpreter policy must be set before reserving VM memory");
++	s_interpreter_only = enabled;
++}
++
++bool SysMemory::IsInterpreterOnly()
++{
++	return s_interpreter_only;
++}
++
+ bool SysMemory::Allocate()
+ {
+ 	DevCon.WriteLn(Color_StrongBlue, "Allocating host memory for virtual systems...");
+diff --git a/pcsx2/Memory.h b/pcsx2/Memory.h
+index 16a24ebbdc..03d45c3de6 100644
+--- a/pcsx2/Memory.h
++++ b/pcsx2/Memory.h
+@@ -98,6 +98,12 @@ namespace HostMemoryMap
+ 
+ namespace SysMemory
+ {
++	/// Selects the interpreter-only memory policy. Must be called before
++	/// ReserveMemory() or Allocate(). When enabled, no executable code cache is
++	/// reserved or mapped, allowing sandboxes which prohibit JIT to boot safely.
++	void SetInterpreterOnly(bool enabled);
++	bool IsInterpreterOnly();
++
+ 	/// Reserve the host memory map (and, on arm64, the constant-VA arena) early,
+ 	/// before other allocations could squat on the fixed base. Idempotent — a
+ 	/// later Allocate() reuses the same reservation. Used by headless runners and
+diff --git a/pcsx2/PrecompiledHeader.h b/pcsx2/PrecompiledHeader.h
+index bdfb247039..0e15a3bf02 100644
+--- a/pcsx2/PrecompiledHeader.h
++++ b/pcsx2/PrecompiledHeader.h
+@@ -11,6 +11,14 @@
+ #include "common/Pcsx2Defs.h"
+ #include "common/VectorIntrin.h"
+ 
++// [Hps2] OHOS libc++ (15004/LLVM 15) is missing several C++20 facilities that
++// the core uses (three-way comparison on containers/strings,
++// make_unique_for_overwrite, lexicographical_compare_three_way).
++// Pull the compat shims in here, since this header is force-included into every
++// core translation unit via the PCH, so no call site can miss them.
++// No-op on non-OHOS platforms.
++#include "common/HarmonyOS/ohos_libcxx_compat.h"
++
+ //////////////////////////////////////////////////////////////////////////////////////////
+ // Include the STL that's actually handy.
+ 

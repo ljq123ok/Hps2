@@ -16,7 +16,10 @@
 *.log
 
 # 上游源码（按提交号可重现；不纳入本仓库历史）
-upstream/
+# 注意必须写 /upstream/ 锚定到仓库根 —— 写成 upstream/ 会连
+# patches/upstream/ 一起忽略（该目录是上游改动的**归档**，必须入库；
+# 2026-10-01 发现此误伤导致补丁从未被跟踪）。
+/upstream/
 
 # 宿主测试二进制
 stage1-jitprobe/host-test/encode_check
@@ -38,6 +41,13 @@ stage1-jitprobe/host-test/encode_check
 # 真机数据备份（含用户存档：memcards/sstates）—— 绝不入库。
 # 这是阶段 0 探针前的预防性备份，属个人数据，不入仓库。
 .backup-probe-precaution/
+
+# 上游归档修复期间的临时回滚点（含旧补丁快照）—— 修复完成后可删。
+# 归档本身在 patches/ 与 fork 分支中，不依赖此目录。
+.backup-archive-fix/
+
+# Codex 接手期间的临时备份（patch + bundle + 未跟踪文件快照）。
+.backup-codex-takeover/
 
 # 第三方交叉编译产物（可从源码重建）
 thirdparty-ohos/src/

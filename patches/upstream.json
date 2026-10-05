@@ -1,0 +1,7 @@
+{
+  "repo": "https://github.com/ARMSX2/ARMSX2.git",
+  "commit": "d7e8d01678107f066d6ec988ca178d80089bd9f5",
+  "patch": "patches/upstream/0001-hps2-ohos-bringup-complete.patch",
+  "submodules": true,
+  "excludeFromPatch": ["platforms/", "*.png", "*.jpg"]
+}

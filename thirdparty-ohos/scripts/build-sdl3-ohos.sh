@@ -30,7 +30,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NDK="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native"
+DEVECO="${DEVECO_HOME:-/Applications/DevEco-Studio.app/Contents}"
+NDK="$DEVECO/sdk/default/openharmony/native"
 CLANG="$NDK/llvm/bin/clang"
 AR="$NDK/llvm/bin/llvm-ar"
 COMPAT_DIR="$ROOT/compat"
@@ -47,8 +48,6 @@ if [[ ! -f "$COMPAT_LIB" || "$COMPAT_SRC" -nt "$COMPAT_LIB" ]]; then
 fi
 
 # --- 2. Configure + build + install SDL3 (library only) ----------------------
-rm -rf "$ROOT/build/sdl3"
-
 bash "$ROOT/scripts/build-lib.sh" sdl3 "$ROOT/src/sdl3" \
   -DSDL_UNIX_CONSOLE_BUILD=ON \
   -DSDL_TESTS=OFF \

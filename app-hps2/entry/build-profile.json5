@@ -15,6 +15,40 @@
       ]
     }
   },
+  "buildOptionSet": [
+    {
+      "name": "jitDevelopment",
+      "externalNativeOptions": {
+        "arguments": "-DHPS2_STORE_BUILD=OFF"
+      }
+    },
+    {
+      "name": "storeInterpreter",
+      "externalNativeOptions": {
+        "arguments": "-DHPS2_STORE_BUILD=ON"
+      }
+    }
+  ],
+  "buildModeBinder": [
+    {
+      "buildModeName": "debug",
+      "mappings": [
+        {
+          "targetName": "default",
+          "buildOptionName": "jitDevelopment"
+        }
+      ]
+    },
+    {
+      "buildModeName": "release",
+      "mappings": [
+        {
+          "targetName": "default",
+          "buildOptionName": "storeInterpreter"
+        }
+      ]
+    }
+  ],
   "targets": [
     {
       "name": "default",

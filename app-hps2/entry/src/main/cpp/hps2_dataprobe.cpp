@@ -428,7 +428,7 @@ namespace Hps2DataProbe
 		}
 
 		j += "}";
-		PLOGI("DATA_PROBE stat_path=%{public}s", j.c_str());
+		PLOGI("DATA_PROBE stat_path checked");
 		return j;
 	}
 
@@ -492,7 +492,7 @@ namespace Hps2DataProbe
 		}
 		out += "]";
 
-		PLOGI("DATA_PROBE path_chain=%{public}s", out.c_str());
+		PLOGI("DATA_PROBE path_chain checked");
 		return out;
 	}
 
@@ -511,7 +511,7 @@ namespace Hps2DataProbe
 		if (!d)
 		{
 			j += ",\"ok\":false,\"errno\":" + std::to_string(errno) + "}";
-			PLOGI("DATA_PROBE list_dir=%{public}s", j.c_str());
+			PLOGI("DATA_PROBE list_dir checked");
 			return j;
 		}
 
@@ -531,7 +531,7 @@ namespace Hps2DataProbe
 		::closedir(d);
 		j += "],\"count\":" + std::to_string(count) + "}";
 
-		PLOGI("DATA_PROBE list_dir=%{public}s", j.c_str());
+		PLOGI("DATA_PROBE list_dir checked");
 		return j;
 	}
 }

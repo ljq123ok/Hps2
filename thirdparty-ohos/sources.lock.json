@@ -1,0 +1,12 @@
+{
+  "sources": [
+    { "name": "freetype", "repo": "https://github.com/freetype/freetype.git", "commit": "342e5809b1aa8aed02b9be1df0015fa7e1e0e244" },
+    { "name": "libjpeg-turbo", "repo": "https://github.com/libjpeg-turbo/libjpeg-turbo.git", "commit": "7b5fee3f7a83b5c2bdbb52d5dd6ce6bfc53b6b58" },
+    { "name": "libpng", "repo": "https://github.com/pnggroup/libpng.git", "commit": "964b4135949703b705fc760fc3fb546b86e5ab47" },
+    { "name": "libwebp", "repo": "https://github.com/webmproject/libwebp.git", "commit": "fa4ecc72e56026bb05003eea412ea0a8c4af5e60" },
+    { "name": "lz4", "repo": "https://github.com/lz4/lz4.git", "commit": "0774d05537f9762f838f7ab541b7765f1a729cb5" },
+    { "name": "sdl3", "repo": "https://github.com/libsdl-org/SDL.git", "commit": "33b4a9d915947d2482366622fc4f97c944254775" },
+    { "name": "zlib", "repo": "https://github.com/madler/zlib.git", "commit": "e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca" },
+    { "name": "zstd", "repo": "https://github.com/facebook/zstd.git", "commit": "d79e72359582d2326c63e9669fe05c2f6580fec5" }
+  ]
+}

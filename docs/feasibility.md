@@ -8,7 +8,7 @@
 | 本机 HarmonyOS SDK | **6.1.1 / API 24**（`sdk-pkg.json`: `displayName: "HarmonyOS 6.1.1"`） |
 | 本机 SDK Native 版本 | 6.1.1.125，LLVM/clang 15.0.4，sysroot `aarch64-linux-ohos` |
 | 宿主平台 | macOS 26.6.1（arm64） |
-| 目标设备 | 待真机确认（任务书称 Pura X；见 §1.4） |
+| 目标设备 | 待真机确认（手机形态测试设备；见 §1.4） |
 | 连接状态 | `hdc list targets` → 空。**审计期间无设备连接** |
 
 > **关于「HarmonyOS 7」**：任务书称目标为 HarmonyOS 7。本机安装的 SDK 是
@@ -44,7 +44,7 @@ HarmonyOS 把「代码内存安全」拆成三组 `system_basic` 权限，全部
 |---|---|---|---|
 | `ohos.permission.kernel.ALLOW_EXECUTABLE_FORT_MEMORY` | 允许**系统 JS 引擎**申请带 `MAP_FORT` 的匿名可执行内存 | 面向 JS 引擎，非任意原生代码 | 官方 JIT 入口，但语义不覆盖自研 JIT |
 | `ohos.permission.kernel.ALLOW_USE_JITFORT_INTERFACE` | 允许应用调用 **JITFort 接口**更新 `MAP_FORT` 内存内容 | 公开 SDK 中**找不到该接口** | 权限存在但无 API 可调 |
-| `ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY` | 允许申请**可写可执行**（W+X）匿名内存 | **仅平板、2in1 设备**可申请 | Pura X 为手机形态，预计不可用 |
+| `ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY` | 允许申请**可写可执行**（W+X）匿名内存 | **仅平板、2in1 设备**可申请 | 目标设备为手机形态，预计不适用 |
 
 三者**均为 `system_basic` + `system_grant`**，且文档明确指出：
 对于 `system_basic` 等级权限，**若 ACL 使能为 false，则 normal 等级应用无法申请**。
@@ -66,7 +66,7 @@ HarmonyOS 把「代码内存安全」拆成三组 `system_basic` 权限，全部
 
 | 事项 | 状态 | 需要的证据 |
 |---|---|---|
-| 真机确切型号（"Pura X"） | **未确认** | `hdc shell param get const.product.model` |
+| 真机确切型号 | **未记录** | `hdc shell param get const.product.model` |
 | 真机系统版本 | **未确认**（推测 OS7/API26） | `hdc shell param get const.ohos.apiversion` |
 | 真机 CPU 架构 | **未确认**（推测 arm64） | `hdc shell param get const.product.cpu.abilist` |
 | 真机是否为 PC/2in1 形态判定 | **未确认** | 决定 `ALLOW_WRITABLE_CODE_MEMORY` 是否可申请 |
@@ -224,7 +224,7 @@ JS 引擎定制的内核能力**，把 PS2 模拟器的自研 JIT 接入这条�
 2. **确认 `ohos.permission.kernel.ALLOW_USE_JITFORT_INTERFACE` 是否存在
    可调用的接口**。若存在，索取头文件与文档；若不存在，请官方确认该权限的用途。
    真机已证实 `/proc/sys/kernel/jitfort/jitfort_mode` 存在（§2.6）。
-3. **确认 Pura X（手机形态）能否申请 `ALLOW_WRITABLE_CODE_MEMORY`**。
+3. **确认手机形态设备能否申请 `ALLOW_WRITABLE_CODE_MEMORY`**。
    文档写"当前仅平板、2in1 设备应用可申请"，需确认真机形态判定规则。
 4. **确认 W^X 策略下 RW→RX 分步映射（`mprotect`）是否被允许**。
    这是**唯一可能不依赖上述任何权限**的路径 —— 因为它全程不出现 W+X 同时有效。
@@ -308,7 +308,7 @@ hvigor 的 `SignHap` 需要 DevEco 加密后的口令串（AES-128-GCM，
 | **R2** | RW→RX 分步映射也被拒绝 | 致命 | 中 | 未验证 | **阶段 1 探针首要目标** |
 | **R3** | JIT 权限仅限 JSVM，不覆盖原生 | 致命 | 中高 | §2.4 | 需官方澄清 |
 | **R4** | 坚盾守护模式全局禁用 JIT | 产品级可用性 | 确定（用户可开） | §2.5 | 设计降级路径 + 用户提示 |
-| **R5** | W+X 权限仅限平板/2in1 | 高 | 高（Pura X 是手机） | §1.2 表格 | 不作为主路径 |
+| **R5** | W+X 权限仅限平板/2in1 | 高 | 高（目标设备为手机形态） | §1.2 表格 | 不作为主路径 |
 | **R6** | 真机 GPU Vulkan 特性不足 | 中：GS 后端降级 | 中 | 未验证 | 阶段 4 实测 |
 | **R7** | 本机 SDK(API24) 低于真机(API26) | 中：无法编译真机独有 API | 中 | §1 表 | 升级 SDK 或避免新 API |
 | **R8** | 无设备连接，全部真机结论缺失 | 高：无法验证 | 确定 | `hdc list targets` 为空 | 需用户接入设备 |

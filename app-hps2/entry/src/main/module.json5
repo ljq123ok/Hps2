@@ -11,6 +11,10 @@
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
+    // HarmonyOS 7/API 26 支持：只把 memcards 子目录捐献给系统文件管理器。
+    // 当前工程以 API 24 工具链构建，API 26 捐献字段待升级工具链后复验；
+    // 导出按钮始终提供可由文件管理器自由管理的标准 .ps2 文件。
+    "shareFiles": "$profile:share_files",
     "pages": "$profile:main_pages",
     "abilities": [
       {

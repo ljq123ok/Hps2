@@ -15,6 +15,8 @@ import { Theme } from '../common/Theme';
 export struct StatusBar {
   @Prop jitChecked: boolean = false;
   @Prop jitAvailable: boolean = false;
+  @Prop storeBuild: boolean = false;
+  @Prop executionMode: string = 'unknown';
   @Prop biosReady: boolean = false;
   @Prop gameReady: boolean = false;
   @Prop running: boolean = false;
@@ -34,8 +36,14 @@ export struct StatusBar {
 
   build() {
     Row() {
-      // JIT：三态 —— 未检测 / 可用 / 不可用
-      if (!this.jitChecked) {
+	  // 商店版把解释器作为显式执行模式，不把 JIT 策略禁用渲染成故障。
+	  if (this.storeBuild) {
+		Row({ space: 6 }) {
+		  Circle().width(8).height(8).fill(Theme.warn())
+		  Text(this.executionMode === 'interpreter' ? 'CPU: 解释器' : 'CPU: 兼容模式')
+			.fontSize(12).fontColor(Theme.warn())
+		}
+	  } else if (!this.jitChecked) {
         this.dot(false, 'JIT: 检测中')
       } else {
         Row({ space: 6 }) {

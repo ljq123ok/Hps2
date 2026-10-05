@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEVECO="/Applications/DevEco-Studio.app/Contents"
+DEVECO="${DEVECO_HOME:-/Applications/DevEco-Studio.app/Contents}"
 CMAKE_BIN="$DEVECO/sdk/default/openharmony/native/build-tools/cmake/bin/cmake"
 export PATH="$(dirname "$CMAKE_BIN"):$PATH"
 

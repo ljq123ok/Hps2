@@ -25,7 +25,7 @@ import { StatusBar } from '../components/StatusBar';
 import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
-import { runDataProbe } from '../common/DataProbe';
+import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import common from '@ohos.app.ability.common';
 
 const DOMAIN = 0x3202;
@@ -68,6 +68,17 @@ interface BootStatus {
   jitErrno: number;
   jitMessage: string;
   jitAction: string;
+  jitDiagnostics: string;
+  storeBuild: boolean;
+  executionMode: string;
+  degraded: boolean;
+  downgradeReason: string;
+  /** 游戏本体识别：当前光盘序列号（如 SLUS-12345）；未启动时为空串 */
+  discSerial: string;
+  /** 当前光盘标题；未启动或数据库无记录时为空串 */
+  discTitle: string;
+  /** 当前 ELF 的 CRC，固定 8 位十六进制（与存档文件名中的值一致） */
+  discCRC: string;
 }
 
 /** JIT 自检结果（对应 native 的 checkJit()，见 libhps2core/index.d.ts） */
@@ -78,6 +89,37 @@ interface JitCheckResult {
   errno: number;
   message: string;
   action: string;
+  prctlAttempted?: boolean;
+  prctlAccepted?: boolean;
+  prctlRet?: number;
+  prctlErrno?: number;
+  pageSize?: number;
+  memfdAttempted?: boolean;
+  memfdSupported?: boolean;
+  memfdInitialExec?: boolean;
+  memfdAliasUpdate?: boolean;
+  memfdLoop?: boolean;
+  memfdConcurrent?: boolean;
+  memfdLoopIterations?: number;
+  memfdErrno?: number;
+  memfdDetail?: string;
+  preferredStrategy?: string;
+  selinuxContext?: string;
+  runtimeValidationAttempted?: boolean;
+  runtimeValidationPassed?: boolean;
+}
+
+interface JitPrctlExperimentResult {
+  attempted: boolean;
+  accepted: boolean;
+  startupPrctlAlreadyAttempted?: boolean;
+  prctlRet: number;
+  prctlErrno: number;
+  callThreadId: number;
+  before?: JitCheckResult;
+  after?: JitCheckResult;
+  scope: string;
+  message?: string;
 }
 
 interface BiosSelection {
@@ -107,6 +149,16 @@ interface SaveSlotInfo {
 interface SaveOpResult {
   ok: boolean;
   message: string;
+}
+
+interface MemoryCardOpResult {
+  ok: boolean;
+  message: string;
+}
+
+interface MemoryCardGroupRecord {
+  cardName: string;
+  groupName: string;
 }
 
 /** BIOS 规格检查结果（对应 native 的 checkBios()） */
@@ -183,6 +235,15 @@ struct Index {
   @State saveMessage: string = '';
   @State showSavePanel: boolean = false;
 
+  // ---- PS2 记忆卡（跨模拟器可移植文件） ----
+  @State memoryCards: Array<MemoryCardInfo> = [];
+  @State memoryCardMessage: string = '';
+  @State memoryCardsDirectory: string = '';
+  @State memoryCardBusy: boolean = false;
+  @State memoryCardGroupFilter: string = '全部';
+  @State memoryCardGroupRecords: Array<MemoryCardGroupRecord> = [];
+  @State showMemoryCardManager: boolean = false;
+
   /** 悬浮球是否展开为功能列表 */
   @State overlayExpanded: boolean = false;
 
@@ -202,7 +263,23 @@ struct Index {
   @State gameFps: number = 0;
   @State busy: boolean = false;
 
-  // ---- JIT 能力状态（产品决策：不降级，不可用则阻止启动）----
+  // ---- 构建通道与执行模式 ----
+  @State storeBuild: boolean = false;
+  @State executionMode: string = 'unknown';
+  @State degraded: boolean = false;
+  @State downgradeReason: string = '';
+
+  // ---- 游戏本体识别（serial / 标题 / CRC）----
+  //
+  // 为什么需要：记忆卡按**序列号**自动归类，但序列号此前从不显示 ——
+  // 用户看到"已匹配当前游戏"却不知道匹配依据，也无法判断某张卡属于哪个游戏。
+  // 由 refreshStatus() 每 500ms 从 native 同步（native 侧有 s_info_mutex
+  // 保护，可安全轮询；未启动游戏时 native 返回空串）。
+  @State discSerial: string = '';
+  @State discTitle: string = '';
+  @State discCRC: string = '';
+
+  // 开发构建要求 JIT；商店构建按策略固定使用解释器。
   // jitChecked 区分"还没查"与"查了但不可用"：
   // 前者不该显示红色警告，后者必须明确告诉用户不能启动。
   @State jitChecked: boolean = false;
@@ -211,7 +288,9 @@ struct Index {
   @State jitAction: string = '';
   @State jitStage: string = '';
   @State jitErrno: number = 0;
+  @State jitDiagnostics: string = '{}';
   @State jitChecking: boolean = false;
+  @State jitPrctlExperimentResult: string = '';
 
   // ---- 新前端的 UI 状态 ----
   /** 页面模式：home=设置/游戏库  game=全屏游玩 */
@@ -256,6 +335,14 @@ struct Index {
     return this.dataRoot() + '/games';
   }
 
+  private memoryCardsDir(): string {
+    return this.dataRoot() + '/memcards';
+  }
+
+  private memoryCardGroupsFile(): string {
+    return this.dataRoot() + '/memory-card-groups.json';
+  }
+
   private biosSelectionFile(): string {
     return this.biosDir() + '/selected.json';
   }
@@ -283,19 +370,26 @@ struct Index {
       if (!fs.accessSync(dir)) {
         fs.mkdirSync(dir);
       }
-      hilog.info(DOMAIN, TAG, 'biosDir=%{public}s', dir);
+      hilog.info(DOMAIN, TAG, 'BIOS storage directory prepared');
       this.restoreBiosSelection();
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'mkdir bios dir failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'mkdir BIOS directory failed');
     }
     try {
       const gdir = this.gameDir();
       if (!fs.accessSync(gdir)) {
         fs.mkdirSync(gdir);
       }
-      hilog.info(DOMAIN, TAG, 'gameDir=%{public}s', gdir);
+      hilog.info(DOMAIN, TAG, 'game storage directory prepared');
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'mkdir games dir failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'mkdir games directory failed');
+    }
+    try {
+      this.memoryCardsDirectory = hps2core.memoryCardsDirectory(this.dataRoot());
+      this.loadMemoryCardGroups();
+      this.refreshMemoryCards();
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'memory card directory setup failed');
     }
     // 核心要求 <AppRoot>/resources 存在（SetResourcesDirectory 会校验），
     // 首次启动时从 HAP 的 rawfile 解压出来。
@@ -306,23 +400,6 @@ struct Index {
     // 而不是点了启动才发现失败。
     this.checkJit();
 
-    // ------------------------------------------------------------------
-    // 阶段 0 数据外置探针（临时；阶段 3 落地后移除这一段即可）。
-    //
-    // 为什么在 aboutToAppear 里跑而非做成按钮：第 3 项的"冷启动后
-    // 能否发现"必须由**每次启动**自动执行才能证明；做成手动按钮就
-    // 只能证明前台刷新。探针本身只写自建的 Hps2Probe/ 子目录，
-    // 不触碰任何真实数据。
-    // ------------------------------------------------------------------
-    try {
-      const report = runDataProbe(this.dataRoot());
-      hilog.info(DOMAIN, TAG,
-        'DATA_PROBE report root=%{public}s dir=%{public}s count=%{public}d',
-        report.publicRoot, report.probeDir, report.results.length);
-    } catch (e) {
-      const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'DATA_PROBE top-level failed: %{public}s', JSON.stringify(err));
-    }
   }
 
   /*
@@ -337,20 +414,23 @@ struct Index {
    */
   private checkJit(): void {
     this.jitChecking = true;
+    let raw: string = '';
     try {
-      const raw: string = hps2core.checkJit();
+      raw = hps2core.checkJit();
       const r = JSON.parse(raw) as JitCheckResult;
       this.jitAvailable = r.available;
       this.jitMessage = r.message;
       this.jitAction = r.action;
       this.jitStage = r.stageName;
       this.jitErrno = r.errno;
+      this.jitDiagnostics = this.formatJitDiagnostics(r);
       this.jitChecked = true;
       hilog.info(DOMAIN, TAG, 'checkJit available=%{public}d stage=%{public}s errno=%{public}d',
         r.available ? 1 : 0, r.stageName, r.errno);
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'checkJit failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'checkJit failed: %{public}s rawLength=%{public}d tail=%{public}s',
+        err.message, raw.length, raw.slice(Math.max(0, raw.length - 120)));
       // 自检本身抛异常 => 视为不可用（不静默放过）
       this.jitAvailable = false;
       this.jitChecked = true;
@@ -360,6 +440,55 @@ struct Index {
     } finally {
       this.jitChecking = false;
     }
+  }
+
+  private runJitPrctlExperiment(): void {
+    try {
+      const raw: string = hps2core.runJitPrctlExperiment();
+      const r = JSON.parse(raw) as JitPrctlExperimentResult;
+      const before = r.before;
+      const after = r.after;
+      this.jitPrctlExperimentResult = before !== undefined && after !== undefined
+        ? `thread=${r.callThreadId} A=${before.available ? 'PASS' : 'FAIL'}(${before.stageName}/${before.errno}) ` +
+          `prctl=${r.prctlRet}/${r.prctlErrno} ` +
+          `B=${after.available ? 'PASS' : 'FAIL'}(${after.stageName}/${after.errno})` +
+          (r.startupPrctlAlreadyAttempted ? ' (启动时已调用 prctl；A 不是无 prctl 基线)' : '')
+        : (r.message !== undefined ? r.message : r.scope);
+      hilog.warn(DOMAIN, TAG, 'JIT_PRCTL_AB %{public}s', this.jitPrctlExperimentResult);
+      if (after !== undefined) {
+        this.jitAvailable = after.available;
+        this.jitMessage = after.message;
+        this.jitAction = after.action;
+        this.jitStage = after.stageName;
+        this.jitErrno = after.errno;
+        this.jitDiagnostics = this.formatJitDiagnostics(after);
+        this.jitChecked = true;
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      this.jitPrctlExperimentResult = '实验调用失败：' + err.message;
+      hilog.error(DOMAIN, TAG, 'JIT_PRCTL_AB failed: %{public}s', err.message);
+    }
+  }
+
+  private formatJitDiagnostics(r: JitCheckResult): string {
+    const attempted = r.prctlAttempted === true;
+    const memfd = r.memfdAttempted === true
+      ? (r.memfdSupported === true ? 'PASS' : `FAIL errno=${r.memfdErrno || 0}`)
+      : '未运行';
+    const runtime = r.runtimeValidationAttempted === true
+      ? (r.runtimeValidationPassed === true ? 'PASS' : 'FAIL')
+      : '尚无运行期复检';
+    const lines = [
+      `prctl: ${attempted ? (r.prctlAccepted ? 'accepted' : 'rejected') : 'not attempted'} ret=${r.prctlRet || 0} errno=${r.prctlErrno || 0}`,
+      `匿名 RW→RX: ${r.available ? 'PASS' : 'FAIL'} (${r.stageName}, errno=${r.errno})`,
+      `memfd RW/RX: ${memfd}; loops=${r.memfdLoopIterations || 0}`,
+      `运行期复检: ${runtime}`,
+      `preferred=${r.preferredStrategy || 'None'}; page=${r.pageSize || 0}; build=${this.storeBuild ? 'release/store-policy' : 'debug'}`,
+      `SELinux: ${r.selinuxContext || '不可读取'}`
+    ];
+    if (r.memfdDetail) lines.push(r.memfdDetail);
+    return lines.join('\n');
   }
 
   /*
@@ -385,7 +514,7 @@ struct Index {
         return;
       }
 
-      hilog.info(DOMAIN, TAG, 'extracting resources to %{public}s', resDir);
+      hilog.info(DOMAIN, TAG, 'extracting resources');
       const mgr = getContext(this).resourceManager;
 
       const raw: Uint8Array = mgr.getRawFileContentSync('rawfile_manifest.json');
@@ -409,7 +538,7 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'extracted %{public}d/%{public}d files', ok, list.length);
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'extract resources failed: %{public}s', JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'extract resources failed');
       this.statusError = '解压资源失败：' + (err.message ? err.message : JSON.stringify(err));
     }
   }
@@ -499,13 +628,13 @@ struct Index {
       }
 
       const srcUri = uris[0];
-      hilog.info(DOMAIN, TAG, 'selected %{public}s uri=%{public}s', kind, srcUri);
+      hilog.info(DOMAIN, TAG, 'selected %{public}s document (URI redacted)', kind);
 
       const clean = srcUri.split('?')[0];
       const segs = clean.split('/');
       const fileName = decodeURIComponent(segs[segs.length - 1]) || (kind + '.bin');
       const destPath = destDir + '/' + fileName;
-      hilog.info(DOMAIN, TAG, '%{public}s dest=%{public}s', kind, destPath);
+      hilog.info(DOMAIN, TAG, '%{public}s copied into sandbox', kind);
 
       let srcFile: fs.File | null = null;
       let dstFile: fs.File | null = null;
@@ -532,7 +661,7 @@ struct Index {
       return destPath + '|' + fileName + '|' + this.humanSize(stat.size);
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'pick %{public}s failed: %{public}s', kind, JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'pick %{public}s failed', kind);
       this.statusError = '选择文件失败：' + (err.message ? err.message : JSON.stringify(err));
       this.picking = '';
       return '';
@@ -576,10 +705,10 @@ struct Index {
       } finally {
         fs.closeSync(file);
       }
-      hilog.info(DOMAIN, TAG, 'saved BIOS selection %{public}s', fileName);
+      hilog.info(DOMAIN, TAG, 'saved BIOS selection');
     } catch (e) {
       // BIOS 已复制成功；记录失败不阻止本次启动，但保留诊断日志。
-      hilog.error(DOMAIN, TAG, 'save BIOS selection failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'save BIOS selection failed');
     }
   }
 
@@ -620,7 +749,7 @@ struct Index {
       const restoredPath = this.biosDir() + '/' + fileName;
       if (!fs.accessSync(restoredPath)) {
         this.statusError = '已保存的 BIOS 文件不存在，请到设置中重新选择';
-        hilog.error(DOMAIN, TAG, 'saved BIOS missing: %{public}s', restoredPath);
+        hilog.error(DOMAIN, TAG, 'saved BIOS file is missing');
         return;
       }
 
@@ -633,9 +762,9 @@ struct Index {
       if (!fs.accessSync(marker)) {
         this.saveBiosSelection(fileName, displayName);
       }
-      hilog.info(DOMAIN, TAG, 'restored BIOS selection %{public}s', restoredPath);
+      hilog.info(DOMAIN, TAG, 'restored BIOS selection');
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'restore BIOS selection failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'restore BIOS selection failed');
     }
   }
 
@@ -675,7 +804,7 @@ struct Index {
       }
 
       const srcUri = uris[0];
-      hilog.info(DOMAIN, TAG, 'selected %{public}s uri=%{public}s', kind, srcUri);
+      hilog.info(DOMAIN, TAG, 'selected %{public}s document (URI redacted)', kind);
 
       // 持久化读权限：否则应用重启后该 URI 失效。
       // 失败不致命 —— 本次会话内仍可用，只是下次启动要重选。
@@ -686,10 +815,8 @@ struct Index {
         };
         await fileshare.persistPermission([policy]);
         hilog.info(DOMAIN, TAG, 'persistPermission ok for %{public}s', kind);
-      } catch (e) {
-        const err = e as BusinessError;
-        hilog.error(DOMAIN, TAG, 'persistPermission failed (%{public}s): %{public}s',
-          kind, err.message);
+      } catch (_e) {
+        hilog.error(DOMAIN, TAG, 'persistPermission failed for %{public}s', kind);
       }
 
       const clean = srcUri.split('?')[0];
@@ -719,7 +846,7 @@ struct Index {
       return srcUri + '|' + fileName + '|' + sizeText;
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'pick %{public}s failed: %{public}s', kind, JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'pick %{public}s failed', kind);
       this.statusError = '选择文件失败：' + (err.message ? err.message : JSON.stringify(err));
       this.picking = '';
       return '';
@@ -818,7 +945,7 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'checkBios sizeOk=%{public}d sigOk=%{public}d size=%{public}s',
         r.sizeOk ? 1 : 0, r.signatureOk ? 1 : 0, r.sizeText);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'checkBios failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'checkBios failed');
     }
   }
 
@@ -830,6 +957,10 @@ struct Index {
   private exportLog(): void {
     try {
       const extra: Array<string> = [
+		'构建通道: ' + (this.storeBuild ? 'store' : 'development'),
+		'执行模式: ' + this.executionMode,
+		'性能降级: ' + (this.degraded ? '是' : '否'),
+		'降级原因: ' + (this.downgradeReason.length > 0 ? this.downgradeReason : '(无)'),
         '启动阶段: ' + this.statusStage,
         '运行中: ' + (this.statusRunning ? '是' : '否'),
         'JIT 可用: ' + (this.jitAvailable ? '是' : '否'),
@@ -838,6 +969,11 @@ struct Index {
         '当前错误: ' + (this.statusError.length > 0 ? this.statusError : '(无)'),
         '错误类别: ' + ErrorHint.kindLabel(this.errorKind as FailKind),
         'BIOS 检查: ' + (this.biosCheckChecked ? this.biosCheckMessage : '(未检查)'),
+        // 游戏本体识别：出问题时能直接对照"哪个游戏、哪个 CRC"，
+        // 而不用让用户描述（此前排查只能靠用户口述游戏名）。
+        '游戏序列号: ' + (this.discSerial.length > 0 ? this.discSerial : '(未启动或无盘)'),
+        '游戏标题: ' + (this.discTitle.length > 0 ? this.discTitle : '(无)'),
+        '游戏 CRC: ' + (this.discCRC.length > 0 ? this.discCRC : '(无)'),
       ];
       const content = LogExport.build(this.dataRoot(), extra);
       const ctx = getContext(this) as common.UIAbilityContext;
@@ -849,7 +985,7 @@ struct Index {
       }
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'exportLog failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'exportLog failed');
       this.logExportMessage = '日志导出失败：' + err.message;
     }
   }
@@ -959,6 +1095,10 @@ struct Index {
    * 故不做"立即生效"的承诺。
    */
   private setVuThread(enabled: boolean): void {
+    if (this.storeBuild) {
+      this.vuThread = false;
+      return;
+    }
     this.vuThread = enabled;
     try {
       const ok: number = hps2core.setVuThread(enabled);
@@ -1031,8 +1171,8 @@ struct Index {
     try {
       const raw: string = hps2core.listSaveSlots();
       this.saveSlots = JSON.parse(raw) as Array<SaveSlotInfo>;
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'listSaveSlots failed: %{public}s', JSON.stringify(e));
+    } catch (_e) {
+      hilog.error(DOMAIN, TAG, 'listSaveSlots failed');
       this.saveSlots = [];
     }
   }
@@ -1049,7 +1189,7 @@ struct Index {
     } catch (e) {
       const err = e as BusinessError;
       this.saveMessage = '存档失败：' + err.message;
-      hilog.error(DOMAIN, TAG, 'saveState failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'saveState failed');
     }
   }
 
@@ -1064,7 +1204,7 @@ struct Index {
     } catch (e) {
       const err = e as BusinessError;
       this.saveMessage = '读档失败：' + err.message;
-      hilog.error(DOMAIN, TAG, 'loadState failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'loadState failed');
     }
   }
 
@@ -1079,7 +1219,7 @@ struct Index {
     } catch (e) {
       const err = e as BusinessError;
       this.saveMessage = '删除存档失败：' + err.message;
-      hilog.error(DOMAIN, TAG, 'deleteSaveState failed: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'deleteSaveState failed');
     }
   }
 
@@ -1099,6 +1239,317 @@ struct Index {
         action: () => { this.doDeleteState(slot); }
       }
     });
+  }
+
+  private currentMemoryCardGroup(): string {
+    if (this.gameName.length === 0) {
+      return '未分类';
+    }
+    return this.gameName.replace(/\s+\([^)]*\)$/, '');
+  }
+
+  private loadMemoryCardGroups(): void {
+    try {
+      const filePath = this.memoryCardGroupsFile();
+      if (!fs.accessSync(filePath)) {
+        this.memoryCardGroupRecords = [];
+        return;
+      }
+      const raw = fs.readTextSync(filePath);
+      this.memoryCardGroupRecords = JSON.parse(raw) as Array<MemoryCardGroupRecord>;
+    } catch (e) {
+      this.memoryCardGroupRecords = [];
+      hilog.error(DOMAIN, TAG, 'load memory card groups failed');
+    }
+  }
+
+  private saveMemoryCardGroups(): void {
+    try {
+      const file = fs.openSync(this.memoryCardGroupsFile(),
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, JSON.stringify(this.memoryCardGroupRecords));
+      } finally {
+        fs.closeSync(file);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'save memory card groups failed');
+    }
+  }
+
+  private groupNameForCard(cardName: string): string {
+    for (const record of this.memoryCardGroupRecords) {
+      if (record.cardName === cardName && record.groupName.length > 0) {
+        return record.groupName;
+      }
+    }
+    return '未分类';
+  }
+
+  private rememberMemoryCardGroup(cardName: string, groupName: string): void {
+    const records: Array<MemoryCardGroupRecord> = this.memoryCardGroupRecords.slice();
+    let found = false;
+    for (const record of records) {
+      if (record.cardName === cardName) {
+        record.groupName = groupName;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      records.push({ cardName: cardName, groupName: groupName });
+    }
+    this.memoryCardGroupRecords = records;
+    this.saveMemoryCardGroups();
+  }
+
+  private removeMemoryCardGroup(cardName: string): void {
+    const kept: Array<MemoryCardGroupRecord> = [];
+    for (const record of this.memoryCardGroupRecords) {
+      if (record.cardName !== cardName) {
+        kept.push(record);
+      }
+    }
+    this.memoryCardGroupRecords = kept;
+    this.saveMemoryCardGroups();
+  }
+
+  private memoryCardGroupOptions(): Array<string> {
+    const options: Array<string> = ['全部', '未分类'];
+    if (this.gameName.length > 0) {
+      const current = this.currentMemoryCardGroup();
+      if (!options.includes(current)) options.push(current);
+    }
+    for (const record of this.memoryCardGroupRecords) {
+      if (record.groupName.length > 0 && !options.includes(record.groupName)) {
+        options.push(record.groupName);
+      }
+    }
+    return options;
+  }
+
+  private visibleMemoryCards(): Array<MemoryCardInfo> {
+    if (this.memoryCardGroupFilter === '全部') {
+      return this.memoryCards;
+    }
+    return this.memoryCards.filter((card: MemoryCardInfo) =>
+      card.groupName === this.memoryCardGroupFilter);
+  }
+
+  private memoryCardDisplayName(name: string): string {
+    const lower = name.toLowerCase();
+    const suffixes = ['.ps2', '.mcr', '.mcd', '.bin', '.mc2'];
+    for (const suffix of suffixes) {
+      if (lower.endsWith(suffix)) {
+        return name.substring(0, name.length - suffix.length) + '.ps2';
+      }
+    }
+    return name + '.ps2';
+  }
+
+  private uniqueMemoryCardPath(fileName: string): string {
+    const dir = this.memoryCardsDir();
+    let candidate = dir + '/' + fileName;
+    if (!fs.accessSync(candidate)) {
+      return candidate;
+    }
+    const dot = fileName.lastIndexOf('.');
+    const stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+    const suffix = dot > 0 ? fileName.substring(dot) : '.ps2';
+    let index = 2;
+    while (fs.accessSync(candidate)) {
+      candidate = dir + '/' + stem + '-' + index.toString() + suffix;
+      index++;
+    }
+    return candidate;
+  }
+
+  private async importMemoryCard(): Promise<void> {
+    if (this.memoryCardBusy || this.statusRunning) {
+      this.memoryCardMessage = '请先停止模拟器，再导入记忆卡';
+      return;
+    }
+    this.memoryCardBusy = true;
+    this.picking = 'memory-card';
+    this.memoryCardMessage = '';
+    try {
+      const ctx = getContext();
+      const options = new picker.DocumentSelectOptions();
+      options.fileSuffixFilters = ['.ps2', '.PS2', '.mcr', '.MCR', '.mcd', '.MCD',
+        '.bin', '.BIN', '.mc2', '.MC2'];
+      const docPicker = new picker.DocumentViewPicker(ctx);
+      const uris: Array<string> = await docPicker.select(options);
+      if (!uris || uris.length === 0) {
+        return;
+      }
+
+      const srcUri = uris[0];
+      const clean = srcUri.split('?')[0];
+      const segs = clean.split('/');
+      const sourceName = decodeURIComponent(segs[segs.length - 1]) || 'memory-card.ps2';
+      const fileName = this.memoryCardDisplayName(sourceName);
+      const destPath = this.uniqueMemoryCardPath(fileName);
+      let srcFile: fs.File | null = null;
+      let dstFile: fs.File | null = null;
+      try {
+        srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
+        dstFile = fs.openSync(destPath,
+          fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        fs.copyFileSync(srcFile.fd, dstFile.fd);
+      } finally {
+        if (srcFile !== null) fs.closeSync(srcFile);
+        if (dstFile !== null) fs.closeSync(dstFile);
+      }
+
+      this.refreshMemoryCards();
+      const imported = this.memoryCards.some((card: MemoryCardInfo) => card.name === fileName);
+      if (!imported) {
+        if (fs.accessSync(destPath)) fs.unlinkSync(destPath);
+        this.memoryCardMessage = '文件不是可识别的 PS2 记忆卡，已撤销导入';
+        return;
+      }
+      this.rememberMemoryCardGroup(fileName, this.currentMemoryCardGroup());
+      this.refreshMemoryCards();
+      this.memoryCardMessage = '已导入 ' + fileName + '；文件管理器可继续复制或移动它';
+    } catch (e) {
+      const err = e as BusinessError;
+      this.memoryCardMessage = '导入记忆卡失败：' + (err.message ? err.message : JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'import memory card failed');
+    } finally {
+      this.picking = '';
+      this.memoryCardBusy = false;
+    }
+  }
+
+  private async exportMemoryCard(name: string): Promise<void> {
+    if (this.memoryCardBusy || this.statusRunning) {
+      this.memoryCardMessage = '请先停止模拟器，再导出记忆卡';
+      return;
+    }
+    const sourcePath = this.memoryCardsDir() + '/' + name;
+    if (!fs.accessSync(sourcePath)) {
+      this.memoryCardMessage = '记忆卡文件已被文件管理器移动或删除，请刷新列表';
+      this.refreshMemoryCards();
+      return;
+    }
+    this.memoryCardBusy = true;
+    try {
+      const options = new picker.DocumentSaveOptions();
+      options.newFileNames = [name];
+      options.fileSuffixChoices = ['PS2 记忆卡|.ps2'];
+      const docPicker = new picker.DocumentViewPicker(getContext());
+      const uris: Array<string> = await docPicker.save(options);
+      if (!uris || uris.length === 0) return;
+      const destUri = uris[0];
+
+      let srcFile: fs.File | null = null;
+      let dstFile: fs.File | null = null;
+      try {
+        srcFile = fs.openSync(sourcePath, fs.OpenMode.READ_ONLY);
+        dstFile = fs.openSync(destUri,
+          fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        fs.copyFileSync(srcFile.fd, dstFile.fd);
+      } finally {
+        if (srcFile !== null) fs.closeSync(srcFile);
+        if (dstFile !== null) fs.closeSync(dstFile);
+      }
+      this.memoryCardMessage = '已导出 ' + name + '；这是可供其他模拟器读取的原始记忆卡文件';
+    } catch (e) {
+      const err = e as BusinessError;
+      this.memoryCardMessage = '导出记忆卡失败：' + (err.message ? err.message : JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'export memory card failed');
+    } finally {
+      this.memoryCardBusy = false;
+    }
+  }
+
+  private createMemoryCard(sizeMb: number): void {
+    if (this.memoryCardBusy || this.statusRunning) {
+      this.memoryCardMessage = '请先停止模拟器，再新建记忆卡';
+      return;
+    }
+    const base = 'Mcd001';
+    let name = base + '.ps2';
+    let index = 2;
+    while (this.memoryCards.some((card: MemoryCardInfo) => card.name === name)) {
+      name = base + '-' + index.toString() + '.ps2';
+      index++;
+    }
+    try {
+      const raw: string = hps2core.createMemoryCard(this.dataRoot(), name, sizeMb);
+      const result = JSON.parse(raw) as MemoryCardOpResult;
+      this.memoryCardMessage = result.message;
+      if (result.ok) {
+        this.rememberMemoryCardGroup(name, this.currentMemoryCardGroup());
+      }
+      this.refreshMemoryCards();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.memoryCardMessage = '新建记忆卡失败：' + (err.message ? err.message : JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'create memory card failed');
+    }
+  }
+
+  private confirmDeleteMemoryCard(name: string): void {
+    AlertDialog.show({
+      title: '删除 PS2 记忆卡',
+      message: `确定删除 ${name} 吗？文件管理器中的同一文件也会消失。`,
+      autoCancel: true,
+      primaryButton: { value: '取消', action: () => {} },
+      secondaryButton: {
+        value: '删除',
+        fontColor: Theme.err(),
+        action: () => {
+          try {
+            const raw: string = hps2core.deleteMemoryCard(this.dataRoot(), name);
+            const result = JSON.parse(raw) as MemoryCardOpResult;
+            this.memoryCardMessage = result.message;
+            if (result.ok) {
+              this.removeMemoryCardGroup(name);
+            }
+            this.refreshMemoryCards();
+          } catch (e) {
+            const err = e as BusinessError;
+            this.memoryCardMessage = '删除记忆卡失败：' + (err.message ? err.message : JSON.stringify(e));
+          }
+        }
+      }
+    });
+  }
+
+  private assignMemoryCardToCurrentGame(name: string): void {
+    if (this.gameName.length === 0) {
+      this.memoryCardMessage = '请先在首页选择游戏，再进行分组';
+      return;
+    }
+    this.rememberMemoryCardGroup(name, this.currentMemoryCardGroup());
+    this.refreshMemoryCards();
+    this.memoryCardMessage = '已归类到“' + this.currentMemoryCardGroup() + '”';
+  }
+
+  private refreshMemoryCards(): void {
+    try {
+      const dir: string = hps2core.memoryCardsDirectory(this.dataRoot());
+      this.memoryCardsDirectory = dir;
+      const raw: string = hps2core.listMemoryCards(this.dataRoot(), this.gamePath);
+      const listed = JSON.parse(raw) as Array<MemoryCardInfo>;
+      this.memoryCards = listed.map((card: MemoryCardInfo) => {
+        const storedGroup = this.groupNameForCard(card.name);
+        // 只有记忆卡目录中确实存在当前 ISO 的序列号时才自动归类；
+        // 空卡、未格式化卡或无法识别序列号的卡继续保持人工管理。
+        if (storedGroup === '未分类' && card.matchedGameSerial.length > 0 &&
+            this.gameName.length > 0) {
+          this.rememberMemoryCardGroup(card.name, this.currentMemoryCardGroup());
+          card.groupName = this.currentMemoryCardGroup();
+        } else {
+          card.groupName = storedGroup;
+        }
+        return card;
+      });
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'list memory cards failed');
+      this.memoryCards = [];
+    }
   }
 
   /** 开始一个长任务：显示加载提示。 */
@@ -1136,10 +1587,12 @@ struct Index {
       this.gamePath = destPath;
       this.gameName = fileName + ' (' + sizeText + ')';
       this.saveGameSelection(destPath, fileName);
-      hilog.info(DOMAIN, TAG, 'game ready at sandbox: %{public}s', destPath);
+      // 选择 ISO 后立即用其真实序列号重扫记忆卡，命中的存档会自动归类。
+      this.refreshMemoryCards();
+      hilog.info(DOMAIN, TAG, 'game ready in sandbox');
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'copy game failed: %{public}s', JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'copy game failed code=%{public}d', err.code);
       this.statusError = '复制游戏文件失败：' + (err.message ? err.message : JSON.stringify(err));
       this.gamePath = '';
       this.gameName = '';
@@ -1162,7 +1615,7 @@ struct Index {
         fs.closeSync(file);
       }
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'saveGameSelection failed: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'saveGameSelection failed');
     }
   }
 
@@ -1196,10 +1649,9 @@ struct Index {
       return;
     }
 
-    // JIT 硬门禁（UI 侧前置）：不可用时不发起启动。
-    // native 侧还有一道权威门禁，这里是为了给出即时、明确的反馈。
-    // 刻意**不做降级**：不提供"用解释器模式继续"之类的选项。
-    if (this.jitChecked && !this.jitAvailable) {
+    // 只有开发构建把 JIT 自检作为启动门禁。商店构建的
+    // policy-disabled 是预期状态，应继续进入解释器兼容模式。
+    if (!this.storeBuild && this.jitChecked && !this.jitAvailable) {
       this.setError(`JIT 不可用，已拒绝启动。${this.jitMessage}`);
       return;
     }
@@ -1242,7 +1694,7 @@ struct Index {
       this.startPolling();
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'startBios exception: %{public}s', err.message);
+      hilog.error(DOMAIN, TAG, 'startBios exception');
       this.statusError = '调用核心失败：' + err.message;
     }
   }
@@ -1268,6 +1720,10 @@ struct Index {
     try {
       const raw: string = hps2core.getStatus();
       const st = JSON.parse(raw) as BootStatus;
+	  this.storeBuild = st.storeBuild === true;
+	  this.executionMode = st.executionMode || 'unknown';
+	  this.degraded = st.degraded === true;
+	  this.downgradeReason = st.downgradeReason || '';
       if (st.jitStage) {
         this.jitChecked = true;
         this.jitAvailable = st.jitAvailable;
@@ -1275,6 +1731,12 @@ struct Index {
         this.jitAction = st.jitAction;
         this.jitStage = st.jitStage;
         this.jitErrno = st.jitErrno;
+        try {
+          const diag = JSON.parse(st.jitDiagnostics) as JitCheckResult;
+          this.jitDiagnostics = this.formatJitDiagnostics(diag);
+        } catch (e) {
+          this.jitDiagnostics = st.jitDiagnostics || '{}';
+        }
       }
     } catch (e) {
       // 状态解析失败不刷屏
@@ -1322,10 +1784,19 @@ struct Index {
     try {
       const raw: string = hps2core.getStatus();
       const st = JSON.parse(raw) as BootStatus;
+	  this.storeBuild = st.storeBuild === true;
+	  this.executionMode = st.executionMode || 'unknown';
+	  this.degraded = st.degraded === true;
+	  this.downgradeReason = st.downgradeReason || '';
       this.statusStage = st.stageName;
       this.statusRunning = st.running;
       this.gamePaused = st.paused === true;
       this.gameFps = st.fps > 0 ? st.fps : 0;
+      // 游戏本体识别：native 未启动时给空串，这里原样同步即可
+      // （不清空为 undefined，避免 ArkTS 把 undefined 当字符串用）。
+      this.discSerial = st.discSerial || '';
+      this.discTitle = st.discTitle || '';
+      this.discCRC = st.discCRC || '';
       // native 上报的错误也走分类，保证建议一致
       if (st.error && st.error.length > 0) {
         this.setError(st.error);
@@ -1634,11 +2105,20 @@ struct Index {
             jitAction: this.jitAction,
             jitStage: this.jitStage,
             jitErrno: this.jitErrno,
+            jitDiagnostics: this.jitDiagnostics,
+			storeBuild: this.storeBuild,
+			executionMode: this.executionMode,
+			degraded: this.degraded,
+			discSerial: this.discSerial,
+			discTitle: this.discTitle,
+			discCRC: this.discCRC,
             onPickBios: () => { this.chooseBios(); },
             onPickGame: () => { this.chooseGame(); },
             onClearGame: () => { this.clearGame(); },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
+            onJitPrctlExperiment: () => { this.runJitPrctlExperiment(); },
+            jitPrctlExperimentResult: this.jitPrctlExperimentResult,
             onExportLog: () => { this.exportLog(); },
             onOpenSettings: () => {
               this.showSettings = true;
@@ -1814,6 +2294,30 @@ struct Index {
             Text('整机状态快照，可随时存读；与游戏内的记忆卡存档互不影响。')
               .fontSize(11).fontColor(Theme.textDim()).width('100%')
 
+            // 存档归属提示：即时存档的文件名含序列号与 CRC（上游格式
+            // "<serial> (<CRC8>).NN.p2s"），即**按游戏分开存放**。
+            // 用户在多游戏间切换时，若不知道当前槽属于哪个游戏，
+            // 容易误以为"存档丢了"。这里显式标出归属。
+            if (this.discSerial.length > 0) {
+              Row({ space: 6 }) {
+                Text('当前游戏')
+                  .fontSize(10).fontColor(Theme.textDim())
+                Text(this.discTitle.length > 0 ? this.discTitle : this.discSerial)
+                  .fontSize(11).fontColor(Theme.accentHi())
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                Text(this.discSerial)
+                  .fontSize(10).fontColor(Theme.textDim())
+              }
+              .width('100%')
+              .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+              .backgroundColor(Theme.bgCardHi())
+              .borderRadius(Theme.radiusSm)
+            } else {
+              Text('尚未启动游戏 —— 存档槽按游戏分开存放，请先启动后再存读。')
+                .fontSize(10).fontColor(Theme.warn()).width('100%')
+            }
+
             if (this.saveMessage.length > 0) {
               Text(this.saveMessage)
                 .fontSize(12).fontColor(Theme.accentHi()).width('100%')
@@ -1933,12 +2437,41 @@ struct Index {
                 .backgroundColor(Theme.bgCardHi())
                 .fontColor(Theme.textPri())
                 .borderRadius(15)
-                .onClick(() => { this.showSettings = false; })
+                .onClick(() => { this.showSettings = false; this.showMemoryCardManager = false; })
             }
             .width('100%')
 
           Scroll() {
             Column({ space: Theme.gap }) {
+              // ---- 存档管理入口 ----
+              Column({ space: 8 }) {
+                Row() {
+                  Column({ space: 2 }) {
+                    Text('存档管理').fontSize(14).fontColor(Theme.textPri())
+                    Text('PS2 记忆卡按游戏分类；即时存档仍在游戏内管理')
+                      .fontSize(11).fontColor(Theme.textDim())
+                  }
+                  .layoutWeight(1)
+                  .alignItems(HorizontalAlign.Start)
+                  Button('打开')
+                    .height(34).fontSize(12)
+                    .backgroundColor(Theme.accent())
+                    .fontColor('#FFFFFF')
+                    .borderRadius(Theme.radiusSm)
+                    .onClick(() => {
+                      this.memoryCardGroupFilter = '全部';
+                      this.showMemoryCardManager = true;
+                      this.refreshMemoryCards();
+                    })
+                }
+                .width('100%')
+              }
+              .width('100%')
+              .padding(Theme.pad)
+              .backgroundColor(Theme.bgCard())
+              .borderRadius(Theme.radius)
+              .border({ width: 1, color: Theme.border() })
+
               // ---- BIOS ----
               Column({ space: 10 }) {
                 Text('BIOS').fontSize(14).fontColor(Theme.textPri()).width('100%')
@@ -2068,15 +2601,17 @@ struct Index {
               Row() {
                 Column({ space: 2 }) {
                   Text('MTVU（VU1 独立线程）').fontSize(13).fontColor(Theme.textSec())
-                  Text('把 VU1 移到独立线程，可提升帧率；个别游戏可能不兼容')
+				  Text(this.storeBuild ? '商店兼容模式使用 VU1 解释器，MTVU 不可用' :
+					'把 VU1 移到独立线程，可提升帧率；个别游戏可能不兼容')
                     .fontSize(10).fontColor(Theme.textDim())
-                  Text('下次启动游戏生效')
+				  Text(this.storeBuild ? '已按商店策略关闭' : '下次启动游戏生效')
                     .fontSize(10).fontColor(Theme.warn())
                 }
                 .layoutWeight(1)
                 .alignItems(HorizontalAlign.Start)
 
-                Toggle({ type: ToggleType.Switch, isOn: this.vuThread })
+				Toggle({ type: ToggleType.Switch, isOn: this.storeBuild ? false : this.vuThread })
+				  .enabled(!this.storeBuild)
                   .onChange((on: boolean) => { this.setVuThread(on); })
               }
               .width('100%')
@@ -2127,7 +2662,84 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .backgroundColor(Theme.overlayScrim())
-        .onClick(() => { this.showSettings = false; })
+        .onClick(() => { this.showSettings = false; this.showMemoryCardManager = false; })
+      }
+
+      // ---- 独立存档管理页 ----
+      // 放在设置入口之上，避免把记忆卡操作继续堆在首页。
+      if (this.showMemoryCardManager) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Button('返回')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.showMemoryCardManager = false; })
+              Text('存档管理')
+                .fontSize(17).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+                .layoutWeight(1)
+                .textAlign(TextAlign.Center)
+              Button('刷新')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.refreshMemoryCards(); })
+            }
+            .width('100%')
+
+            Text('PS2 专用记忆卡，可跨模拟器读写；即时存档不在这里。')
+              .fontSize(11).fontColor(Theme.textDim()).width('100%')
+
+            Scroll() {
+              Column({ space: Theme.gap }) {
+                Row({ space: 6 }) {
+                  ForEach(this.memoryCardGroupOptions(), (group: string) => {
+                    Button(group)
+                      .height(32).fontSize(11)
+                      .backgroundColor(this.memoryCardGroupFilter === group ?
+                        Theme.accent() : Theme.bgCardHi())
+                      .fontColor(this.memoryCardGroupFilter === group ? '#FFFFFF' : Theme.textPri())
+                      .borderRadius(16)
+                      .onClick(() => { this.memoryCardGroupFilter = group; })
+                  }, (group: string) => group)
+                }
+                .width('100%')
+
+                MemoryCardPanel({
+                  cards: this.visibleMemoryCards(),
+                  message: this.memoryCardMessage,
+                  directory: this.memoryCardsDirectory,
+                  busy: this.memoryCardBusy,
+                  currentGame: this.gameName.length > 0 ? this.currentMemoryCardGroup() : '',
+                  onRefresh: () => { this.refreshMemoryCards(); },
+                  onImport: () => { this.importMemoryCard(); },
+                  onCreate: (sizeMb: number) => { this.createMemoryCard(sizeMb); },
+                  onExport: (name: string) => { this.exportMemoryCard(name); },
+                  onDelete: (name: string) => { this.confirmDeleteMemoryCard(name); },
+                  onAssignCurrentGame: (name: string) => { this.assignMemoryCardToCurrentGame(name); }
+                })
+              }
+              .width('100%')
+              .padding({ bottom: Theme.pad })
+            }
+            .layoutWeight(1)
+            .scrollBar(BarState.Off)
+          }
+          .width('88%')
+          .height('86%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase())
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi() })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        .onClick(() => { this.showMemoryCardManager = false; })
       }
     }
     .width('100%')

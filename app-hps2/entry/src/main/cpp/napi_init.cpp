@@ -39,6 +39,13 @@
 #include <functional>
 #include <condition_variable>
 #include <vector>
+#include <algorithm>
+#include <cstdio>
+#include <cstdint>
+#include <cctype>
+#include <cstring>
+#include <regex>
+#include <set>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -55,6 +62,7 @@
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
+#include "common/HostSys.h"
 
 #include <native_window/external_window.h>
 
@@ -68,6 +76,7 @@
 
 #include "CDVD/CDVD.h"
 #include "Config.h"
+#include "GameList.h"
 #include "Host.h"
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
@@ -77,8 +86,15 @@
 #include "VMManager.h"
 #include "Input/InputManager.h"
 #include "GS/GS.h"
+#include "SIO/Memcard/MemoryCardFile.h"
 
-#include "hps2_jitcheck.h"   // JIT 能力自检（启动前 + 运行期复检，不降级）
+#include "hps2_jitcheck.h"   // 开发构建的 JIT 能力自检
+
+#if defined(HPS2_STORE_BUILD) && HPS2_STORE_BUILD
+constexpr bool kStoreBuild = true;
+#else
+constexpr bool kStoreBuild = false;
+#endif
 
 // ---------------------------------------------------------------------------
 // 渲染表面共享状态（声明见 hps2_surface.h）
@@ -124,6 +140,24 @@ const char* StageName(BootStage s) {
 
 std::atomic<int> g_stage{static_cast<int>(BootStage::kIdle)};
 std::atomic<bool> g_vm_running{false};
+
+enum class ExecutionMode : int {
+	kUnknown = 0,
+	kJit,
+	kInterpreter,
+};
+
+const char* ExecutionModeName(ExecutionMode mode) {
+	switch (mode) {
+		case ExecutionMode::kUnknown:     return "unknown";
+		case ExecutionMode::kJit:         return "jit";
+		case ExecutionMode::kInterpreter: return "interpreter";
+	}
+	return "unknown";
+}
+
+std::atomic<int> g_execution_mode{static_cast<int>(
+	kStoreBuild ? ExecutionMode::kInterpreter : ExecutionMode::kUnknown)};
 
 // ---------------------------------------------------------------------------
 // VM 线程与外部线程的握手（用于安全地改 VM 状态，例如读档）
@@ -177,10 +211,8 @@ std::string s_bios_dir;
 std::string s_game_path;   // 空 = 只启动 BIOS；非空 = 启动该游戏镜像
 
 // ---------------------------------------------------------------------------
-// JIT 能力状态（自检 + 运行期复检）
-//
-// 产品决策：**不做降级**。JIT 不可用时阻止启动并给出可操作建议，
-// 而不是让 VMManager 静默切到解释器跑幻灯片。
+// 开发构建使用 JIT 自检作为启动门禁；商店构建不探测、不申请
+// 可执行内存，固定进入解释器兼容模式。两者共用这组字段向 UI 报告策略。
 // ---------------------------------------------------------------------------
 std::atomic<bool> g_jit_available{false};
 std::mutex g_jit_mutex;
@@ -188,6 +220,7 @@ std::string g_jit_message;   // 面向用户的说明
 std::string g_jit_action;    // 面向用户的操作建议
 std::string g_jit_stage;     // 失败阶段名
 int g_jit_errno = 0;
+std::string g_jit_diagnostics_json = "{}";
 
 void SetStage(BootStage s) {
 	g_stage.store(static_cast<int>(s));
@@ -212,6 +245,7 @@ void SetJitState(const Hps2JitCheck::Result& r) {
 		g_jit_action = r.action;
 		g_jit_stage = r.stage_name;
 		g_jit_errno = r.errno_value;
+		g_jit_diagnostics_json = Hps2JitCheck::ToJson(r);
 	}
 	g_jit_available.store(r.available);
 }
@@ -225,7 +259,60 @@ std::string GetJitMessage() {
 // 启动前自检。这是唯一的"能不能启动"判据。
 // 返回 false 时已把原因写入 JIT 状态与 last_error，UI 可直接展示。
 bool RunJitStartupCheck() {
+	if (kStoreBuild) {
+		// ---------------------------------------------------------------
+		// 【关键实验】商店版此前**直接短路**返回"策略关闭 JIT"，从未实测过
+		// release 签名下到底什么被拒。审查 SELinux 策略源码后发现一处
+		// 此前被忽略的不对称：
+		//
+		//   domain.te:354  neverallow {... -normal_hap ...} self:xpm { exec_no_sign };
+		//      ← normal_hap **被豁免**：允许执行「未签名」代码
+		//   domain.te:355  neverallow {... }  self:xpm { exec_anon_mem };
+		//      ← normal_hap **未被豁免**：不允许「匿名」可执行内存
+		//
+		// 之前的结论（release 无 JIT）是从匿名映射的 mprotect 返回 EINVAL
+		// 推出的，但那只证明了「匿名」被拒。**文件映射的可执行内存
+		// 走的是另一条策略路径，从未测过。**
+		//
+		// 因此这里真的跑一次文件映射探针并如实记录结果：
+		// 若任一形态可执行，商店版就有机会恢复真 JIT（含块缓存与重编译器），
+		// 帧率问题将从"抠 17 倍解释器"变成"直接可用"。
+		//
+		// 注意：本探针只报告，**不改变执行策略** —— 是否真的启用 JIT
+		// 需要真机证据确认后再单独决策（避免"探针成功但核心用不了"的误判）。
+		// ---------------------------------------------------------------
+		const Hps2JitCheck::FileProbeResult fp =
+			Hps2JitCheck::RunFileBackedJitProbe(EmuFolders::AppRoot.empty() ? s_data_root : EmuFolders::AppRoot);
+
+		LOGW("FILEJIT_PROBE: any=%{public}d b=%{public}d c=%{public}d d=%{public}d "
+		     "errno_b=%{public}d errno_c=%{public}d errno_d=%{public}d",
+			fp.any_success ? 1 : 0, fp.b_success ? 1 : 0, fp.c_success ? 1 : 0, fp.d_success ? 1 : 0,
+			fp.b_errno, fp.c_errno, fp.d_errno);
+		LOGW("FILEJIT_PROBE_DETAIL: %{public}s", fp.detail.c_str());
+
+		Hps2JitCheck::Result r;
+		r.available = false;
+		r.stage = Hps2JitCheck::Stage::kPolicyDisabled;
+		r.stage_name = Hps2JitCheck::StageName(r.stage);
+		r.message = fp.any_success
+			? "商店版策略关闭 JIT，但文件映射可执行内存探针**成功**（待决策）"
+			: "商店版已按发行策略关闭 JIT（文件映射探针同样不可执行）";
+		r.action = "当前使用解释器兼容模式，游戏性能会明显低于 JIT 开发版。";
+		SetJitState(r);
+		LOGW("JIT_POLICY=disabled build=store execution=interpreter file_probe_any=%{public}d",
+			fp.any_success ? 1 : 0);
+		return true;
+	}
+
+	Hps2JitCheck::InitializeHarmonyJit();
 	const Hps2JitCheck::Result r = Hps2JitCheck::RunStartupCheck();
+	LOGI("JIT_STARTUP_DIAGNOSTICS prctl_attempted=%{public}d prctl_accepted=%{public}d "
+		"prctl_ret=%{public}d prctl_errno=%{public}d page_size=%{public}zu "
+		"strategy=%{public}s selinux=%{public}s memfd=%{public}d/%{public}d/%{public}d/%{public}d",
+		r.prctl_attempted ? 1 : 0, r.prctl_accepted ? 1 : 0, r.prctl_ret,
+		r.prctl_errno, r.page_size, r.strategy.c_str(), r.selinux_context.c_str(),
+		r.memfd_initial_exec ? 1 : 0, r.memfd_alias_update ? 1 : 0,
+		r.memfd_loop ? 1 : 0, r.memfd_concurrent ? 1 : 0);
 	SetJitState(r);
 
 	if (r.available) {
@@ -235,27 +322,6 @@ bool RunJitStartupCheck() {
 
 	LOGE("JIT_SELFCHECK=unavailable stage=%{public}s errno=%{public}d msg=%{public}s",
 		r.stage_name.c_str(), r.errno_value, r.message.c_str());
-
-	// ---------------------------------------------------------------------
-	// 【临时验证分支】降级模式：JIT 不可用时**不阻止启动**，放行到解释器路径。
-	//
-	// 目的：验证"商店包无法使用 JIT 时自动降级"这条路能否真正跑起来 ——
-	// 包括两个此前未验证的环节：
-	//   1) 环境变量 HPS2_FORCE_INTERP 能否让 Memory.cpp 跳过 code memory 分配
-	//   2) 跳过之后 CPUThreadInitialize 是否还能成功、VM 能否启动
-	//
-	// 触发条件：FORCE_INTERP 标记文件存在（由 InitializeConfig 设置环境变量）。
-	//
-	// 注意：这是**验证用**分支。正式的商店包会改为编译期宏
-	// （HPS2_STORE_BUILD），且必须把降级状态**明确告知用户**，
-	// 而不是像上游那样静默切换（上游只打一行 Warning）。
-	// ---------------------------------------------------------------------
-	if (std::getenv("HPS2_FORCE_INTERP") != nullptr) {
-		LOGW("JIT unavailable, but HPS2_FORCE_INTERP is set -> "
-		     "NOT blocking boot; falling through to interpreter path (VERIFICATION MODE)");
-		SetJitState(r);
-		return true;
-	}
 
 	SetError("JIT 不可用（阶段 " + r.stage_name + "，errno=" +
 		std::to_string(r.errno_value) + "）：" + r.message + " " + r.action);
@@ -283,6 +349,16 @@ bool RevalidateJitAlive() {
 	}
 
 	Hps2JitCheck::Result r = Hps2JitCheck::RevalidateAlive();
+	if (!r.available) {
+		const bool recovery_accepted = Hps2JitCheck::TryHarmonyJitRecovery();
+		r = Hps2JitCheck::RevalidateAlive();
+		LOGW("JIT_RECOVERY prctl_ret=%{public}d errno=%{public}d accepted=%{public}d "
+			"revalidate=%{public}d stage=%{public}s probe_errno=%{public}d",
+			r.recovery_ret, r.recovery_errno, recovery_accepted ? 1 : 0,
+			r.available ? 1 : 0, r.stage_name.c_str(), r.errno_value);
+		if (r.available)
+			LOGW("JIT_RECOVERED_AFTER_PRCTL");
+	}
 	SetJitState(r);
 
 	if (!r.available) {
@@ -294,36 +370,6 @@ bool RevalidateJitAlive() {
 
 bool InitializeConfig() {
 	LOGI("BOOT_SUB=0 InitializeConfig enter (re-entry check)");
-	// ---------------------------------------------------------------------
-	// 【临时验证开关】强制解释器模式
-	//
-	// 目的：验证"商店包无法使用 JIT 时自动降级"这条路径**能否真正跑起来**。
-	//
-	// 背景：非 Apple 平台在 code memory 分配失败时直接 return false
-	// （Memory.cpp），导致 CPUThreadInitialize 失败、VM 根本起不来 ——
-	// 上游那段"切解释器"的降级逻辑（VMManager::UpdateCPUImplementations）
-	// 因此永远走不到。所以在改设计前必须先确认降级路径的可达性。
-	//
-	// 真机无法通过 hdc 给应用域传环境变量，故在此显式设置。
-	// 待验证结论确定后，本开关会被正式的编译期宏（HPS2_STORE_BUILD）替代。
-	//
-	// 注意：这是"验证用"的开关注入，不是最终设计。
-	// ---------------------------------------------------------------------
-	// 触发方式用**文件标记**而非环境变量：应用域无法通过 hdc 接收环境变量，
-	// 而文件可以在设备上随时创建/删除，无需重新构建即可反复切换测试。
-	//
-	// 用法：
-	//   开启  hdc shell "touch /data/storage/el2/base/haps/entry/files/FORCE_INTERP"
-	//   关闭  hdc shell "rm /data/storage/el2/base/haps/entry/files/FORCE_INTERP"
-	{
-		const std::string marker = Path::Combine(s_data_root, "FORCE_INTERP");
-		if (FileSystem::FileExists(marker.c_str()))
-		{
-			setenv("HPS2_FORCE_INTERP", "1", 1);
-			LOGI("TEST: FORCE_INTERP marker present -> interpreter-only boot path");
-		}
-	}
-
 	EmuFolders::AppRoot = s_data_root;
 	EmuFolders::DataRoot = s_data_root;
 
@@ -377,9 +423,9 @@ bool InitializeConfig() {
 	{
 		const std::string log_path = Path::Combine(s_data_root, "emulog.txt");
 		if (Log::SetFileOutputLevel(LOGLEVEL_TRACE, log_path))
-			LOGI("core log -> %{public}s", log_path.c_str());
+			LOGI("core emulation log initialized");
 		else
-			LOGW("failed to open core log at %{public}s", log_path.c_str());
+			LOGW("failed to open core emulation log");
 	}
 
 	SetStage(BootStage::kSettingsLayer);
@@ -483,9 +529,10 @@ bool InitializeConfig() {
 	// 注意：MTVU 只在**启动游戏时**生效（vu1Thread 在 VU1 重编译器
 	// 初始化时创建一次，运行期无法可靠切换），UI 已如此说明。
 	{
-		const bool vu_thread = Hps2Video::GetVuThread();
+		const bool vu_thread = kStoreBuild ? false : Hps2Video::GetVuThread();
 		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", vu_thread);
-		LOGI("MTVU setting at boot: %{public}d", vu_thread ? 1 : 0);
+		LOGI("MTVU setting at boot: %{public}d (store_policy=%{public}d)",
+			vu_thread ? 1 : 0, kStoreBuild ? 1 : 0);
 	}
 
 	LOGI("BOOT_SUB=4 about to LoadStartupSettings");
@@ -524,7 +571,7 @@ void VMThreadMain() {
 		params.filename = s_game_path;
 		params.source_type = CDVD_SourceType::Iso;
 		params.elf_override.clear();
-		LOGI("booting game image: %{public}s", s_game_path.c_str());
+	LOGI("booting game image");
 	}
 	else
 	{
@@ -542,19 +589,10 @@ void VMThreadMain() {
 	LOGI("GS initialized with upscale emu=%{public}f gs=%{public}f",
 		EmuConfig.GS.UpscaleMultiplier, GSConfig.UpscaleMultiplier);
 
-	// ---------------------------------------------------------------------
-	// 重编译器断言（拦截上游的"静默降级到解释器"）
-	//
-	// 上游 VMManager::UpdateCPUImplementations()（VMManager.cpp:2957）在
-	// HasCodeMemory() 为假时会**不报错地**把 Cpu 指向 intCpu 解释器：
-	//     Cpu = CHECK_EEREC ? &recCpu : &intCpu;
-	// 这会让 VM "成功启动"却以解释器运行 —— 用户看到的是能跑但极慢。
-	// 产品决策不降级，因此这里把该情况升级为**启动失败**。
-	//
-	// 判据用符号身份比较（Cpu == &intCpu），而非配置项：
-	// 配置项只反映"用户想要什么"，符号身份才反映"实际选了谁"。
-	// ---------------------------------------------------------------------
-	if (!SysMemory::HasCodeMemory() || Cpu == &intCpu) {
+	// 开发构建必须真正选中重编译器；商店构建则反过来必须确认
+	// 没有可执行代码内存且 EE 实际选中解释器。两条路径都不允许静默切换。
+	const bool using_interpreter = !SysMemory::HasCodeMemory() && Cpu == &intCpu;
+	if (!kStoreBuild && (!SysMemory::HasCodeMemory() || Cpu == &intCpu)) {
 		SetError("JIT 未生效：核心已静默退回解释器（PS2 模拟在解释器下不可用，已拒绝启动）");
 		LOGE("JIT_ASSERT=failed has_code_memory=%{public}d cpu_is_interp=%{public}d",
 			SysMemory::HasCodeMemory() ? 1 : 0, (Cpu == &intCpu) ? 1 : 0);
@@ -574,9 +612,23 @@ void VMThreadMain() {
 		SetStage(BootStage::kFailed);
 		return;
 	}
+	if (kStoreBuild && !using_interpreter) {
+		SetError("商店版执行策略校验失败：核心未使用解释器");
+		LOGE("EXECUTION_POLICY=failed build=store has_code_memory=%{public}d cpu_is_interp=%{public}d",
+			SysMemory::HasCodeMemory() ? 1 : 0, (Cpu == &intCpu) ? 1 : 0);
+		g_vm_running.store(false);
+		VMManager::Internal::CPUThreadShutdown();
+		SetStage(BootStage::kFailed);
+		return;
+	}
 
-	LOGI("JIT_ASSERT=passed cpu_is_recompiler=%{public}d",
-		(Cpu == &recCpu) ? 1 : 0);
+	const ExecutionMode execution_mode = kStoreBuild ? ExecutionMode::kInterpreter : ExecutionMode::kJit;
+	g_execution_mode.store(static_cast<int>(execution_mode));
+	// Keep this at warning level: release/internal-testing packages filter INFO,
+	// and this is the authoritative field diagnostic for the no-JIT policy.
+	LOGW("EXECUTION_MODE=%{public}s build=%{public}s has_code_memory=%{public}d",
+		ExecutionModeName(execution_mode), kStoreBuild ? "store" : "development",
+		SysMemory::HasCodeMemory() ? 1 : 0);
 
 	// ---------------------------------------------------------------------
 	// 虚拟手柄的自动按键映射 —— 必须在这里做，不能更早。
@@ -785,7 +837,7 @@ void VMThreadMain() {
 			}
 		}
 
-		LOGI("BACKEND: code_generation=%{public}d ee_rec=%{public}d iop_rec=%{public}d "
+		LOGW("BACKEND: code_generation=%{public}d ee_rec=%{public}d iop_rec=%{public}d "
 		     "vu0_rec=%{public}d vu1_rec=%{public}d fastmem=%{public}d",
 			SysMemory::HasCodeMemory() ? 1 : 0,
 			EmuConfig.Cpu.Recompiler.EnableEE ? 1 : 0,
@@ -812,10 +864,25 @@ void VMThreadMain() {
 		// 修法：把 3 秒切成 100ms 小步，每步检查 g_vm_running，
 		// 一旦收到退出请求立即结束诊断。
 		// ------------------------------------------------------------------
-		constexpr int kSampleCount = 6;
-		constexpr int kSampleIntervalMs = 3000;
+		// 【性能调优改造】原来只采样 6 次（18 秒）就永久停止 —— 于是
+		// "运行几分钟后的真实帧率"在日志里根本看不到，调优只能靠猜。
+		// 现在改为**持续采样**，并带上核心自带的性能分解
+		// （EE / GS / VU / GPU 占用率），用于判定瓶颈到底在哪一侧。
+		//
+		// 同时计算**区间真实帧率**：用相邻采样点的 frame 差除以时间差，
+		// 这比 UI 上那个被 500ms 轮询采样的数字可靠得多。
+		constexpr int kSampleIntervalMs = 1000;
 		constexpr int kStepMs = 100;
-		for (int i = 0; i < kSampleCount && g_vm_running.load(); ++i)
+		unsigned long long last_frame = 0;
+		HostSys::MemProtectStats previous_protect{};
+		int last_tick_ms = 0;
+		auto now_ms = []() {
+			return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+		};
+		last_tick_ms = now_ms();
+
+		while (g_vm_running.load())
 		{
 			int waited = 0;
 			while (waited < kSampleIntervalMs && g_vm_running.load())
@@ -826,10 +893,53 @@ void VMThreadMain() {
 			if (!g_vm_running.load())
 				break;
 
-			LOGI("MONITOR: ee_pc=0x%{public}08x frame=%{public}llu vm_state=%{public}d",
-				cpuRegs.pc,
-				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()),
-				static_cast<int>(VMManager::GetState()));
+			const unsigned long long frame =
+				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber());
+			const int tick = now_ms();
+			const double dt = static_cast<double>(tick - last_tick_ms) / 1000.0;
+			const double interval_fps = (dt > 0.0 && frame >= last_frame)
+				? static_cast<double>(frame - last_frame) / dt : 0.0;
+			const HostSys::MemProtectStats protect = HostSys::GetMemProtectStats();
+			const double protect_avg_us = protect.calls > 0
+				? static_cast<double>(protect.total_nanoseconds) / static_cast<double>(protect.calls) / 1000.0
+				: 0.0;
+			const double code_write_begin_per_sec = dt > 0.0
+				? static_cast<double>(protect.begin_code_write_calls - previous_protect.begin_code_write_calls) / dt : 0.0;
+			const double code_write_end_per_sec = dt > 0.0
+				? static_cast<double>(protect.end_code_write_calls - previous_protect.end_code_write_calls) / dt : 0.0;
+			const double mprotect_per_sec = dt > 0.0
+				? static_cast<double>(protect.calls - previous_protect.calls) / dt : 0.0;
+			last_frame = frame;
+			last_tick_ms = tick;
+
+			// PERF 行是调优的主证据：fps=区间实测帧率，speed=相对满速的百分比。
+			// ee/gs/vu/gpu 是核心自己统计的线程占用率 —— 哪一项接近 100%
+			// 就说明瓶颈在该侧（ee 高 => CPU 解释执行是瓶颈）。
+			// 注意：hilog 的格式化**要求每个转换说明符都带 {public}**，
+			// 否则整行的数值会被打成 <private>（真机实测踩过这个坑）。
+			LOGW("PERF: fps=%{public}.1f speed=%{public}.1f%% frame=%{public}llu | "
+			     "ee=%{public}.0f%% gs=%{public}.0f%% vu=%{public}.0f%% gpu=%{public}.0f%% | "
+			     "ee_ms=%{public}.2f gs_ms=%{public}.2f fr_avg=%{public}.2fms | "
+			     "code_write_begin=%{public}.1f/s end=%{public}.1f/s mprotect=%{public}.1f/s "
+			     "(total=%{public}llu failures=%{public}llu avg_us=%{public}.2f max_us=%{public}.2f)",
+				interval_fps,
+				static_cast<double>(PerformanceMetrics::GetSpeed()),
+				frame,
+				PerformanceMetrics::GetCPUThreadUsage(),
+				static_cast<double>(PerformanceMetrics::GetGSThreadUsage()),
+				static_cast<double>(PerformanceMetrics::GetVUThreadUsage()),
+				static_cast<double>(PerformanceMetrics::GetGPUUsage()),
+				PerformanceMetrics::GetCPUThreadAverageTime(),
+				static_cast<double>(PerformanceMetrics::GetGSThreadAverageTime()),
+				static_cast<double>(PerformanceMetrics::GetAverageFrameTime()),
+				code_write_begin_per_sec,
+				code_write_end_per_sec,
+				mprotect_per_sec,
+				static_cast<unsigned long long>(protect.calls),
+				static_cast<unsigned long long>(protect.failures),
+				protect_avg_us,
+				static_cast<double>(protect.max_nanoseconds) / 1000.0);
+			previous_protect = protect;
 		}
 
 		// ---------------------------------------------------------------
@@ -858,6 +968,8 @@ void VMThreadMain() {
 					break;
 			}
 			++watchdog_tick;
+			if (kStoreBuild)
+				continue;
 
 			// 每 10 次采样（约 30 秒）复检一次，避免高频 mprotect 影响模拟性能。
 			if ((watchdog_tick % 10) != 0)
@@ -992,6 +1104,8 @@ void VMThreadMain() {
 		monitor.join();
 
 	VMManager::Internal::CPUThreadShutdown();
+	g_execution_mode.store(static_cast<int>(
+		kStoreBuild ? ExecutionMode::kInterpreter : ExecutionMode::kUnknown));
 	LOGI("VM thread exited");
 }
 
@@ -1027,8 +1141,12 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 		napi_value r; napi_create_int32(env, 1, &r); return r;
 	}
 
-	LOGI("startBios dataRoot=%{public}s biosDir=%{public}s",
-	     s_data_root.c_str(), s_bios_dir.c_str());
+	LOGI("startBios requested");
+	g_execution_mode.store(static_cast<int>(
+		kStoreBuild ? ExecutionMode::kInterpreter : ExecutionMode::kUnknown));
+	SysMemory::SetInterpreterOnly(kStoreBuild);
+	LOGW("BUILD_CHANNEL=%{public}s interpreter_policy=%{public}d",
+		kStoreBuild ? "store" : "development", kStoreBuild ? 1 : 0);
 
 	// ---------------------------------------------------------------------
 	// JIT 硬门禁（产品决策：不降级）
@@ -1333,9 +1451,31 @@ static napi_value NapiLoadState(napi_env env, napi_callback_info info) {
 	if (argc >= 1)
 		napi_get_value_int32(env, argv[0], &slot);
 
+	if (g_vm_running.load() && !RevalidateJitAlive()) {
+		const std::string message = "HarmonyOS 当前拒绝 JIT 可执行内存，已停止模拟。";
+		SetError(message);
+		g_vm_running.store(false);
+		VMManager::SetPaused(true);
+		SetStage(BootStage::kFailed);
+		napi_value out;
+		const std::string json = "{\"ok\":false,\"message\":\"" + message + "\"}";
+		napi_create_string_utf8(env, json.c_str(), json.size(), &out);
+		return out;
+	}
 	const Hps2SaveState::Result r = Hps2SaveState::Load(slot);
+	bool jit_failed_after_load = false;
+	if (r.ok && g_vm_running.load() && !RevalidateJitAlive()) {
+		SetError("即时存档已读取，但 JIT 复检失败，模拟已停止。");
+		g_vm_running.store(false);
+		VMManager::SetPaused(true);
+		SetStage(BootStage::kFailed);
+		jit_failed_after_load = true;
+	}
+	const std::string message = jit_failed_after_load
+		? r.message + "；读档已完成，但 JIT 复检失败，模拟已停止。"
+		: r.message;
 	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
-		+ ",\"message\":\"" + r.message + "\"}";
+		+ ",\"message\":\"" + message + "\"}";
 
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
@@ -1570,6 +1710,16 @@ static napi_value NapiSetPaused(napi_env env, napi_callback_info info) {
 		return r;
 	}
 
+	if (!paused && !RevalidateJitAlive()) {
+		SetError("HarmonyOS 当前拒绝 JIT 可执行内存，已停止模拟。" + GetJitMessage());
+		g_vm_running.store(false);
+		VMManager::SetPaused(true);
+		SetStage(BootStage::kFailed);
+		napi_value r;
+		napi_create_int32(env, 0, &r);
+		return r;
+	}
+
 	const VMState before = VMManager::GetState();
 	const VMState requested = paused ? VMState::Paused : VMState::Running;
 	if (before != requested) {
@@ -1615,6 +1765,54 @@ static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
 	json += ",\"error\":\"" + esc(err) + "\"";
 	const float fps = g_vm_running.load() ? PerformanceMetrics::GetFPS() : 0.0f;
 	json += ",\"fps\":" + std::to_string(std::isfinite(fps) && fps > 0.0f ? fps : 0.0f);
+	const ExecutionMode execution_mode = static_cast<ExecutionMode>(g_execution_mode.load());
+	json += ",\"storeBuild\":" + std::string(kStoreBuild ? "true" : "false");
+	json += ",\"executionMode\":\"" + std::string(ExecutionModeName(execution_mode)) + "\"";
+	json += ",\"degraded\":" + std::string(kStoreBuild || execution_mode == ExecutionMode::kInterpreter ? "true" : "false");
+	json += ",\"downgradeReason\":\"" + std::string(kStoreBuild ? "store-policy-no-jit" : "") + "\"";
+	std::string jit_diagnostics;
+	{
+		std::lock_guard<std::mutex> lock(g_jit_mutex);
+		jit_diagnostics = g_jit_diagnostics_json;
+	}
+	json += ",\"jitDiagnostics\":\"" + esc(jit_diagnostics) + "\"";
+
+	// ---------------------------------------------------------------------
+	// 游戏本体识别（serial / CRC / 标题）
+	//
+	// 为什么要上报：记忆卡是按**序列号**自动归类的（见 refreshMemoryCards），
+	// 但此前序列号从未显示给用户 —— 归类逻辑等于黑盒，用户无法判断
+	// "这张卡属于哪个游戏"。同时多游戏场景下，用户需要知道当前在玩哪个，
+	// 才能避免把存档存到别的游戏名下。
+	//
+	// 线程安全：三个 API 上游均用 s_info_mutex 保护（VMManager.cpp:371-400），
+	// 可安全地在 UI 线程每 500ms 轮询时调用，不会与 VM 线程撕裂。
+	// 未加载光盘时返回空串 —— 故这里加 isEmpty 判定，交给 UI 决定如何显示。
+	// ---------------------------------------------------------------------
+	{
+		const bool has_disc = VMManager::HasValidVM();
+		if (has_disc)
+		{
+			const std::string serial = VMManager::GetDiscSerial();
+			const u32 crc = VMManager::GetDiscCRC();
+			const std::string title = VMManager::GetTitle(true);
+
+			json += ",\"discSerial\":\"" + esc(serial) + "\"";
+			json += ",\"discTitle\":\"" + esc(title) + "\"";
+			// CRC 用固定 8 位十六进制，便于与存档文件名/记忆卡目录名对照
+			// （上游文件名格式为 "<serial> (<CRC8>)"）。
+			char crc_buf[16];
+			std::snprintf(crc_buf, sizeof(crc_buf), "%08X", crc);
+			json += ",\"discCRC\":\"" + std::string(crc_buf) + "\"";
+		}
+		else
+		{
+			// 未启动：明确给空值，避免 UI 显示上一局的残留信息。
+			json += ",\"discSerial\":\"\"";
+			json += ",\"discTitle\":\"\"";
+			json += ",\"discCRC\":\"\"";
+		}
+	}
 
 	// JIT 状态一并上报：UI 需要在不启动的情况下也能显示"当前是否可用"。
 	{
@@ -1640,13 +1838,565 @@ static napi_value NapiGetStatus(napi_env env, napi_callback_info info) {
 // 语义：这是一次**完整**的自检（会重新申请页并执行代码），不是缓存查询。
 // 返回 { available, stage, stageName, errno, message, action }
 static napi_value NapiCheckJit(napi_env env, napi_callback_info info) {
-	const Hps2JitCheck::Result r = Hps2JitCheck::RunStartupCheck();
+	Hps2JitCheck::Result r;
+	if (kStoreBuild) {
+		r.available = false;
+		r.stage = Hps2JitCheck::Stage::kPolicyDisabled;
+		r.stage_name = Hps2JitCheck::StageName(r.stage);
+		r.message = "商店版已按发行策略关闭 JIT";
+		r.action = "当前使用解释器兼容模式，性能受限。";
+	} else {
+		Hps2JitCheck::InitializeHarmonyJit();
+		r = Hps2JitCheck::RunStartupCheck();
+	}
 	SetJitState(r);
 
+	LOGI("JIT_CHECK_DIAGNOSTICS prctl_attempted=%{public}d prctl_accepted=%{public}d "
+		"prctl_ret=%{public}d prctl_errno=%{public}d page_size=%{public}zu "
+		"strategy=%{public}s selinux=%{public}s",
+		r.prctl_attempted ? 1 : 0, r.prctl_accepted ? 1 : 0, r.prctl_ret,
+		r.prctl_errno, r.page_size, r.strategy.c_str(), r.selinux_context.c_str());
+	LOGI("JIT_CHECK_MEMFD attempted=%{public}d supported=%{public}d errno=%{public}d "
+		"initial=%{public}d alias_update=%{public}d loop=%{public}d concurrent=%{public}d "
+		"iterations=%{public}d detail=%{public}s",
+		r.memfd_attempted ? 1 : 0, r.memfd_supported ? 1 : 0, r.memfd_errno,
+		r.memfd_initial_exec ? 1 : 0, r.memfd_alias_update ? 1 : 0,
+		r.memfd_loop ? 1 : 0, r.memfd_concurrent ? 1 : 0,
+		r.memfd_loop_iterations, r.memfd_detail.c_str());
 	LOGI("JIT_CHECK_EXPLICIT available=%{public}d stage=%{public}s errno=%{public}d",
 		r.available ? 1 : 0, r.stage_name.c_str(), r.errno_value);
 
 	const std::string json = Hps2JitCheck::ToJson(r);
+	napi_value out;
+	const napi_status create_status = napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	LOGI("JIT_JSON_CREATE status=%{public}d bytes=%{public}zu", static_cast<int>(create_status), json.size());
+	return out;
+}
+
+// 对照实验只允许在 VM 未运行时手动触发，避免与游戏生命周期交错。
+// prctl 与前后 scratch 探针运行在同一 N-API 调用线程；结果不代表 VM
+// 线程上的核心 arena，也不自动改变启动/核心 JIT 策略。
+static napi_value NapiJitPrctlExperiment(napi_env env, napi_callback_info info) {
+	std::string json;
+	if (kStoreBuild) {
+		json = "{\"attempted\":false,\"scope\":\"store-build-disabled\"}";
+	} else if (g_vm_running.load()) {
+		json = "{\"attempted\":false,\"scope\":\"vm-running\","
+			"\"message\":\"请先停止模拟再运行对照实验\"}";
+	} else {
+		const Hps2JitCheck::PrctlExperimentResult r = Hps2JitCheck::RunPrctlExperiment();
+		SetJitState(r.after);
+		json = Hps2JitCheck::PrctlExperimentToJson(r);
+		LOGW("JIT_PRCTL_AB thread=%{public}llu attempted=%{public}d ret=%{public}d errno=%{public}d "
+			"before=%{public}d/%{public}s/%{public}d after=%{public}d/%{public}s/%{public}d",
+			static_cast<unsigned long long>(r.call_thread_id), r.attempted ? 1 : 0,
+			r.return_value, r.errno_value,
+			r.before.available ? 1 : 0, r.before.stage_name.c_str(), r.before.errno_value,
+			r.after.available ? 1 : 0, r.after.stage_name.c_str(), r.after.errno_value);
+	}
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// ===========================================================================
+// PS2 记忆卡管理
+//
+// 记忆卡是本阶段唯一外置的存档类型。文件仍由 PCSX2 核心使用，
+// 这里只负责复用核心的格式识别/创建/删除逻辑，并把 memcards 目录
+// 通过 shareFiles 捐献给系统文件管理器。
+// ===========================================================================
+
+static bool GetUtf8Arg(napi_env env, napi_value value, std::string& out)
+{
+	if (value == nullptr)
+		return false;
+	size_t len = 0;
+	if (napi_get_value_string_utf8(env, value, nullptr, 0, &len) != napi_ok)
+		return false;
+	out.resize(len + 1);
+	if (napi_get_value_string_utf8(env, value, out.data(), len + 1, &len) != napi_ok)
+		return false;
+	out.resize(len);
+	return true;
+}
+
+static bool IsSafeMemoryCardName(const std::string& name)
+{
+	if (name.empty() || name == "." || name == ".." || name.size() > 128)
+		return false;
+	if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+		name.find('\0') != std::string::npos)
+		return false;
+	return true;
+}
+
+static std::string JsonEscape(const std::string& value)
+{
+	std::string out;
+	out.reserve(value.size() + 8);
+	for (const char c : value)
+	{
+		if (c == '"' || c == '\\')
+			out.push_back('\\');
+		if (c == '\n' || c == '\r')
+			out.push_back(' ');
+		else
+			out.push_back(c);
+	}
+	return out;
+}
+
+static bool PrepareMemoryCardDirectory(const std::string& data_root, std::string& out_dir)
+{
+	if (data_root.empty())
+		return false;
+
+	out_dir = Path::Combine(data_root, "memcards");
+	EmuFolders::MemoryCards = out_dir;
+	Error error;
+	if (!FileSystem::CreateDirectoryPath(out_dir.c_str(), true, &error))
+	{
+		LOGE("MEMCARD create directory failed");
+		return false;
+	}
+	return true;
+}
+
+static const char* MemoryCardTypeName(MemoryCardFileType type)
+{
+	switch (type)
+	{
+		case MemoryCardFileType::PS2_8MB: return "PS2 8MB";
+		case MemoryCardFileType::PS2_16MB: return "PS2 16MB";
+		case MemoryCardFileType::PS2_32MB: return "PS2 32MB";
+		case MemoryCardFileType::PS2_64MB: return "PS2 64MB";
+		default: return "unknown";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PS2 文件记忆卡目录解析
+//
+// PCSX2 的文件卡不是普通的 512 字节镜像：每个逻辑页后面还带 16 字节
+// ECC/spare 数据，故标准文件卡的物理步长是 528。这里仅读取逻辑页的
+// 512 字节数据区，沿用 PCSX2/mymc 的 superblock、FAT 和目录布局，避免
+// 把应用自己的分组 sidecar 当成存档识别依据。
+// ---------------------------------------------------------------------------
+
+static uint16_t ReadLE16(const std::vector<uint8_t>& data, size_t offset)
+{
+	if (offset + 2 > data.size())
+		return 0;
+	return static_cast<uint16_t>(data[offset]) |
+		(static_cast<uint16_t>(data[offset + 1]) << 8);
+}
+
+static uint32_t ReadLE32(const std::vector<uint8_t>& data, size_t offset)
+{
+	if (offset + 4 > data.size())
+		return 0;
+	return static_cast<uint32_t>(data[offset]) |
+		(static_cast<uint32_t>(data[offset + 1]) << 8) |
+		(static_cast<uint32_t>(data[offset + 2]) << 16) |
+		(static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+static std::string SerialKey(const std::string& serial)
+{
+	std::string key;
+	for (const unsigned char c : serial)
+	{
+		if (std::isalnum(c))
+			key.push_back(static_cast<char>(std::toupper(c)));
+	}
+	return key;
+}
+
+static std::string NormalizeSerial(const std::string& serial)
+{
+	std::string out;
+	for (const unsigned char c : serial)
+	{
+		if (std::isalnum(c))
+			out.push_back(static_cast<char>(std::toupper(c)));
+		else if (c == '-' || c == '_' || c == '.')
+			out.push_back('-');
+	}
+	return out;
+}
+
+static std::vector<std::string> ExtractSerialsFromDirectoryName(const std::string& name)
+{
+	// 目录名通常就是序列号；只取稳定的序列号主体，忽略目录名后面
+	// 可能出现的语言/版本后缀（例如 SLUS-20312-DATA）。
+	static const std::regex serial_re(
+		R"(([A-Z]{4,6}[-_][0-9]{3,5}(?:[._][0-9]{1,3})?))",
+		std::regex::icase);
+	std::set<std::string> seen;
+	std::vector<std::string> result;
+	for (std::sregex_iterator it(name.begin(), name.end(), serial_re), end; it != end; ++it)
+	{
+		const std::string serial = NormalizeSerial((*it)[1].str());
+		if (!SerialKey(serial).empty() && seen.insert(SerialKey(serial)).second)
+			result.push_back(serial);
+	}
+	return result;
+}
+
+class Ps2MemoryCardDirectoryReader
+{
+public:
+	explicit Ps2MemoryCardDirectoryReader(const std::string& path)
+	{
+		m_file = std::fopen(path.c_str(), "rb");
+		if (!m_file)
+			return;
+		if (std::fseek(m_file, 0, SEEK_END) != 0)
+			return;
+		const long end = std::ftell(m_file);
+		if (end <= 0)
+			return;
+		m_file_size = static_cast<uint64_t>(end);
+		// Hps2/PCSX2 文件卡使用 512+16 字节的物理页；也接受去掉 ECC
+		// 的 512 字节镜像，便于读取其他模拟器导出的 raw card。
+		if ((m_file_size % 528u) == 0)
+			m_raw_page_size = 528;
+		else if ((m_file_size % 512u) == 0)
+			m_raw_page_size = 512;
+	}
+
+	~Ps2MemoryCardDirectoryReader()
+	{
+		if (m_file)
+			std::fclose(m_file);
+	}
+
+	bool Parse(std::vector<std::string>& out_ids)
+	{
+		if (!m_file || (m_raw_page_size != 512 && m_raw_page_size != 528))
+			return false;
+
+		std::vector<uint8_t> superblock(0x154);
+		if (!ReadLogical(0, superblock.data(), superblock.size()))
+			return false;
+		static constexpr char magic[] = "Sony PS2 Memory Card Format ";
+		if (std::memcmp(superblock.data(), magic, sizeof(magic) - 1) != 0)
+			return false;
+
+		m_page_size = ReadLE16(superblock, 0x28);
+		m_pages_per_cluster = ReadLE16(superblock, 0x2a);
+		m_clusters_per_card = ReadLE32(superblock, 0x30);
+		m_alloc_offset = ReadLE32(superblock, 0x34);
+		m_alloc_end = ReadLE32(superblock, 0x38);
+		m_root_cluster = ReadLE32(superblock, 0x3c);
+		if (m_page_size != 512 || m_pages_per_cluster == 0 || m_pages_per_cluster > 32 ||
+			m_alloc_offset == 0 || m_alloc_end == 0 || m_alloc_end > m_clusters_per_card ||
+			m_root_cluster >= m_alloc_end)
+			return false;
+
+		m_cluster_size = static_cast<uint64_t>(m_page_size) * m_pages_per_cluster;
+		m_entries_per_cluster = m_cluster_size / 4;
+		if (m_cluster_size == 0 || m_entries_per_cluster == 0)
+			return false;
+		const uint64_t physical_pages = m_file_size / m_raw_page_size;
+		if (static_cast<uint64_t>(m_clusters_per_card) * m_pages_per_cluster > physical_pages)
+			return false;
+
+		const uint32_t fat_cluster_count =
+			(m_alloc_end + static_cast<uint32_t>(m_entries_per_cluster) - 1) /
+			static_cast<uint32_t>(m_entries_per_cluster);
+		if (fat_cluster_count == 0 || fat_cluster_count > 32)
+			return false;
+		m_ifc_list.reserve(fat_cluster_count);
+		for (uint32_t i = 0; i < fat_cluster_count; i++)
+		{
+			const uint32_t cluster = ReadLE32(superblock, 0x50 + i * 4);
+			if (cluster >= m_clusters_per_card)
+				return false;
+			m_ifc_list.push_back(cluster);
+		}
+
+		std::vector<uint8_t> root_cluster;
+		if (!ReadAllocatableCluster(m_root_cluster, root_cluster) || root_cluster.size() < 512)
+			return false;
+		const uint16_t root_mode = ReadLE16(root_cluster, 0);
+		const uint32_t entry_count = ReadLE32(root_cluster, 4);
+		if ((root_mode & 0x8000u) == 0 || (root_mode & 0x0020u) == 0 ||
+			entry_count < 2 || entry_count > 65536)
+			return false;
+
+		std::set<uint32_t> visited;
+		uint32_t cluster = m_root_cluster;
+		uint32_t processed = 0;
+		while (processed < entry_count && visited.insert(cluster).second)
+		{
+			std::vector<uint8_t> data;
+			if (!ReadAllocatableCluster(cluster, data))
+				return false;
+			const uint32_t entries_here = static_cast<uint32_t>(data.size() / 512);
+			for (uint32_t i = 0; i < entries_here && processed < entry_count; i++, processed++)
+			{
+				const size_t offset = static_cast<size_t>(i) * 512;
+				const uint16_t mode = ReadLE16(data, offset);
+				if ((mode & 0x8000u) == 0 || (mode & 0x0020u) == 0)
+					continue;
+				std::string name;
+				for (size_t j = 0; j < 448 && offset + 0x40 + j < data.size(); j++)
+				{
+					const uint8_t c = data[offset + 0x40 + j];
+					if (c == 0)
+						break;
+					if (c >= 0x20 && c < 0x7f)
+						name.push_back(static_cast<char>(c));
+				}
+				const std::vector<std::string> ids = ExtractSerialsFromDirectoryName(name);
+				out_ids.insert(out_ids.end(), ids.begin(), ids.end());
+			}
+
+			if (processed >= entry_count)
+				break;
+			uint32_t next = 0;
+			if (!ReadFat(cluster, next) || next == 0xffffffffu)
+				break;
+			next &= 0x7fffffffu;
+			if (next >= m_alloc_end)
+				break;
+			cluster = next;
+		}
+
+		std::sort(out_ids.begin(), out_ids.end());
+		out_ids.erase(std::unique(out_ids.begin(), out_ids.end()), out_ids.end());
+		return true;
+	}
+
+private:
+	bool ReadLogical(uint64_t offset, void* dst, size_t size)
+	{
+		if (!m_file || offset > m_file_size || size > m_file_size - offset)
+			return false;
+		auto* out = static_cast<uint8_t*>(dst);
+		while (size > 0)
+		{
+			const uint64_t page = offset / m_page_size;
+			const size_t in_page = static_cast<size_t>(offset % m_page_size);
+			const size_t chunk = std::min(size, static_cast<size_t>(m_page_size - in_page));
+			const uint64_t physical = page * m_raw_page_size + in_page;
+			if (std::fseek(m_file, static_cast<long>(physical), SEEK_SET) != 0 ||
+				std::fread(out, 1, chunk, m_file) != chunk)
+				return false;
+			offset += chunk;
+			out += chunk;
+			size -= chunk;
+		}
+		return true;
+	}
+
+	bool ReadCluster(uint32_t physical_cluster, std::vector<uint8_t>& out)
+	{
+		if (physical_cluster >= m_clusters_per_card)
+			return false;
+		out.resize(static_cast<size_t>(m_cluster_size));
+		return ReadLogical(static_cast<uint64_t>(physical_cluster) * m_cluster_size,
+			out.data(), out.size());
+	}
+
+	bool ReadAllocatableCluster(uint32_t cluster, std::vector<uint8_t>& out)
+	{
+		if (cluster >= m_alloc_end)
+			return false;
+		return ReadCluster(m_alloc_offset + cluster, out);
+	}
+
+	bool ReadFat(uint32_t cluster, uint32_t& value)
+	{
+		if (cluster >= m_alloc_end)
+			return false;
+		const uint32_t fat_cluster = cluster / static_cast<uint32_t>(m_entries_per_cluster);
+		const uint32_t entry = cluster % static_cast<uint32_t>(m_entries_per_cluster);
+		if (fat_cluster >= m_ifc_list.size())
+			return false;
+		std::vector<uint8_t> data;
+		if (!ReadCluster(m_ifc_list[fat_cluster], data))
+			return false;
+		value = ReadLE32(data, static_cast<size_t>(entry) * 4);
+		return true;
+	}
+
+	std::FILE* m_file = nullptr;
+	uint64_t m_file_size = 0;
+	uint32_t m_raw_page_size = 0;
+	uint32_t m_page_size = 512;
+	uint32_t m_pages_per_cluster = 0;
+	uint32_t m_clusters_per_card = 0;
+	uint32_t m_alloc_offset = 0;
+	uint32_t m_alloc_end = 0;
+	uint32_t m_root_cluster = 0;
+	uint64_t m_cluster_size = 0;
+	uint64_t m_entries_per_cluster = 0;
+	std::vector<uint32_t> m_ifc_list;
+};
+
+static bool ParseMemoryCardGameIds(const std::string& path, std::vector<std::string>& ids)
+{
+	Ps2MemoryCardDirectoryReader reader(path);
+	return reader.Parse(ids);
+}
+
+static std::string GetGameSerialForPath(const std::string& path)
+{
+	if (path.empty())
+		return {};
+	GameList::Entry entry;
+	if (!GameList::PopulateEntryFromPath(path, &entry) || entry.serial.empty())
+		return {};
+	return NormalizeSerial(entry.serial);
+}
+
+// listMemoryCards(dataRoot, gamePath?) ->
+// [{name,path,size,fileType,formatted,gameIds,matchedGameSerial}]
+static napi_value NapiListMemoryCards(napi_env env, napi_callback_info info)
+{
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	std::string root;
+	std::string dir;
+	std::string game_path;
+	if (argc >= 2)
+		GetUtf8Arg(env, argv[1], game_path);
+	const std::string game_serial = (!g_vm_running.load() ? GetGameSerialForPath(game_path) : std::string());
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], root) || !PrepareMemoryCardDirectory(root, dir))
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	const auto cards = FileMcd_GetAvailableCards(true);
+	std::string json = "[";
+	bool first = true;
+	for (const AvailableMcdInfo& card : cards)
+	{
+		// 本阶段只呈现普通 PS2 文件卡；文件管理器中不暴露 folder card。
+		if (card.type != MemoryCardType::File || card.file_type == MemoryCardFileType::PS1 ||
+			card.file_type == MemoryCardFileType::Unknown)
+			continue;
+		if (!first)
+			json += ",";
+		first = false;
+		json += "{\"name\":\"" + JsonEscape(card.name) + "\"";
+		json += ",\"path\":\"" + JsonEscape(card.path) + "\"";
+		json += ",\"size\":" + std::to_string(card.size);
+		json += ",\"fileType\":\"" + JsonEscape(MemoryCardTypeName(card.file_type)) + "\"";
+		json += ",\"formatted\":" + std::string(card.formatted ? "true" : "false");
+		std::vector<std::string> game_ids;
+		if (card.formatted)
+			ParseMemoryCardGameIds(card.path, game_ids);
+		json += ",\"gameIds\":[";
+		for (size_t i = 0; i < game_ids.size(); i++)
+		{
+			if (i > 0)
+				json += ",";
+			json += "\"" + JsonEscape(game_ids[i]) + "\"";
+		}
+		json += "]";
+		std::string matched_serial;
+		if (!game_serial.empty())
+		{
+			const std::string wanted = SerialKey(game_serial);
+			for (const std::string& id : game_ids)
+			{
+				if (SerialKey(id) == wanted)
+				{
+					matched_serial = game_serial;
+					break;
+				}
+			}
+		}
+		json += ",\"matchedGameSerial\":\"" + JsonEscape(matched_serial) + "\"";
+		json += "}";
+	}
+	json += "]";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// memoryCardsDirectory(dataRoot) -> sandbox path shared with the file manager.
+static napi_value NapiMemoryCardsDirectory(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	std::string root;
+	std::string dir;
+	const bool ok = argc >= 1 && GetUtf8Arg(env, argv[0], root) &&
+		PrepareMemoryCardDirectory(root, dir);
+	napi_value out;
+	napi_create_string_utf8(env, ok ? dir.c_str() : "", NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// createMemoryCard(dataRoot, name, sizeMb) -> {ok,message}
+static napi_value NapiCreateMemoryCard(napi_env env, napi_callback_info info)
+{
+	size_t argc = 3;
+	napi_value argv[3] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	std::string root;
+	std::string name;
+	int32_t size_mb = 0;
+	bool ok = argc >= 3 && GetUtf8Arg(env, argv[0], root) && GetUtf8Arg(env, argv[1], name) &&
+		napi_get_value_int32(env, argv[2], &size_mb) == napi_ok;
+	std::string dir;
+	if (ok)
+		ok = PrepareMemoryCardDirectory(root, dir) && !g_vm_running.load();
+	if (ok && !IsSafeMemoryCardName(name))
+		ok = false;
+	if (ok && name.find('.') == std::string::npos)
+		name += ".ps2";
+	MemoryCardFileType type = MemoryCardFileType::Unknown;
+	switch (size_mb)
+	{
+		case 8: type = MemoryCardFileType::PS2_8MB; break;
+		case 16: type = MemoryCardFileType::PS2_16MB; break;
+		case 32: type = MemoryCardFileType::PS2_32MB; break;
+		case 64: type = MemoryCardFileType::PS2_64MB; break;
+		default: ok = false; break;
+	}
+	if (ok)
+		ok = FileMcd_CreateNewCard(name, MemoryCardType::File, type);
+
+	const std::string message = ok ? "记忆卡已创建" :
+		(g_vm_running.load() ? "请先停止模拟器" : "无法创建记忆卡（名称、容量或文件可能已存在）");
+	const std::string json = std::string("{\"ok\":") + (ok ? "true" : "false") +
+		",\"message\":\"" + JsonEscape(message) + "\"}";
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// deleteMemoryCard(dataRoot, name) -> {ok,message}
+static napi_value NapiDeleteMemoryCard(napi_env env, napi_callback_info info)
+{
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	std::string root;
+	std::string name;
+	bool ok = argc >= 2 && GetUtf8Arg(env, argv[0], root) && GetUtf8Arg(env, argv[1], name);
+	std::string dir;
+	if (ok)
+		ok = PrepareMemoryCardDirectory(root, dir) && !g_vm_running.load() && IsSafeMemoryCardName(name);
+	if (ok)
+		ok = FileMcd_DeleteCard(name);
+	const std::string message = ok ? "记忆卡已删除" :
+		(g_vm_running.load() ? "请先停止模拟器" : "无法删除记忆卡");
+	const std::string json = std::string("{\"ok\":") + (ok ? "true" : "false") +
+		",\"message\":\"" + JsonEscape(message) + "\"}";
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
 	return out;
@@ -1682,7 +2432,7 @@ static napi_value NapiRunDataProbe(napi_env env, napi_callback_info info) {
 		root.resize(len);
 	}
 
-	LOGI("DATA_PROBE run_native root=%{public}s", root.c_str());
+	LOGI("DATA_PROBE native checks started");
 	std::string json;
 	Hps2DataProbe::RunNativeProbe(root, json);
 
@@ -1786,6 +2536,11 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"stop",      nullptr, NapiStop,      nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"getStatus", nullptr, NapiGetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"runJitPrctlExperiment", nullptr, NapiJitPrctlExperiment, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"listMemoryCards", nullptr, NapiListMemoryCards, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"memoryCardsDirectory", nullptr, NapiMemoryCardsDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"createMemoryCard", nullptr, NapiCreateMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"deleteMemoryCard", nullptr, NapiDeleteMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},
 		// 阶段 0 数据外置探针（临时；阶段 3 落地后可移除）
 		{"runDataProbe",  nullptr, NapiRunDataProbe,  nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"statDataPath",  nullptr, NapiStatDataPath,  nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -12,6 +12,7 @@ project(hps2core)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(HPS2_STORE_BUILD "Build the no-JIT AppGallery-compatible runtime" OFF)
 
 # ---------------------------------------------------------------------------
 # 路径定位
@@ -112,6 +113,14 @@ add_library(hps2core SHARED
     # 纯 POSIX 验证公共目录对 native 是否可用。
     hps2_dataprobe.cpp
 )
+
+if(HPS2_STORE_BUILD)
+    target_compile_definitions(hps2core PRIVATE HPS2_STORE_BUILD=1)
+    message(STATUS "Hps2: build channel = store (interpreter-only, no JIT probe)")
+else()
+    target_compile_definitions(hps2core PRIVATE HPS2_STORE_BUILD=0)
+    message(STATUS "Hps2: build channel = development (JIT required)")
+endif()
 
 # 不把开发机绝对路径编进发布 HAP 的 native 字符串（包括 __FILE__）。
 # 上游 ARMSX2 静态库由独立构建目录使用同等映射编译；这里覆盖本应用

@@ -23,6 +23,8 @@ export const notifyResize: (width: number, height: number) => number;
 /** 暂停/恢复当前 VM；返回 1 表示请求已接受，0 表示没有可用 VM。 */
 export const setPaused: (paused: boolean) => number;
 export const stop: () => number;
+/** 在 VM 停止时运行一次手动 prctl A/B 探针；结果只代表调用线程的 scratch 页。 */
+export const runJitPrctlExperiment: () => string;
 export const getStatus: () => string;
 /** 即时存档：存到指定槽（1-based），返回 {ok, message} 的 JSON */
 export const saveState: (slot: number) => string;
@@ -32,6 +34,17 @@ export const loadState: (slot: number) => string;
 export const deleteSaveState: (slot: number) => string;
 /** 各槽状态：[{slot, hasSave}, ...] */
 export const listSaveSlots: () => string;
+/** 返回启动前 JIT 能力自检结果（JSON）。 */
+export const checkJit: () => string;
+
+/** PS2 记忆卡列表：[{name,path,size,fileType,formatted,gameIds,matchedGameSerial}] */
+export const listMemoryCards: (dataRoot: string, gamePath?: string) => string;
+/** 返回被 HarmonyOS 文件管理器捐献的 memcards 目录路径。 */
+export const memoryCardsDirectory: (dataRoot: string) => string;
+/** 创建标准 PS2 文件记忆卡，sizeMb 支持 8/16/32/64。 */
+export const createMemoryCard: (dataRoot: string, name: string, sizeMb: number) => string;
+/** 删除未被运行中的 VM 使用的记忆卡。 */
+export const deleteMemoryCard: (dataRoot: string, name: string) => string;
 
 // ---------------------------------------------------------------------------
 // 阶段 0 数据外置探针（临时；阶段 3 落地后移除）

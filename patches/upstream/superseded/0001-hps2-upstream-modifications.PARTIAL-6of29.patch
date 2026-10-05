@@ -1,0 +1,160 @@
+diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
+index 401cc7089..371728df0 100644
+--- a/pcsx2/CMakeLists.txt
++++ b/pcsx2/CMakeLists.txt
+@@ -995,6 +995,10 @@ set(pcsx2HostSources
+ 	Host/CubebAudioStream.cpp
+ 	Host/SDLAudioStream.cpp)
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
++	list(APPEND pcsx2HostSources Host/OHAudioStream.cpp)
++endif()
++
+ set(pcsx2HostHeaders
+ 	Host/AudioStream.h
+ 	Host/AudioStreamTypes.h)
+diff --git a/pcsx2/Config.h b/pcsx2/Config.h
+index e0ea5bcb2..3bd6ae28b 100644
+--- a/pcsx2/Config.h
++++ b/pcsx2/Config.h
+@@ -1183,6 +1183,8 @@ struct Pcsx2Config
+ 		static constexpr s32 MAX_VOLUME = 200;
+ #ifdef ARMSX2_USE_OBOE
+ 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Oboe;
++#elif defined(__OHOS__)
++		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::OHAudio;
+ #else
+ 		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Cubeb;
+ #endif
+diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
+index 028d46833..430cf311c 100644
+--- a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
++++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include <native_window/external_window.h>
+ 
++#include <EGL/egl.h>
++
+ GLContextEGLOHOS::GLContextEGLOHOS(const WindowInfo& wi) : GLContextEGL(wi) {}
+ GLContextEGLOHOS::~GLContextEGLOHOS() = default;
+ 
+@@ -33,7 +35,62 @@ std::unique_ptr<GLContext> GLContextEGLOHOS::CreateSharedContext(const WindowInf
+ 
+ void GLContextEGLOHOS::ResizeSurface(u32 new_surface_width, u32 new_surface_height)
+ {
++	// ---------------------------------------------------------------------
++	// 为什么必须在这里重建 EGL surface（而不是只更新尺寸字段）
++	//
++	// 上游 GLContextEGL::ResizeSurface() 只做一件事：把新尺寸写进 m_wi
++	// （GLContextEGL.cpp:343-344），**不重建 EGLSurface**。
++	// 对桌面平台这没问题 —— 窗口系统的 surface 会自己跟着窗口变。
++	//
++	// 但在 HarmonyOS 上，底层是 OHNativeWindow：旋转或改变窗口尺寸时，
++	// 它的图形缓冲区会换成新尺寸，而 EGLSurface 仍绑在旧缓冲上。
++	// 结果是呈现时尺寸不匹配 —— 真机表现为**黑屏**
++	// （模拟器仍在跑：emulog 里 PerfLog 62fps、GS 在编译着色器）。
++	//
++	// 因此这里销毁旧 surface 并按新尺寸重建。
++	// 尺寸本身仍交给基类处理，保持一致。
++	// ---------------------------------------------------------------------
++	const bool size_changed =
++		(new_surface_width != 0 && new_surface_height != 0 &&
++			(new_surface_width != m_wi.surface_width || new_surface_height != m_wi.surface_height));
++
+ 	GLContextEGL::ResizeSurface(new_surface_width, new_surface_height);
++
++	if (!size_changed)
++		return;
++
++	// 没有 window / display 的场合（例如 Surfaceless）无需重建
++	if (m_display == EGL_NO_DISPLAY || m_surface == EGL_NO_SURFACE || !m_wi.window_handle)
++		return;
++
++	OHNativeWindow* window = static_cast<OHNativeWindow*>(m_wi.window_handle);
++	EGLNativeWindowType native_window = reinterpret_cast<EGLNativeWindowType>(window);
++	if (!native_window)
++		return;
++
++	// 先解绑并销毁旧 surface，再按同一 config 重建
++	eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++	if (!eglDestroySurface(m_display, m_surface))
++		Console.WarningFmt("GLContextEGLOHOS: eglDestroySurface() failed: 0x{:x}", eglGetError());
++
++	m_surface = eglCreateWindowSurface(m_display, m_config, native_window, nullptr);
++	if (m_surface == EGL_NO_SURFACE)
++	{
++		Console.ErrorFmt("GLContextEGLOHOS: eglCreateWindowSurface() failed on resize: 0x{:x} "
++		                 "(size {}x{})", eglGetError(), m_wi.surface_width, m_wi.surface_height);
++		return;
++	}
++
++	// 重新绑定上下文到新 surface，否则后续绘制会落到已销毁的旧 surface
++	if (!eglMakeCurrent(m_display, m_surface, m_surface, m_context))
++	{
++		Console.ErrorFmt("GLContextEGLOHOS: eglMakeCurrent() failed after resize: 0x{:x}",
++			eglGetError());
++		return;
++	}
++
++	Console.WriteLn("GLContextEGLOHOS: EGL surface recreated at %ux%u after window resize",
++		m_wi.surface_width, m_wi.surface_height);
+ }
+ 
+ EGLNativeWindowType GLContextEGLOHOS::GetNativeWindow(EGLConfig)
+diff --git a/pcsx2/Host/AudioStream.cpp b/pcsx2/Host/AudioStream.cpp
+index b87755926..7f3a182ee 100644
+--- a/pcsx2/Host/AudioStream.cpp
++++ b/pcsx2/Host/AudioStream.cpp
+@@ -124,6 +124,9 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
+ 			return CreateOboeAudioStream(sample_rate, parameters, stretch_enabled, error);
+ #endif
+ 
++		case AudioBackend::OHAudio:
++			return CreateOHAudioStream(sample_rate, parameters, stretch_enabled, error);
++
+ 		case AudioBackend::Null:
+ 			return CreateNullStream(sample_rate, parameters.buffer_ms);
+ 
+@@ -155,12 +158,14 @@ static constexpr const std::array s_backend_names = {
+ 	"Cubeb",
+ 	"SDL",
+ 	"Oboe",
++	"OHAudio",
+ };
+ static constexpr const std::array s_backend_display_names = {
+ 	TRANSLATE_NOOP("AudioStream", "Null (No Output)"),
+ 	TRANSLATE_NOOP("AudioStream", "Cubeb"),
+ 	TRANSLATE_NOOP("AudioStream", "SDL"),
+ 	TRANSLATE_NOOP("AudioStream", "Oboe"),
++	TRANSLATE_NOOP("AudioStream", "OpenHarmony Audio"),
+ };
+ 
+ std::optional<AudioBackend> AudioStream::ParseBackendName(const char* str)
+diff --git a/pcsx2/Host/AudioStream.h b/pcsx2/Host/AudioStream.h
+index d81e4dca6..e917a9a8f 100644
+--- a/pcsx2/Host/AudioStream.h
++++ b/pcsx2/Host/AudioStream.h
+@@ -156,6 +156,10 @@ private:
+ 	static std::unique_ptr<AudioStream> CreateOboeAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
+ 		bool stretch_enabled, Error* error);
+ 
++	// OpenHarmony native audio backend. Defined in Host/OHAudioStream.cpp.
++	static std::unique_ptr<AudioStream> CreateOHAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
++		bool stretch_enabled, Error* error);
++
+ 	void AllocateBuffer();
+ 	void DestroyBuffer();
+ 
+diff --git a/pcsx2/Host/AudioStreamTypes.h b/pcsx2/Host/AudioStreamTypes.h
+index 9cd1bcf81..ebedae92e 100644
+--- a/pcsx2/Host/AudioStreamTypes.h
++++ b/pcsx2/Host/AudioStreamTypes.h
+@@ -15,6 +15,7 @@ enum class AudioBackend : u8
+ 	Cubeb,
+ 	SDL,
+ 	Oboe,
++	OHAudio,
+ 	Count
+ };
+ 

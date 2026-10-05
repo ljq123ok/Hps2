@@ -5,9 +5,8 @@
     "products": [
       {
         "name": "default",
-        // 本机安装的 SDK 为 HarmonyOS 6.1.1 (API 24)。阶段 0 已确认目标真机为
-        // HarmonyOS 7.0.0 (API 26)，高于本机 SDK，属前向兼容。
-        // targetSdkVersion 取本机 SDK 最高级别；compatibleSdkVersion 取 6.0.0(20) 以覆盖 OS6/OS7。
+        // 本机 SDK 为 HarmonyOS 6.1.1 (API 24)；目标真机为 HarmonyOS 7/API 26。
+        // 共享目录配置在运行时由系统处理，保持本机可用的 target SDK。
         "targetSdkVersion": "6.1.1(24)",
         "compatibleSdkVersion": "6.0.0(20)",
         "runtimeOS": "HarmonyOS",

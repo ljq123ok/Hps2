@@ -3,7 +3,7 @@
 基于 [ARMSX2](https://github.com/ARMSX2/ARMSX2)（PCSX2 的原生 ARM64 JIT fork）
 移植到 HarmonyOS / OpenHarmony。
 
-> **当前测试版：v0.13**
+> **当前测试版：v0.14**
 >
 > 开发测试设备：**HarmonyOS API 26 arm64 测试设备**。欢迎在 GitHub Issues 反馈测试结果。
 > 本版本是开发测试包，不代表已经适配所有 HarmonyOS 设备。
@@ -18,17 +18,14 @@
 
 HarmonyOS 用 **SELinux 域**隔离应用，而域由**签名类型**决定：
 
-| 签名类型 | SELinux 域 | 能否执行 JIT 动态生成代码 |
-|---|---|---|
-| 调试签名（自签）| `debug_hap` | ✅ **可以** |
-| 发布签名（商店）| `normal_hap` | ❌ **被系统拒绝** |
+HPS2 不再仅按签名类型推断 JIT 能力。启动时会实际生成并执行一段 ARM64
+代码，检查当前设备、系统版本、进程策略和构建环境是否允许匿名内存
+`RW → RX`。诊断页同时显示 Harmony JIT `prctl` 调用结果、页大小及可读取的
+SELinux domain。不同设备、HarmonyOS 版本和签名环境可能得到不同结果。
 
-这是我们在真机上实测的结论，不是推测：
-
-```
-调试签名：SELinux 域 = o:r:debug_hap:s0   → JIT 自检「可用」
-发布签名：SELinux 域 = o:r:normal_hap:s0  → JIT 自检「不可用」，errno=22 (EINVAL)
-```
+已有真机记录仅代表当时的具体设备、系统版本、HAP 与测试时点；它不构成
+所有 debug 或 release 签名的普遍结论。release/normal_hap 和 release 加 ACL
+组合仍需按 [`docs/release-jit-test.md`](docs/release-jit-test.md) 分别验证。
 
 **PS2 模拟离开 JIT 就没有意义** —— 纯解释器的性能远低于可玩阈值。
 因此本版本**不做降级**：若 JIT 不可用，应用会明确告知并拒绝启动，
@@ -46,25 +43,12 @@ HarmonyOS 用 **SELinux 域**隔离应用，而域由**签名类型**决定：
 ### 步骤
 
 ```bash
-# 1) 取出上游代码
-git clone https://github.com/ARMSX2/ARMSX2.git upstream/ARMSX2
-cd upstream/ARMSX2 && git checkout <本仓库记录的 fork 提交>
+# 一条命令固定并恢复上游、第三方源码，交叉编译依赖与核心并构建 HAP。
+# 可用 DEVECO_HOME 指向 DevEco-Studio.app/Contents。
+bash scripts/build-debug-hap.sh
 
-# 2) 交叉编译第三方依赖
-#    详见 thirdparty-ohos/（脚本会产出 prefix/ 下的 arm64 库）
-
-# 3) 配置并编译核心
-cmake -S upstream/ARMSX2 -B build \
-      -DCMAKE_TOOLCHAIN_FILE=upstream/ARMSX2/cmake/ohos.toolchain.cmake \
-      -DCMAKE_BUILD_TYPE=Release -DDISABLE_ADVANCE_SIMD=ON \
-      -DUSE_VULKAN=OFF -DUSE_OPENGL=ON \
-      -DENABLE_QT_UI=OFF -DENABLE_QT_DEBUGGER=OFF \
-      -DWAYLAND_API=OFF -DX11_API=OFF
-cmake --build build --target PCSX2_CORE_STATIC --parallel
-
-# 4) 编译 HAP
-cd app-hps2
-hvigorw --mode module -p module=entry@default assembleHap --no-daemon
+# 单独检查上游补丁归档
+bash tools/check-upstream-archive.sh
 
 # 5) **用你自己的证书签名**（关键步骤）
 #    DevEco Studio：File → Project Structure → Signing Configs → 勾选 Automatically generate signature
@@ -95,8 +79,8 @@ bundleName 与 Profile 不匹配而失败。
 
 1. **重启手机**后重试 —— 我们在开发中观测到 JIT 可用性会随运行状态变化
    （详见 `docs/jit-regression.md`）
-2. 确认应用是**调试签名**安装的（本版本的前提）
-3. 若仍失败，请把界面上的**错误码**（如 `EINVAL`）反馈到 Issue
+2. 查看诊断页的 prctl、匿名 RW→RX、memfd 双视图和 SELinux 结果
+3. 若仍失败，请把界面上的阶段、错误码和设备/系统版本反馈到 Issue
 
 ---
 
@@ -116,17 +100,19 @@ bundleName 与 Profile 不匹配而失败。
 
 ## 项目状态
 
-### v0.13 真实状态
+### v0.14 真实状态
 
 - 已在 HarmonyOS API 26 arm64 测试设备上完成核心启动、BIOS/游戏运行、OpenGL 画面、横屏布局、虚拟按键、3 倍内部渲染倍率等阶段性验证。
-- 本版新增即时存档（保存、读取、删除）、可拖动 FPS 悬浮球、日夜主题、错误分类、BIOS 规格检查、诊断日志导出和加载提示。
+- 本版包含即时存档（保存、读取、删除）、可拖动 FPS 悬浮球、日夜主题、错误分类、BIOS 规格检查、诊断日志导出和加载提示。
+- 新增启动时 JIT 运行能力探针与诊断信息，并显示游戏序列号、标题和 CRC；探针结果只代表当前设备及运行环境，不证明 JITFort 接口或所有签名配置均可用。
+- 诊断日志已移除用户文件路径、选择器 URI 等动态路径信息。
 - 外接手柄输入已接入 HarmonyOS GameControllerKit；本版本使用**盖世小鸡 X5S 拉伸蓝牙手柄**完成测试，其他品牌和型号仍需单独验证。
 - 旧版本创建的即时存档可能与当前构建不兼容；遇到读档异常时请删除旧档并重新保存。
 - 发布前已重新构建未签名 HAP；最终签名安装和真机功能回归由用户手动验证。
 - HAP 不包含 BIOS 或游戏镜像；用户必须使用自己的合法文件。
-- HAP 未签名，用户必须用自己的开发者账号生成**调试签名**后安装；发布签名可能导致 JIT 不可用。
+- HAP 未签名，用户必须使用自己的开发者账号签名后安装；JIT 能力由运行时探针判定，签名方式可能影响结果。
 - 音频仍可能存在杂音，当前未纳入本版本修复范围。
-- 如启动后提示 JIT 不可用，请优先确认使用的是调试签名，并反馈手机型号、签名方式、JIT 状态和日志。
+- 如启动后提示 JIT 不可用，请反馈手机型号、系统版本、签名方式、诊断页完整结果和日志；不要仅凭签名标签判断。
 - 本次发布不包含 HAP、签名证书/私钥、BIOS、游戏镜像、设备序列号或原始真机日志；发布包请在本地自行构建并签名。
 
 | 阶段 | 内容 | 状态 |
@@ -142,7 +128,7 @@ bundleName 与 Profile 不匹配而失败。
 
 - **Vulkan 后端未接入**（需要 shaderc 交叉编译，源码已备好但未完成）
 - **蓝牙手柄仍需扩大真机兼容性验证**
-- **应用市场版降级路径尚未实现**（release/normal 签名下 JIT 不可用）
+- **release/normal_hap 的 JIT 兼容性仍需逐种签名组合实测**
 - 多核优化未做（MTVU 等当前关闭）
 
 技术文档见 `docs/`。

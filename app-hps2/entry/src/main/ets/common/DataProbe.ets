@@ -79,16 +79,14 @@ interface ProbeResult {
 /** 探针汇总 */
 interface ProbeReport {
   results: ProbeResult[];
-  publicRoot: string;
-  probeDir: string;
 }
 
 /**
  * 把结果按统一格式打到 hilog，便于 `hilog | grep DATA_PROBE` 抓取判读。
  */
 function logResult(r: ProbeResult): void {
-  hilog.info(DOMAIN, TAG, 'DATA_PROBE %{public}s=%{public}s detail=%{public}s',
-    r.name, r.pass ? 'PASS' : 'FAIL', r.detail);
+  hilog.info(DOMAIN, TAG, 'DATA_PROBE %{public}s=%{public}s',
+    r.name, r.pass ? 'PASS' : 'FAIL');
 }
 
 /**
@@ -102,7 +100,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
   let publicRoot = '';
   let probeDir = '';
 
-  hilog.info(DOMAIN, TAG, 'DATA_PROBE begin sandbox=%{public}s', sandboxRoot);
+  hilog.info(DOMAIN, TAG, 'DATA_PROBE begin');
 
   // ------------------------------------------------------------------------
   // 第 1 项：解析公共根目录
@@ -124,7 +122,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
       results.push({
         name: 'resolve_public_dir',
         pass: true,
-        detail: `via getUserDownloadDir -> ${viaApi}`
+        detail: 'via getUserDownloadDir'
       });
     } else {
       results.push({
@@ -138,7 +136,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
     results.push({
       name: 'resolve_public_dir',
       pass: false,
-      detail: `getUserDownloadDir throw code=${be.code} msg=${be.message}; falling back to candidates`
+      detail: `getUserDownloadDir failed code=${be.code}; falling back to candidates`
     });
   }
 
@@ -164,8 +162,8 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
         arkOk = false;
       }
       hilog.info(DOMAIN, TAG,
-        'DATA_PROBE candidate path=%{public}s arkts_access=%{public}d native=%{public}s',
-        c, arkOk ? 1 : 0, statInfo);
+        'DATA_PROBE candidate checked arkts_access=%{public}d native_checked=%{public}d',
+        arkOk ? 1 : 0, statInfo.length > 0 ? 1 : 0);
 
       if (arkOk && publicRoot.length === 0) {
         publicRoot = c;
@@ -175,7 +173,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
       name: 'candidate_public_roots',
       pass: publicRoot.length > 0,
       detail: publicRoot.length > 0
-        ? `first ArkTS-accessible candidate -> ${publicRoot}`
+        ? 'first ArkTS-accessible candidate'
         : 'no candidate accessible via ArkTS'
     });
   }
@@ -188,7 +186,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
     results.push({
       name: 'fallback_for_native_test',
       pass: false,
-      detail: `ArkTS could not access any candidate; still testing native POSIX on ${publicRoot}`
+      detail: 'ArkTS candidates inaccessible; native POSIX checks still ran'
     });
   }
 
@@ -198,8 +196,8 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
   // 这决定"公共存储到底以什么路径暴露给应用"（或根本未暴露）。
   for (const probe of ['/', '/storage', '/data', '/storage/media', '/mnt', '/sdcard']) {
     try {
-      const lst: string = hps2core.listDataDir(probe);
-      hilog.info(DOMAIN, TAG, 'DATA_PROBE visible dir=%{public}s -> %{public}s', probe, lst);
+      hps2core.listDataDir(probe);
+      hilog.info(DOMAIN, TAG, 'DATA_PROBE directory check completed');
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'DATA_PROBE listDataDir(%{public}s) threw', probe);
     }
@@ -209,8 +207,8 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
   // 这是解释 FAIL 根因的关键 —— errno=2(ENOENT) 可能是"挂载点对应用
   // 不可见"，也可能是"某级祖先被拒绝进入"，二者对方案含义完全不同。
   try {
-    const chain: string = hps2core.probePathChain(publicRoot);
-    hilog.info(DOMAIN, TAG, 'DATA_PROBE path_chain=%{public}s', chain);
+    hps2core.probePathChain(publicRoot);
+      hilog.info(DOMAIN, TAG, 'DATA_PROBE path-chain check completed');
   } catch (e) {
     hilog.error(DOMAIN, TAG, 'DATA_PROBE probePathChain threw');
   }
@@ -220,11 +218,10 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
   try {
     // 显式标注返回类型：ArkTS 严格模式禁止从 napi 模块推断出 any
     // （与 Index.ets 中 `const raw: string = hps2core.getStatus()` 同理）。
-    const st: string = hps2core.statDataPath(publicRoot);
-    hilog.info(DOMAIN, TAG, 'DATA_PROBE native_stat_public=%{public}s', st);
+    hps2core.statDataPath(publicRoot);
+    hilog.info(DOMAIN, TAG, 'DATA_PROBE native stat check completed');
   } catch (err) {
-    hilog.error(DOMAIN, TAG, 'DATA_PROBE native statDataPath threw: %{public}s',
-      JSON.stringify(err as BusinessError));
+    hilog.error(DOMAIN, TAG, 'DATA_PROBE native statDataPath failed');
   }
 
   // ------------------------------------------------------------------------
@@ -242,14 +239,14 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
     results.push({
       name: 'mkdir',
       pass: mkdirOk,
-      detail: mkdirOk ? probeDir : 'accessSync false after mkdir'
+      detail: mkdirOk ? 'created' : 'accessSync false after mkdir'
     });
   } catch (e) {
     const err = e as BusinessError;
     results.push({
       name: 'mkdir',
       pass: false,
-      detail: `code=${err.code} msg=${err.message}`
+      detail: `code=${err.code}`
     });
   }
 
@@ -304,14 +301,14 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
       results.push({
         name: 'enumerate',
         pass: true,
-        detail: `entries=${names.length} candidates=${imageLike.length} [${imageLike.join('|')}]`
+        detail: `entries=${names.length} candidates=${imageLike.length}`
       });
     } catch (e) {
       const err = e as BusinessError;
       results.push({
         name: 'enumerate',
         pass: false,
-        detail: `code=${err.code} msg=${err.message}`
+        detail: `code=${err.code}`
       });
     }
   }
@@ -349,7 +346,7 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
       results.push({
         name: 'persist_marker',
         pass: false,
-        detail: `code=${err.code} msg=${err.message}`
+        detail: `code=${err.code}`
       });
     }
   }
@@ -370,14 +367,14 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
     results.push({
       name: 'native_rw_seek',
       pass: ok,
-      detail: ok ? 'all posix ops ok' : nativeJson
+      detail: ok ? 'all posix ops ok' : 'native POSIX checks failed'
     });
   } catch (e) {
     const err = e as BusinessError;
     results.push({
       name: 'native_rw_seek',
       pass: false,
-      detail: `throw code=${err.code} msg=${err.message}`
+      detail: `throw code=${err.code}`
     });
   }
 
@@ -389,8 +386,8 @@ export function runDataProbe(sandboxRoot: string): ProbeReport {
       passCount++;
     }
   }
-  hilog.info(DOMAIN, TAG, 'DATA_PROBE summary pass=%{public}d total=%{public}d root=%{public}s',
-    passCount, results.length, publicRoot);
+  hilog.info(DOMAIN, TAG, 'DATA_PROBE summary pass=%{public}d total=%{public}d',
+    passCount, results.length);
 
-  return { results, publicRoot, probeDir };
+  return { results };
 }

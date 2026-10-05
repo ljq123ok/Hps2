@@ -36,6 +36,15 @@ export struct HomeScreen {
   @Prop jitAction: string = '';
   @Prop jitStage: string = '';
   @Prop jitErrno: number = 0;
+  @Prop jitDiagnostics: string = '{}';
+  @Prop jitPrctlExperimentResult: string = '';
+  @Prop storeBuild: boolean = false;
+  @Prop executionMode: string = 'unknown';
+  @Prop degraded: boolean = false;
+  /** 游戏本体识别（运行中由 native 上报；未启动时为空串） */
+  @Prop discSerial: string = '';
+  @Prop discTitle: string = '';
+  @Prop discCRC: string = '';
 
   // ---- 事件回调 ----
   onPickBios?: () => void;
@@ -43,6 +52,7 @@ export struct HomeScreen {
   onClearGame?: () => void;
   onStart?: () => void;
   onCheckJit?: () => void;
+  onJitPrctlExperiment?: () => void;
   onOpenSettings?: () => void;
   onExportLog?: () => void;
 
@@ -95,9 +105,13 @@ export struct HomeScreen {
   jitCard() {
     Column({ space: 8 }) {
       Row() {
-        Text('JIT 状态').fontSize(14).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+		Text(this.storeBuild ? '运行模式' : 'JIT 状态')
+		  .fontSize(14).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
         Blank()
-        if (!this.jitChecked) {
+		if (this.storeBuild) {
+		  Text('兼容模式（解释器）')
+			.fontSize(13).fontWeight(FontWeight.Medium).fontColor(Theme.warn())
+		} else if (!this.jitChecked) {
           Text('未检测').fontSize(12).fontColor(Theme.textDim())
         } else {
           Text(this.jitAvailable ? '可用' : '不可用')
@@ -108,7 +122,14 @@ export struct HomeScreen {
       }
       .width('100%')
 
-      if (this.jitChecked && !this.jitAvailable) {
+	  if (this.storeBuild) {
+		Text('商店版不申请可执行内存，固定使用解释器运行。')
+		  .fontSize(12).fontColor(Theme.warn()).width('100%')
+		Text('性能受限：帧率和游戏兼容性可能明显低于 JIT 开发版。')
+		  .fontSize(11).fontColor(Theme.textSec()).width('100%')
+		Text(`当前后端：${this.executionMode === 'interpreter' ? '解释器' : '待启动'}`)
+		  .fontSize(11).fontColor(Theme.textDim()).width('100%')
+	  } else if (this.jitChecked && !this.jitAvailable) {
         Text(this.jitMessage)
           .fontSize(12).fontColor(Theme.err()).width('100%')
         Text(this.jitAction)
@@ -127,7 +148,13 @@ export struct HomeScreen {
           .fontSize(11).fontColor(Theme.textSec()).width('100%')
       }
 
-      if (!this.jitChecked || !this.jitAvailable) {
+      if (this.jitChecked) {
+        Text(this.jitDiagnostics)
+          .fontSize(10).fontColor(Theme.textDim()).width('100%')
+          .maxLines(8).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+
+      if (!this.storeBuild) {
         Button('重新检测')
           .width('100%').height(34).fontSize(13)
           .backgroundColor(Theme.bgCardHi())
@@ -135,15 +162,77 @@ export struct HomeScreen {
           .borderRadius(Theme.radiusSm)
           .onClick(() => { if (this.onCheckJit) this.onCheckJit(); })
       }
+      if (!this.storeBuild) {
+        Button('运行 prctl A/B 实验（请先停止模拟）')
+          .width('100%').height(34).fontSize(12)
+          .backgroundColor(Theme.bgCardHi())
+          .fontColor(Theme.textPri())
+          .borderRadius(Theme.radiusSm)
+          .onClick(() => { if (this.onJitPrctlExperiment) this.onJitPrctlExperiment(); })
+        if (this.jitPrctlExperimentResult.length > 0) {
+          Text(this.jitPrctlExperimentResult)
+            .fontSize(10).fontColor(Theme.textDim()).width('100%')
+            .maxLines(5).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
     }
     .width('100%')
     .padding(Theme.pad)
-    .backgroundColor(this.jitChecked && !this.jitAvailable ? '#2A1518' : Theme.bgCard())
+	.backgroundColor(this.storeBuild ? Theme.panelWarnBg() :
+	  (this.jitChecked && !this.jitAvailable ? '#2A1518' : Theme.bgCard()))
     .borderRadius(Theme.radius)
     .border({
       width: 1,
-      color: this.jitChecked && !this.jitAvailable ? '#5B2A2F' : Theme.border()
+	  color: this.storeBuild ? Theme.panelWarnBd() :
+		(this.jitChecked && !this.jitAvailable ? '#5B2A2F' : Theme.border())
     })
+  }
+
+  /**
+   * 游戏本体标识卡片。
+   *
+   * 只在**运行中且已识别出 serial** 时显示 —— 未启动时 native 返回空串，
+   * 显示一张空卡片只会干扰视线。BIOS-only 启动（无光盘）同样不显示，
+   * 因为那时没有"游戏本体"可言。
+   *
+   * 为什么值得单独做一张卡：记忆卡的自动归类完全依赖 serial，
+   * 但此前用户看不到它 —— 归类结果成了无法验证的黑盒。
+   */
+  @Builder
+  discCard() {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        Text('🎮').fontSize(15)
+        Text(this.discTitle.length > 0 ? this.discTitle : '已识别游戏')
+          .fontSize(14).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+      }
+      .width('100%')
+
+      // 序列号与 CRC 并排：前者是记忆卡归类的依据，后者与存档文件名一致
+      Row({ space: 8 }) {
+        Text('序列号')
+          .fontSize(10).fontColor(Theme.textDim())
+        Text(this.discSerial)
+          .fontSize(11).fontColor(Theme.ok()).fontWeight(FontWeight.Medium)
+
+        if (this.discCRC.length > 0) {
+          Text('CRC').fontSize(10).fontColor(Theme.textDim())
+          Text(this.discCRC)
+            .fontSize(11).fontColor(Theme.textSec())
+        }
+      }
+      .width('100%')
+
+      Text('记忆卡按序列号归类，存档文件名含 CRC。')
+        .fontSize(10).fontColor(Theme.textDim()).width('100%')
+    }
+    .width('100%')
+    .padding(Theme.pad)
+    .backgroundColor(Theme.bgCard())
+    .borderRadius(Theme.radius)
+    .border({ width: 1, color: Theme.border() })
   }
 
   build() {
@@ -193,6 +282,11 @@ export struct HomeScreen {
             () => { if (this.onPickGame) this.onPickGame(); },
             this.gameName.length > 0,
             () => { if (this.onClearGame) this.onClearGame(); })
+
+          // 运行中才显示（native 未启动时返回空串，避免空卡片干扰）
+          if (this.discSerial.length > 0) {
+            this.discCard()
+          }
 
           // ---- 启动按钮 ----
           Button(this.statusRunning0 ? '启动中…' : (this.gameName.length > 0 ? '启动游戏' : '启动 BIOS'))
@@ -310,6 +404,8 @@ export struct HomeScreen {
       StatusBar({
         jitChecked: this.jitChecked,
         jitAvailable: this.jitAvailable,
+		storeBuild: this.storeBuild,
+		executionMode: this.executionMode,
         biosReady: this.biosName.length > 0,
         gameReady: this.gameName.length > 0,
         running: false

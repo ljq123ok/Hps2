@@ -1,0 +1,13 @@
+{
+  "share_files": {
+    "scopes": [
+      {
+        "path": "/base/files",
+        "permission": "r+w"
+      }
+    ],
+    "sharingOSPath": "/base/files",
+    "sharingOSSubpath": "/memcards",
+    "sharingOSPermission": "r+w"
+  }
+}
