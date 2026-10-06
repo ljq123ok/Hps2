@@ -26,6 +26,11 @@ import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
+import {
+  PadGroup, PadLayoutVariant, PadStyle, PadLayoutStore,
+  PAD_STYLES, PAD_OPACITY_MIN, PAD_OPACITY_MAX,
+  offsetOf, setOffset, defaultVariant, clampOpacity, clampStyleIndex
+} from '../common/PadLayout';
 import common from '@ohos.app.ability.common';
 
 const DOMAIN = 0x3202;
@@ -269,6 +274,20 @@ struct Index {
   @State degraded: boolean = false;
   @State downgradeReason: string = '';
 
+  // ---- 触控布局编辑 ----
+  //
+  // 布局由本组件（页面）独占持有：VirtualPad 的 @Prop 是值拷贝，
+  // 子组件改了传不回来（会导致"拖动能看见、重启就丢"），
+  // 故子组件只上报位移，真值在这里，并由这里落盘。
+  @State padEditMode: boolean = false;
+  /** 当前方向的布局（横竖屏各一套，见 PadLayout.ets 的说明）*/
+  @State padLayout: PadLayoutVariant = defaultVariant();
+  @State padStyleIndex: number = 0;
+  private padStore: PadLayoutStore = new PadLayoutStore();
+  // 进入编辑前用户的开关状态，退出时恢复
+  private padEditRememberShow: boolean = true;
+  private padEditRememberOverlay: boolean = false;
+
   // ---- 游戏本体识别（serial / 标题 / CRC）----
   //
   // 为什么需要：记忆卡按**序列号**自动归类，但序列号此前从不显示 ——
@@ -351,9 +370,217 @@ struct Index {
     return this.dataRoot() + '/video-settings.json';
   }
 
+  // ===================== 触控布局 =====================
+
+  /**
+   * 把 store 中当前方向的布局同步到 @State。
+   *
+   * 为什么要这一步：store 里同时持有横竖屏两套，而 UI 只显示当前方向那套。
+   * 旋转后必须重新取一次，否则横屏会沿用竖屏的偏移
+   * （PadLayout.ets 说明了为何两套必须独立）。
+   */
+  private syncPadLayoutFromStore(): void {
+    const landscape = this.surfaceW > this.surfaceH;
+    this.padLayout = this.padStore.variant(landscape);
+    this.padStyleIndex = this.padStore.getStyleIndex();
+  }
+
+  /** 启动时恢复布局（坏文件回退默认，不阻断游戏）*/
+  private restorePadLayout(): void {
+    this.padStore.load(this.dataRoot());
+    this.syncPadLayoutFromStore();
+  }
+
+  /**
+   * 拖动某组的回调。
+   *
+   * 接收的是**归一化位移**（VirtualPad 已按屏宽/屏高换算），
+   * 累加到 store 持有的布局上，再同步回 @State 触发重绘。
+   * 每次只改一个组，故 O(1)。
+   */
+  private handlePadGroupDragged(group: PadGroup, dxNorm: number, dyNorm: number): void {
+    const landscape = this.surfaceW > this.surfaceH;
+    const v = this.padStore.variant(landscape);
+    const cur = offsetOf(v, group);
+    // setOffset 内部会做边界钳制（±45%），
+    // 保证控件主体不会拖出屏幕导致再也点不到。
+    setOffset(v, group, cur.dx + dxNorm, cur.dy + dyNorm);
+    this.syncPadLayoutFromStore();
+  }
+
+  /** 拖动结束：落盘一次（避免每帧写盘）*/
+  private handlePadDragEnd(): void {
+    this.padStore.save(this.dataRoot());
+  }
+
+  /** 透明度改变 */
+  private handlePadOpacityChange(v: number): void {
+    const landscape = this.surfaceW > this.surfaceH;
+    const layout = this.padStore.variant(landscape);
+    layout.opacity = clampOpacity(v);
+    this.syncPadLayoutFromStore();
+  }
+
+  /** 配色改变（立即生效并保存 —— 与拖动不同，这是一次离散操作）*/
+  private handlePadStyleChange(index: number): void {
+    this.padStore.setStyleIndex(clampStyleIndex(index));
+    this.syncPadLayoutFromStore();
+    this.padStore.save(this.dataRoot());
+  }
+
+  /** 恢复默认布局 */
+  private handlePadReset(): void {
+    const landscape = this.surfaceW > this.surfaceH;
+    this.padStore.resetCurrent(landscape);
+    this.syncPadLayoutFromStore();
+    this.padStore.save(this.dataRoot());
+  }
+
+  /** 当前方向的布局对象（供面板读写）*/
+  private currentPadVariant(): PadLayoutVariant {
+    const landscape = this.surfaceW > this.surfaceH;
+    return this.padStore.variant(landscape);
+  }
+
+  /** 当前配色 */
+  private currentPadStyle(): PadStyle {
+    return PAD_STYLES[clampStyleIndex(this.padStyleIndex)];
+  }
+
+  /** 当前是否横屏（用于编辑器面板的方向自适应）*/
+  private isLandscapeSurface(): boolean {
+    return this.surfaceW > this.surfaceH;
+  }
+
+  /**
+   * 进入/退出布局编辑。
+   *
+   * 进入时若虚拟按键是关闭状态，会自动打开 —— 否则用户进了编辑器
+   * 却看不到任何控件，无从调整（VirtualPad 的显示条件已配合放宽）。
+   * 退出时恢复用户原来的开关状态。
+   */
+  private enterPadEdit(): void {
+    this.padEditRememberShow = this.showPad;
+    this.showPad = true;
+    this.padEditRememberOverlay = this.overlayExpanded;
+    this.overlayExpanded = false;   // 悬浮球收起，避免遮挡编辑区
+    this.padEditMode = true;
+  }
+
+  private exitPadEdit(save: boolean): void {
+    if (!save) {
+      // 取消：丢弃本次未保存的改动，从磁盘重新读回
+      this.restorePadLayout();
+    } else {
+      this.padStore.save(this.dataRoot());
+    }
+    this.showPad = this.padEditRememberShow;
+    this.padEditMode = false;
+  }
+
+  /** 编辑器右侧/底部设置面板 */
+  @Builder
+  padEditorPanel() {
+    Column({ space: 12 }) {
+      Text('触控设置')
+        .fontSize(15).fontColor(OVERLAY_FG).fontWeight(FontWeight.Medium)
+        .width('100%')
+
+      // ---- 按键透明度（设计稿：Button opacity，默认 60%）----
+      Column({ space: 4 }) {
+        Row() {
+          Text('按键透明度').fontSize(12).fontColor(OVERLAY_FG_DIM)
+          Blank()
+          Text(Math.round(this.currentPadVariant().opacity * 100).toString() + '%')
+            .fontSize(12).fontColor(OVERLAY_FG)
+        }
+        .width('100%')
+
+        Slider({
+          value: Math.round(this.currentPadVariant().opacity * 100),
+          min: Math.round(PAD_OPACITY_MIN * 100),
+          max: Math.round(PAD_OPACITY_MAX * 100),
+          step: 5,
+          style: SliderStyle.OutSet
+        })
+          .width('100%')
+          .blockColor(OVERLAY_FG)
+          .trackColor(OVERLAY_BORDER)
+          .selectedColor(OVERLAY_ACCENT)
+          .onChange((value: number) => {
+            this.handlePadOpacityChange(value / 100);
+          })
+      }
+      .width('100%')
+
+      // ---- 按键配色（设计稿：Button style 色板）----
+      Column({ space: 6 }) {
+        Text('按键配色').fontSize(12).fontColor(OVERLAY_FG_DIM).width('100%')
+        Row({ space: 8 }) {
+          ForEach(PAD_STYLES, (st: PadStyle, idx: number) => {
+            Stack() {
+              Circle()
+                .width(26).height(26)
+                // 色板显示用实色（去掉 alpha，否则在黑底上看不出差别）
+                .fill(this.styleSwatch(st, idx))
+                .stroke(this.padStyleIndex === idx ? OVERLAY_OK : OVERLAY_BORDER)
+                .strokeWidth(this.padStyleIndex === idx ? 2 : 1)
+            }
+            .onClick(() => { this.handlePadStyleChange(idx); })
+          }, (st: PadStyle) => st.name)
+        }
+        .width('100%')
+      }
+      .width('100%')
+
+      // ---- 操作 ----
+      Row({ space: 8 }) {
+        Button('恢复默认')
+          .layoutWeight(1).height(36).fontSize(13)
+          .backgroundColor(OVERLAY_BG).fontColor(OVERLAY_FG)
+          .borderRadius(18)
+          .onClick(() => { this.handlePadReset(); })
+        Button('保存')
+          .layoutWeight(1).height(36).fontSize(13)
+          .backgroundColor(OVERLAY_ACCENT).fontColor('#FFFFFF')
+          .borderRadius(18)
+          .onClick(() => { this.exitPadEdit(true); })
+      }
+      .width('100%')
+
+      Text(this.isLandscapeSurface()
+        ? '每套方向各存一份布局；保存后立即生效。'
+        : '竖屏与横屏的布局分别保存。')
+        .fontSize(10).fontColor(OVERLAY_FG_DIM).width('100%')
+    }
+    .width(this.isLandscapeSurface() ? 220 : '100%')
+    .padding(12)
+    .margin({ right: this.isLandscapeSurface() ? 12 : 0, bottom: this.isLandscapeSurface() ? 0 : 8 })
+    .backgroundColor(OVERLAY_BG)
+    .borderRadius(Theme.radius)
+    .border({ width: 1, color: OVERLAY_BORDER })
+  }
+
+  /**
+   * 色板显示色。
+   *
+   * 配色本身含 alpha（#40FFFFFF 等），直接画在黑底面板上几乎看不见，
+   * 故显示时统一去掉 alpha 通道 —— 用户选的是"颜色"，不是"透明度"
+   * （透明度由上面的滑杆单独控制）。
+   */
+  private styleSwatch(st: PadStyle, idx: number): string {
+    const hex = st.border;
+    if (hex.length === 9) {
+      return '#' + hex.substring(3);
+    }
+    return hex;
+  }
+
   aboutToAppear(): void {
     // Native 状态只在当前进程内有效；先恢复持久化设置，再读取 UI 初始值。
     this.restoreVideoSettings();
+    // 触控布局同样要恢复；坏文件回退默认，不阻断启动。
+    this.restorePadLayout();
     // 让 native 侧与 UI 的初始比例一致（默认「自动」）。
     try {
       this.aspectMode = hps2core.getAspectMode();
@@ -2073,6 +2300,13 @@ struct Index {
         playing: this.viewMode === 'game',
         showPad: this.showPad,
         nativeGamepad: this.nativeGamepad,
+        padEditMode: this.padEditMode,
+        padLayout: this.padLayout,
+        padStyleIndex: this.padStyleIndex,
+        onPadGroupDragged: (g: PadGroup, dx: number, dy: number) => {
+          this.handlePadGroupDragged(g, dx, dy);
+        },
+        onPadDragEnd: () => { this.handlePadDragEnd(); },
         onSurfaceSize: (w: number, h: number) => {
           this.surfaceW = w;
           this.surfaceH = h;
@@ -2387,6 +2621,65 @@ struct Index {
         .onClick(() => { this.showSavePanel = false; })
       }
 
+      // ---- 触控布局编辑器 ----
+      //
+      // 对齐设计稿 03-edit-layout.jpg：顶栏（返回/标题/完成）+ 右侧设置面板。
+      //
+      // 【为什么面板位置随方向变】设计稿是横屏（画面宽、右侧有空间）。
+      // 竖屏时右侧面板会盖掉大半个屏幕，用户看不到自己正在摆的按键 ——
+      // 故竖屏改为底部面板，两者共用同一套 builder。
+      if (this.padEditMode) {
+        Column() {
+          // ---- 顶栏 ----
+          Row() {
+            Button('‹ 返回')
+              .height(34).fontSize(13)
+              .backgroundColor(OVERLAY_BG).fontColor(OVERLAY_FG)
+              .borderRadius(17)
+              .onClick(() => { this.exitPadEdit(false); })
+
+            Text('编辑布局')
+              .fontSize(16).fontColor(OVERLAY_FG).fontWeight(FontWeight.Medium)
+              .layoutWeight(1).textAlign(TextAlign.Center)
+
+            Button('✓ 完成')
+              .height(34).fontSize(13)
+              .backgroundColor(OVERLAY_BG).fontColor(OVERLAY_OK)
+              .borderRadius(17)
+              .onClick(() => { this.exitPadEdit(true); })
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+
+          // ---- 主体：画布提示 + 设置面板 ----
+          if (this.isLandscapeSurface()) {
+            Row() {
+              // 左侧留白即画布区（虚拟按键在 GameScreen 层，此处不遮挡）
+              Text('拖动虚线框调整按键位置')
+                .fontSize(12).fontColor(OVERLAY_FG_DIM)
+                .layoutWeight(1).textAlign(TextAlign.Center)
+              this.padEditorPanel()
+            }
+            .width('100%').layoutWeight(1).alignItems(VerticalAlign.Top)
+          } else {
+            Column() {
+              Text('拖动虚线框调整按键位置')
+                .fontSize(12).fontColor(OVERLAY_FG_DIM)
+                .width('100%').textAlign(TextAlign.Center)
+                .padding({ top: 8, bottom: 8 })
+                .layoutWeight(1)
+              this.padEditorPanel()
+            }
+            .width('100%').layoutWeight(1)
+          }
+        }
+        .width('100%')
+        .height('100%')
+        // 编辑器自身不拦截触摸（否则游戏画面/按键都点不到），
+        // 只有顶栏与面板是可交互的 —— 中间的画布区透传给下层 VirtualPad。
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
       // ---- 加载覆盖层 ----
       //
       // 用户要求：选择游戏后给出加载中提示，加载完自动消失。
@@ -2630,6 +2923,38 @@ struct Index {
                 Blank()
                 Toggle({ type: ToggleType.Switch, isOn: this.showPad })
                   .onChange((on: boolean) => { this.showPad = on; })
+              }
+              .width('100%')
+
+              // ---- 布局编辑入口 ----
+              // 放在这里而非悬浮球：布局是"设置一次就少动"的东西，
+              // 悬浮球留给游玩时的即时操作（存档/暂停）。
+              Column({ space: 4 }) {
+                Row() {
+                  Column({ space: 2 }) {
+                    Text('编辑按键布局').fontSize(13).fontColor(Theme.textSec())
+                    Text('拖动调整位置、透明度与配色；横竖屏各存一份')
+                      .fontSize(10).fontColor(Theme.textDim())
+                  }
+                  .layoutWeight(1).alignItems(HorizontalAlign.Start)
+                  Button('编辑')
+                    .height(34).fontSize(12)
+                    .backgroundColor(Theme.accent()).fontColor('#FFFFFF')
+                    .borderRadius(Theme.radiusSm)
+                    .enabled(this.statusRunning)
+                    .onClick(() => {
+                      // 面板要先关掉：否则设置弹层盖在编辑区上方
+                      this.showSettings = false;
+                      this.showMemoryCardManager = false;
+                      this.enterPadEdit();
+                    })
+                }
+                .width('100%')
+
+                if (!this.statusRunning) {
+                  Text('需先启动游戏 —— 布局按实际画面尺寸计算，空跑时无从判断遮挡。')
+                    .fontSize(10).fontColor(Theme.warn()).width('100%')
+                }
               }
               .width('100%')
             }

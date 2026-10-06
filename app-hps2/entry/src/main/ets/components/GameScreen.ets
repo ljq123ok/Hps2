@@ -17,6 +17,7 @@ import hps2core from 'libhps2core.so';
 import { Theme } from '../common/Theme';
 import { VirtualPad } from './VirtualPad';
 import { GamepadCatcher } from './GamepadCatcher';
+import { PadGroup, PadLayoutVariant } from '../common/PadLayout';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -29,6 +30,22 @@ export struct GameScreen {
   @Prop playing: boolean = false;
   /** 官方 GameControllerKit 已接管实体手柄；此时不能再让 ArkUI 抢焦点。 */
   @Prop nativeGamepad: boolean = false;
+  /**
+   * 触控布局编辑态。
+   *
+   * 编辑态下：虚拟按键显示虚线选框可拖动，且不向游戏送输入；
+   * 实体手柄接收器也要**停用** —— 否则编辑时按手柄会误触游戏，
+   * 也会把按键事件消耗在不可见的交互上。
+   */
+  @Prop padEditMode: boolean = false;
+  /** 用户自定义布局（父组件持有并持久化）*/
+  @Prop padLayout: PadLayoutVariant | null = null;
+  /** 配色索引 */
+  @Prop padStyleIndex: number = 0;
+  /** 拖动某组的归一化位移，上报父组件 */
+  onPadGroupDragged?: (group: PadGroup, dxNorm: number, dyNorm: number) => void;
+  /** 拖动结束，父组件落盘 */
+  onPadDragEnd?: () => void;
 
   /** surface 回调：把尺寸交给父组件，由父组件统一 push 给 native */
   onSurfaceSize?: (w: number, h: number) => void;
@@ -135,11 +152,35 @@ export struct GameScreen {
       // initial portrait geometry on the real device.  Recreating the child
       // at the orientation boundary makes the new vpW/vpH the initial
       // geometry instead of relying on a nested Builder to re-measure it.
-      if (this.playing && this.showPad && !this.landscape) {
-        VirtualPad({ landscape: false, vpW: this.vpW, vpH: this.vpH })
+      // 编辑态下即使"隐藏按键"也要显示 —— 否则用户进了编辑器却看不到东西，
+      // 无从调整。退出编辑后恢复 showPad 的语义。
+      if ((this.playing || this.padEditMode) && (this.showPad || this.padEditMode) && !this.landscape) {
+        VirtualPad({
+          landscape: false, vpW: this.vpW, vpH: this.vpH,
+          editMode: this.padEditMode,
+          layout: this.padLayout,
+          styleIndex: this.padStyleIndex,
+          onGroupDragged: (g: PadGroup, dx: number, dy: number) => {
+            if (this.onPadGroupDragged) { this.onPadGroupDragged(g, dx, dy); }
+          },
+          onGroupDragEnd: () => {
+            if (this.onPadDragEnd) { this.onPadDragEnd(); }
+          }
+        })
       }
-      if (this.playing && this.showPad && this.landscape) {
-        VirtualPad({ landscape: this.landscape, vpW: this.vpW, vpH: this.vpH })
+      if ((this.playing || this.padEditMode) && (this.showPad || this.padEditMode) && this.landscape) {
+        VirtualPad({
+          landscape: this.landscape, vpW: this.vpW, vpH: this.vpH,
+          editMode: this.padEditMode,
+          layout: this.padLayout,
+          styleIndex: this.padStyleIndex,
+          onGroupDragged: (g: PadGroup, dx: number, dy: number) => {
+            if (this.onPadGroupDragged) { this.onPadGroupDragged(g, dx, dy); }
+          },
+          onGroupDragEnd: () => {
+            if (this.onPadDragEnd) { this.onPadDragEnd(); }
+          }
+        })
       }
 
       // 蓝牙手柄事件接收器（零尺寸，不影响视觉与触摸布局）。
@@ -151,7 +192,7 @@ export struct GameScreen {
       // 三家手柄（Xbox / PlayStation / Switch）通用：
       // 系统层按键码统一，差异只在物理标注，按位置映射即可。
       // 映射表见 common/GamepadKeyMap.ets。
-      if (this.playing && !this.nativeGamepad) {
+      if (this.playing && !this.nativeGamepad && !this.padEditMode) {
         GamepadCatcher({
           padEnabled: true,
           onFirstEvent: () => {

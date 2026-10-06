@@ -22,6 +22,10 @@
  */
 import hps2core from 'libhps2core.so';
 import { VpadButton, VpadAxis } from '../common/VpadCodes';
+import {
+  PadGroup, PadLayoutVariant, PadStyle,
+  offsetOf, setOffset, PAD_STYLES, clampStyleIndex
+} from '../common/PadLayout';
 
 @Component
 export struct VirtualPad {
@@ -31,6 +35,34 @@ export struct VirtualPad {
   @Prop vpW: number = 440;
   /** XComponent 实测高度（vp） */
   @Prop vpH: number = 674;
+
+  /**
+   * 编辑布局模式。
+   *
+   * 编辑态下：控件组显示虚线选框、可整体拖动，且**屏蔽游戏输入** ——
+   * 若仍向 native 送按键，用户拖动时会误触游戏（例如拖摇杆时角色乱走）。
+   * 因此编辑态只做布局，不发 vpad 事件。
+   */
+  @Prop editMode: boolean = false;
+  /**
+   * 用户自定义布局 —— **只读输入**。
+   *
+   * 【为什么不在这里改它】ArkUI 的 @Prop 是**值拷贝**（对象也是浅拷贝），
+   * 子组件里的修改不会传回父组件。若在此直接改，父组件的持久化
+   * 拿到的仍是旧值 —— 表现为"拖了但重启就丢"。
+   * 因此布局由**父组件独占持有**，本组件只读取并显示；
+   * 拖动时通过 onGroupDragged 上报位移，由父组件更新并保存。
+   */
+  @Prop layout: PadLayoutVariant | null = null;
+  /** 配色索引（对应 PAD_STYLES）*/
+  @Prop styleIndex: number = 0;
+  /**
+   * 拖动某组：上报**归一化位移**（已按屏宽/屏高换算），
+   * 由父组件累加进它自己持有的布局对象并持久化。
+   */
+  onGroupDragged?: (group: PadGroup, dxNorm: number, dyNorm: number) => void;
+  /** 拖动结束（父组件据此落盘一次）*/
+  onGroupDragEnd?: () => void;
 
   /**
    * The parent surface can resize after this component is created (entering
@@ -56,6 +88,12 @@ export struct VirtualPad {
   // constant direction.
   private leftTouchId: number = -1;
   private rightTouchId: number = -1;
+
+  // 编辑态拖动状态：只允许同一个手指拖动同一组
+  private editingGroup: PadGroup | null = null;
+  private editTouchId: number = -1;
+  private lastEditX: number = 0;
+  private lastEditY: number = 0;
 
   private layoutW(): number {
     return this.measuredW > 0 ? this.measuredW : this.vpW;
@@ -186,21 +224,117 @@ export struct VirtualPad {
   private left(cx: number, w: number): number { return cx - w / 2; }
   private top(cy: number, h: number): number { return cy - h / 2; }
 
+  // ================= 用户自定义布局 =================
+
+  /** 当前配色的基色（无布局对象时回退到默认白）*/
+  private style(): PadStyle {
+    return PAD_STYLES[clampStyleIndex(this.styleIndex)];
+  }
+
+  /**
+   * 按键不透明度。
+   *
+   * 配色本身已含 alpha（如 #40FFFFFF），这里再乘一次用户比例 ——
+   * 设计稿的 "Button opacity" 是**独立于配色**的总透明度，
+   * 故不能只改配色的 alpha（那样换配色会覆盖用户设定）。
+   */
+  private op(): number {
+    const v = this.layout;
+    if (!v || !Number.isFinite(v.opacity)) {
+      return 0.6;   // 与 PadLayout 默认值一致
+    }
+    return Math.max(0.15, Math.min(1.0, v.opacity));
+  }
+
+  /** 某组在 x 方向的像素偏移（归一化值 × 屏宽）*/
+  private offX(g: PadGroup): number {
+    if (!this.layout) { return 0; }
+    return offsetOf(this.layout, g).dx * this.layoutW();
+  }
+
+  /** 某组在 y 方向的像素偏移（归一化值 × 屏高）*/
+  private offY(g: PadGroup): number {
+    if (!this.layout) { return 0; }
+    return offsetOf(this.layout, g).dy * this.layoutH();
+  }
+
+  /**
+   * 拖动某组：把像素位移换算成归一化位移后**上报父组件**。
+   *
+   * 本组件不改布局（@Prop 是值拷贝，改了也传不回去，
+   * 会导致"拖动能看见、重启就丢"）。父组件持有唯一真值。
+   */
+  private dragGroup(g: PadGroup, dxPx: number, dyPx: number): void {
+    const w = this.layoutW();
+    const h = this.layoutH();
+    if (!(w > 0) || !(h > 0)) { return; }
+    if (this.onGroupDragged) {
+      this.onGroupDragged(g, dxPx / w, dyPx / h);
+    }
+  }
+
+  /**
+   * 编辑态的虚线选框（对齐设计稿：蓝色虚框 + 淡填充）。
+   *
+   * 选框是**独立于按键**的触摸层：编辑态下按键自身不再接收触摸，
+   * 由选框统一处理拖动 —— 否则拖动会被按键的 onTouch 抢走。
+   */
+  @Builder
+  editFrame(g: PadGroup, x: number, y: number, w: number, h: number) {
+    Column()
+      .width(w)
+      .height(h)
+      .borderRadius(4)
+      .border({ width: 1.5, color: '#3A7EFF', style: BorderStyle.Dashed })
+      .backgroundColor('#143A7EFF')
+      .position({ x: x, y: y })
+      .onTouch((e: TouchEvent) => {
+        const changed = e.changedTouches.length > 0 ? e.changedTouches[0] : e.touches[0];
+        if (e.type === TouchType.Down) {
+          if (!changed) { return; }
+          this.editTouchId = changed.id;
+          this.lastEditX = changed.windowX;
+          this.lastEditY = changed.windowY;
+          this.editingGroup = g;
+        } else if (e.type === TouchType.Move) {
+          if (this.editingGroup !== g || !changed) { return; }
+          // 同一手指才能拖：多点触控时避免跟随错手指
+          if (this.editTouchId >= 0 && changed.id !== this.editTouchId) { return; }
+          const dx = changed.windowX - this.lastEditX;
+          const dy = changed.windowY - this.lastEditY;
+          this.lastEditX = changed.windowX;
+          this.lastEditY = changed.windowY;
+          this.dragGroup(g, dx, dy);
+        } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+          if (this.editingGroup === g) {
+            this.editingGroup = null;
+            this.editTouchId = -1;
+            if (this.onGroupDragEnd) { this.onGroupDragEnd(); }
+          }
+        }
+      })
+  }
+
   // ================= 控件 =================
 
   @Builder
   padButton(label: string, code: number, cx: number, cy: number) {
     Text(label)
       .fontSize(this.btn() * 0.42)
-      .fontColor('#FFFFFF')
+      .fontColor(this.style().fg)
       .textAlign(TextAlign.Center)
       .width(this.btn())
       .height(this.btn())
       .borderRadius(this.btn() / 2)
-      .backgroundColor('#40FFFFFF')
-      .border({ width: 1, color: '#80FFFFFF' })
+      .backgroundColor(this.style().bg)
+      .border({ width: 1, color: this.style().border })
+      .opacity(this.op())
       .position({ x: this.left(cx, this.btn()), y: this.top(cy, this.btn()) })
+      // 编辑态不接收触摸：交给上层的虚线选框处理拖动，
+      // 否则拖动会被按键抢走，且会向游戏误发按键。
+      .hitTestBehavior(this.editMode ? HitTestMode.None : HitTestMode.Default)
       .onTouch((e: TouchEvent) => {
+        if (this.editMode) { return; }
         if (e.type === TouchType.Down) {
           hps2core.vpadButton(code, true);
         } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
@@ -213,15 +347,18 @@ export struct VirtualPad {
   bar(label: string, code: number, isTrigger: boolean, cx: number, cy: number) {
     Text(label)
       .fontSize(this.barH() * 0.44)
-      .fontColor('#FFFFFF')
+      .fontColor(this.style().fg)
       .textAlign(TextAlign.Center)
       .width(this.barW())
       .height(this.barH())
       .borderRadius(6)
-      .backgroundColor('#40FFFFFF')
-      .border({ width: 1, color: '#80FFFFFF' })
+      .backgroundColor(this.style().bg)
+      .border({ width: 1, color: this.style().border })
+      .opacity(this.op())
       .position({ x: this.left(cx, this.barW()), y: this.top(cy, this.barH()) })
+      .hitTestBehavior(this.editMode ? HitTestMode.None : HitTestMode.Default)
       .onTouch((e: TouchEvent) => {
+        if (this.editMode) { return; }
         const down = (e.type === TouchType.Down);
         const up = (e.type === TouchType.Up || e.type === TouchType.Cancel);
         if (isTrigger) {
@@ -239,15 +376,18 @@ export struct VirtualPad {
   systemButton(label: string, code: number, cx: number, cy: number) {
     Text(label)
       .fontSize(this.barH() * 0.38)
-      .fontColor('#FFFFFF')
+      .fontColor(this.style().fg)
       .textAlign(TextAlign.Center)
       .width(this.barW())
       .height(this.barH())
       .borderRadius(6)
-      .backgroundColor('#40FFFFFF')
-      .border({ width: 1, color: '#80FFFFFF' })
+      .backgroundColor(this.style().bg)
+      .border({ width: 1, color: this.style().border })
+      .opacity(this.op())
       .position({ x: this.left(cx, this.barW()), y: this.top(cy, this.barH()) })
+      .hitTestBehavior(this.editMode ? HitTestMode.None : HitTestMode.Default)
       .onTouch((e: TouchEvent) => {
+        if (this.editMode) { return; }
         if (e.type === TouchType.Down) {
           hps2core.vpadButton(code, true);
         } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
@@ -262,13 +402,13 @@ export struct VirtualPad {
       Circle()
         .width(this.stickBox())
         .height(this.stickBox())
-        .fill('#18FFFFFF')
-        .stroke('#60FFFFFF')
+        .fill(this.style().bg)
+        .stroke(this.style().border)
         .strokeWidth(1)
       Circle()
         .width(this.stickR())
         .height(this.stickR())
-        .fill('#66FFFFFF')
+        .fill(this.style().border)
         .offset({
           x: isLeft ? this.lsx : this.rsx,
           y: isLeft ? this.lsy : this.rsy
@@ -277,7 +417,11 @@ export struct VirtualPad {
     .width(this.stickBox())
     .height(this.stickBox())
     .position({ x: this.left(cx, this.stickBox()), y: this.top(cy, this.stickBox()) })
+    .opacity(this.op())
+    .hitTestBehavior(this.editMode ? HitTestMode.None : HitTestMode.Default)
     .onTouch((e: TouchEvent) => {
+      // 编辑态：不摇动、不发轴值 —— 由上层选框处理拖动
+      if (this.editMode) { return; }
       e.stopPropagation();
       if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
         const activeId = isLeft ? this.leftTouchId : this.rightTouchId;
@@ -422,33 +566,80 @@ export struct VirtualPad {
       // 全部绝对定位，不放进 Row —— 用 Row 会让绝对定位子元素又受 flex
       // 约束，等于把刚消除的问题引回来。
       // 左侧：L1 / L2 并排，整体以 leftX 为中心；右侧同理。
+      // 用户偏移按组叠加（左右肩键是**两个**独立组，可分别摆放）。
       this.bar('L1', VpadButton.LEFT_SHOULDER, false,
-        this.controlLeftX() - (this.barW() + this.gap()) / 2, this.barY())
+        this.controlLeftX() - (this.barW() + this.gap()) / 2 + this.offX(PadGroup.LEFT_SHOULDER),
+        this.barY() + this.offY(PadGroup.LEFT_SHOULDER))
       this.bar('L2', VpadAxis.LEFT_TRIGGER, true,
-        this.controlLeftX() + (this.barW() + this.gap()) / 2, this.barY())
+        this.controlLeftX() + (this.barW() + this.gap()) / 2 + this.offX(PadGroup.LEFT_SHOULDER),
+        this.barY() + this.offY(PadGroup.LEFT_SHOULDER))
       this.bar('R2', VpadAxis.RIGHT_TRIGGER, true,
-        this.controlRightX() - (this.barW() + this.gap()) / 2, this.barY())
+        this.controlRightX() - (this.barW() + this.gap()) / 2 + this.offX(PadGroup.RIGHT_SHOULDER),
+        this.barY() + this.offY(PadGroup.RIGHT_SHOULDER))
       this.bar('R1', VpadButton.RIGHT_SHOULDER, false,
-        this.controlRightX() + (this.barW() + this.gap()) / 2, this.barY())
+        this.controlRightX() + (this.barW() + this.gap()) / 2 + this.offX(PadGroup.RIGHT_SHOULDER),
+        this.barY() + this.offY(PadGroup.RIGHT_SHOULDER))
 
       // ---- 十字键 ----
-      this.dpad(this.controlLeftX(), this.midY())
+      this.dpad(this.controlLeftX() + this.offX(PadGroup.DPAD),
+        this.midY() + this.offY(PadGroup.DPAD))
 
       // ---- 四键 ----
-      this.face(this.controlRightX(), this.midY())
+      this.face(this.controlRightX() + this.offX(PadGroup.FACE),
+        this.midY() + this.offY(PadGroup.FACE))
 
       // ---- Select / Start ----
       // These are separate SDL gamepad buttons (BACK/START), not labels on
       // the status bar.  Keep them in the center gap so they do not steal
       // touch space from the d-pad or face buttons.
       this.systemButton('SELECT', VpadButton.BACK,
-        this.layoutW() / 2 - (this.barW() + this.gap()) / 2, this.systemY())
+        this.layoutW() / 2 - (this.barW() + this.gap()) / 2 + this.offX(PadGroup.SYSTEM),
+        this.systemY() + this.offY(PadGroup.SYSTEM))
       this.systemButton('START', VpadButton.START,
-        this.layoutW() / 2 + (this.barW() + this.gap()) / 2, this.systemY())
+        this.layoutW() / 2 + (this.barW() + this.gap()) / 2 + this.offX(PadGroup.SYSTEM),
+        this.systemY() + this.offY(PadGroup.SYSTEM))
 
       // ---- 双摇杆 ----
-      this.stick(true, this.stickLeftX(), this.stickY())
-      this.stick(false, this.stickRightX(), this.stickY())
+      this.stick(true, this.stickLeftX() + this.offX(PadGroup.LEFT_STICK),
+        this.stickY() + this.offY(PadGroup.LEFT_STICK))
+      this.stick(false, this.stickRightX() + this.offX(PadGroup.RIGHT_STICK),
+        this.stickY() + this.offY(PadGroup.RIGHT_STICK))
+
+      // ---- 编辑态：各组的虚线选框（叠在按键之上，负责拖动）----
+      //
+      // 为什么选框画在**按键之后**：ArkUI 后声明的子节点在上层，
+      // 选框需要盖住按键才能接到拖动事件（按键此时已设为
+      // HitTestMode.None，不会抢事件）。
+      if (this.editMode) {
+        this.editFrame(PadGroup.LEFT_SHOULDER,
+          this.left(this.controlLeftX(), this.barW() * 2 + this.gap()) + this.offX(PadGroup.LEFT_SHOULDER),
+          this.top(this.barY(), this.barH()) + this.offY(PadGroup.LEFT_SHOULDER),
+          this.barW() * 2 + this.gap(), this.barH())
+        this.editFrame(PadGroup.RIGHT_SHOULDER,
+          this.left(this.controlRightX(), this.barW() * 2 + this.gap()) + this.offX(PadGroup.RIGHT_SHOULDER),
+          this.top(this.barY(), this.barH()) + this.offY(PadGroup.RIGHT_SHOULDER),
+          this.barW() * 2 + this.gap(), this.barH())
+        this.editFrame(PadGroup.DPAD,
+          this.left(this.controlLeftX(), this.btn() * 3 + this.gap() * 2) + this.offX(PadGroup.DPAD),
+          this.top(this.midY(), this.btn() * 3 + this.gap() * 2) + this.offY(PadGroup.DPAD),
+          this.btn() * 3 + this.gap() * 2, this.btn() * 3 + this.gap() * 2)
+        this.editFrame(PadGroup.FACE,
+          this.left(this.controlRightX(), this.btn() * 3 + this.gap() * 2) + this.offX(PadGroup.FACE),
+          this.top(this.midY(), this.btn() * 3 + this.gap() * 2) + this.offY(PadGroup.FACE),
+          this.btn() * 3 + this.gap() * 2, this.btn() * 3 + this.gap() * 2)
+        this.editFrame(PadGroup.SYSTEM,
+          this.left(this.layoutW() / 2, this.barW() * 2 + this.gap()) + this.offX(PadGroup.SYSTEM),
+          this.top(this.systemY(), this.barH()) + this.offY(PadGroup.SYSTEM),
+          this.barW() * 2 + this.gap(), this.barH())
+        this.editFrame(PadGroup.LEFT_STICK,
+          this.left(this.stickLeftX(), this.stickBox()) + this.offX(PadGroup.LEFT_STICK),
+          this.top(this.stickY(), this.stickBox()) + this.offY(PadGroup.LEFT_STICK),
+          this.stickBox(), this.stickBox())
+        this.editFrame(PadGroup.RIGHT_STICK,
+          this.left(this.stickRightX(), this.stickBox()) + this.offX(PadGroup.RIGHT_STICK),
+          this.top(this.stickY(), this.stickBox()) + this.offY(PadGroup.RIGHT_STICK),
+          this.stickBox(), this.stickBox())
+      }
     }
     // Fill the current game surface and measure it locally.  This is
     // deliberate: the parent can rotate/resize after the child is mounted,
