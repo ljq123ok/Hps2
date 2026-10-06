@@ -876,6 +876,7 @@ void VMThreadMain() {
 		unsigned long long last_frame = 0;
 		HostSys::MemProtectStats previous_protect{};
 		int last_tick_ms = 0;
+		int jit_watchdog_samples = 0;
 		auto now_ms = []() {
 			return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -940,50 +941,24 @@ void VMThreadMain() {
 				protect_avg_us,
 				static_cast<double>(protect.max_nanoseconds) / 1000.0);
 			previous_protect = protect;
-		}
 
-		// ---------------------------------------------------------------
-		// 运行期 JIT 看门狗（产品决策：不降级）
-		//
-		// 为什么必须有：JIT 可用性**不是设备的静态属性** —— 实测同一个
-		// HAP 文件在运行 2 小时后出现所有 PROT_EXEC 请求返回 EINVAL
-		// （见 docs/jit-regression.md）。若能力在游戏中途消失，继续跑
-		// 只会崩溃或产出错误结果，而不是"变慢"。
-		//
-		// 处理方式：复检失败 => 主动停机并报告。
-		// **不切解释器** —— 那正是本模块要拦截的静默降级。
-		// ---------------------------------------------------------------
-		int watchdog_tick = 0;
-		while (g_vm_running.load()) {
-			// 同样切成小步：3 秒的整段 sleep 会让退出请求最多延迟 3 秒，
-			// 而 monitor.join() 正在等它（与上面的诊断循环同一类缺陷）。
+			// 运行期 JIT 看门狗：复用 1 秒 PERF 采样节拍，每 30 秒才做一次
+			// 独立 scratch-page 复检。将检查放在同一个持续运行循环中，避免
+			// 放到 PERF 循环之后而永远等不到执行。
+			if (!kStoreBuild && ++jit_watchdog_samples >= 30)
 			{
-				int waited = 0;
-				while (waited < 3000 && g_vm_running.load())
+				jit_watchdog_samples = 0;
+				if (!RevalidateJitAlive())
 				{
-					std::this_thread::sleep_for(std::chrono::milliseconds(100));
-					waited += 100;
-				}
-				if (!g_vm_running.load())
+					LOGE("JIT_WATCHDOG=revoked 已停止模拟（不回退解释器）");
+					SetError("JIT 能力在运行中失效，已停止模拟：" + GetJitMessage());
+					g_vm_running.store(false);
+					VMManager::SetPaused(true);
+					SetStage(BootStage::kFailed);
 					break;
+				}
+				LOGI("JIT_WATCHDOG=alive interval_sec=30");
 			}
-			++watchdog_tick;
-			if (kStoreBuild)
-				continue;
-
-			// 每 10 次采样（约 30 秒）复检一次，避免高频 mprotect 影响模拟性能。
-			if ((watchdog_tick % 10) != 0)
-				continue;
-
-			if (!RevalidateJitAlive()) {
-				LOGE("JIT_WATCHDOG=revoked 已停止模拟（不回退解释器）");
-				SetError("JIT 能力在运行中失效，已停止模拟：" + GetJitMessage());
-				g_vm_running.store(false);
-				VMManager::SetPaused(true);
-				SetStage(BootStage::kFailed);
-				break;
-			}
-			LOGI("JIT_WATCHDOG=alive tick=%{public}d", watchdog_tick);
 		}
 	});
 
