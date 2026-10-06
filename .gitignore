@@ -49,6 +49,10 @@ stage1-jitprobe/host-test/encode_check
 # Codex 接手期间的临时备份（patch + bundle + 未跟踪文件快照）。
 .backup-codex-takeover/
 
+# 对齐 origin/master 前的临时回滚点（bundle + patch + 未跟踪快照）。
+# 用通配符覆盖后续同类目录；这些只是本地回滚用，不入版本库。
+.backup-prealign-*/
+
 # 第三方交叉编译产物（可从源码重建）
 thirdparty-ohos/src/
 thirdparty-ohos/build/
