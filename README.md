@@ -23,9 +23,18 @@ HPS2 不再仅按签名类型推断 JIT 能力。启动时会实际生成并执�
 `RW → RX`。诊断页同时显示 Harmony JIT `prctl` 调用结果、页大小及可读取的
 SELinux domain。不同设备、HarmonyOS 版本和签名环境可能得到不同结果。
 
-已有真机记录仅代表当时的具体设备、系统版本、HAP 与测试时点；它不构成
-所有 debug 或 release 签名的普遍结论。release/normal_hap 和 release 加 ACL
-组合仍需按 [`docs/release-jit-test.md`](docs/release-jit-test.md) 分别验证。
+**本项目的签名方式已确定：自签名（debug 域），并已在此配置下实测 JIT 可用。**
+这不是权宜之计，而是上架路径的实测结论决定的：
+
+| 签名 | SELinux 域 | JIT 实测 |
+|---|---|---|
+| **自签（本项目采用）** | `debug_hap` | ✅ **可用**（`available=1 stage=ok errno=0`） |
+| 应用市场发布签名 | `normal_hap` | ❌ 不可用（`mprotect-rx` 返回 `EINVAL`） |
+
+原因在系统策略层：`normal_hap` 不在 `exec_anon_mem` 的豁免名单里，
+而被 `neverallow` 拦下。因此本项目**以自签分发为前提**，不再把
+"release/normal_hap 的 JIT 兼容性"当作待办项。
+实测细节见 [`docs/release-jit-conclusion.md`](docs/release-jit-conclusion.md)。
 
 **PS2 模拟离开 JIT 就没有意义** —— 纯解释器的性能远低于可玩阈值。
 因此本版本**不做降级**：若 JIT 不可用，应用会明确告知并拒绝启动，
@@ -128,7 +137,7 @@ bundleName 与 Profile 不匹配而失败。
 
 - **Vulkan 后端未接入**（需要 shaderc 交叉编译，源码已备好但未完成）
 - **蓝牙手柄仍需扩大真机兼容性验证**
-- **release/normal_hap 的 JIT 兼容性仍需逐种签名组合实测**
+- **本项目的签名方式为自签（debug 域）**，JIT 已在此配置下实测可用；应用市场发布签名（`normal_hap`）下 JIT 不可用，故本项目不以商店上架为目标
 - **MTVU（VU1 独立线程）已实现且可在设置里开关，默认关闭**；运行期无法可靠切换，改后需下次启动游戏生效。其余多核优化（异步 MTGS 等）未做
 - **性能数据仅覆盖一个轻负载场景**：实测 1x/3x 均跑满 50 FPS、speed 100%（EE ≤52%、GPU ≤10%），说明该负载未让模拟器受压；**尚无重负载基准，瓶颈位置未确认**（详见 `docs/p2-graphics-and-performance.md`）
 

@@ -1,5 +1,18 @@
 # JIT 签名环境验收记录
 
+> ## 📌 本项目已确定签名方式（2026-10-09）：自签（debug 域）
+>
+> **下表不再作为待办项。** 项目决定以自签分发，JIT 已在该配置下实测可用
+> （`JIT_CHECK_EXPLICIT available=1 stage=ok errno=0`，
+> SELinux domain = `debug_hap`）。
+>
+> 上架路径（`normal_hap`）已实测**不可行**：`mprotect-rx` 返回 `EINVAL`，
+> 系统策略 `neverallow ... self:xpm { exec_anon_mem }` 不豁免 `normal_hap`。
+> 详见 [`release-jit-conclusion.md`](release-jit-conclusion.md)。
+>
+> 下表保留作方法论与历史记录：若将来要换设备/系统版本，仍可按同样的
+> 格子逐项复核。**其"待测"字样不代表存在阻塞项目的未验证项。**
+
 HPS2 的 JIT 能力由运行时机器码探针判定。签名名称、构建模式或 `prctl` 返回值
 都不能单独作为“实际 JIT 可用”的证据。每个格子须由真实设备上的对应 HAP 填写；
 空白表示尚未验证。
