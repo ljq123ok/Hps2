@@ -24,6 +24,7 @@ namespace Hps2Surface
 	// 由 ArkTS 提供、napi_init.cpp 写入
 	extern std::mutex g_mutex;
 	extern void* g_window;        // OHNativeWindow*（避免在头里引入 OHOS 头）
+	extern unsigned long long g_surface_id;  // g_window 对应的 surfaceId
 	extern int g_width;
 	extern int g_height;
 	extern bool g_ready;

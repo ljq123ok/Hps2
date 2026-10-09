@@ -636,6 +636,9 @@ namespace Hps2JitCheck
 		if (!wrote_ok)
 		{
 			::close(fd);
+			// 早退也要删掉探针文件，否则会在沙箱里残留 .jitprobe.bin
+			// （正常路径在函数末尾 unlink，这条路径原先漏了）。
+			::unlink(path.c_str());
 			res.detail = "写入探针文件失败";
 			return res;
 		}

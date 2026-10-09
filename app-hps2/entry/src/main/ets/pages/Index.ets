@@ -27,7 +27,7 @@ import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
-  PadGroup, PadLayoutVariant, PadOffsetEntry, PadStyle, PadLayoutStore,
+  PadGroup, PadOffsetEntry, PadStyle, PadLayoutStore, PadLayoutSnapshot,
   PAD_STYLES, PAD_OPACITY_MIN, PAD_OPACITY_MAX,
   offsetOf, setOffset, defaultVariant, clampOpacity, clampStyleIndex,
   SharedPadLayout
@@ -313,6 +313,12 @@ struct Index {
   // 进入编辑前用户的开关状态，退出时恢复
   private padEditRememberShow: boolean = true;
   private padEditRememberOverlay: boolean = false;
+  /**
+   * 进入编辑器时的布局快照，供「返回」（取消）真正回滚。
+   * 编辑期间的拖动/配色等操作会**立即落盘**，所以不能靠"重读磁盘"取消
+   * ——磁盘早已被覆盖。见 PadLayoutStore.snapshot() 的说明。
+   */
+  private padEditSnapshot: PadLayoutSnapshot | null = null;
 
   // ---- 游戏本体识别（serial / 标题 / CRC）----
   //
@@ -487,12 +493,6 @@ struct Index {
     SharedPadLayout.store.save(this.dataRoot());
   }
 
-  /** 当前方向的布局对象（供面板读写）*/
-  private currentPadVariant(): PadLayoutVariant {
-    const landscape = this.surfaceW > this.surfaceH;
-    return SharedPadLayout.store.variant(landscape);
-  }
-
   /** 当前配色 */
   private currentPadStyle(): PadStyle {
     return PAD_STYLES[clampStyleIndex(this.padStyleIndex)];
@@ -515,16 +515,27 @@ struct Index {
     this.showPad = true;
     this.padEditRememberOverlay = this.overlayExpanded;
     this.overlayExpanded = false;   // 悬浮球收起，避免遮挡编辑区
+    // 拍快照：编辑期间的操作会立即落盘，取消时靠它回滚
+    this.padEditSnapshot = SharedPadLayout.store.snapshot();
     this.padEditMode = true;
   }
 
   private exitPadEdit(save: boolean): void {
     if (!save) {
-      // 取消：丢弃本次未保存的改动，从磁盘重新读回
-      this.restorePadLayout();
+      // 取消：用进入时的快照覆盖（编辑期间已落盘的改动一并撤销），
+      // 然后回写磁盘 —— 这样"返回"才真的等于放弃本次修改。
+      if (this.padEditSnapshot !== null) {
+        SharedPadLayout.store.restore(this.padEditSnapshot);
+        SharedPadLayout.store.save(this.dataRoot());
+      }
+      this.syncPadLayoutFromStore();
+      this.padEditSnapshot = null;
     } else {
       SharedPadLayout.store.save(this.dataRoot());
+      this.padEditSnapshot = null;
     }
+    // 恢复悬浮球展开态（进入编辑时强制收起过）
+    this.overlayExpanded = this.padEditRememberOverlay;
     this.showPad = this.padEditRememberShow;
     this.padEditMode = false;
   }

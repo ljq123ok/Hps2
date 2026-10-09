@@ -293,12 +293,28 @@ namespace Hps2Gamepad
 
 		bool RegisterMonitorsLocked()
 		{
-			if (s_monitors_registered)
-				return true;
+			// 逐项记录已成功的注册，避免"部分失败后重试"把**已成功**的
+			// 监视器再注册一遍 —— 重复注册会让 SDK 对同一次物理输入
+			// 回调两次，表现为按键"一按发两下"。
+			//
+			// 旧写法是 all-or-nothing：20 个注册项里只要有一项在本设备上
+			// 不支持，s_monitors_registered 就保持 false，于是下次
+			// Initialize() 会把整批重新注册一遍。
+			static uint32_t s_registered_mask = 0;
 			int succeeded = 0;
 			int attempted = 0;
+			uint32_t bit_index = 0;
+
 #define REGISTER(member, callback) \
-			do { attempted++; if (s_api.member(callback) == GAME_CONTROLLER_SUCCESS) succeeded++; } while (false)
+			do { \
+				const uint32_t bit = (1u << bit_index); \
+				attempted++; \
+				if ((s_registered_mask & bit) != 0) { succeeded++; } \
+				else if (s_api.member(callback) == GAME_CONTROLLER_SUCCESS) { \
+					s_registered_mask |= bit; succeeded++; \
+				} \
+				bit_index++; \
+			} while (false)
 			REGISTER(register_a, OnA);
 			REGISTER(register_b, OnB);
 			REGISTER(register_x, OnX);
@@ -320,8 +336,10 @@ namespace Hps2Gamepad
 			REGISTER(register_l2_axis, OnAxis);
 			REGISTER(register_r2_axis, OnAxis);
 #undef REGISTER
+			// 只有全部就绪才算"注册完成"（与返回值语义保持一致）
 			s_monitors_registered = (succeeded == attempted);
-			GPLOGI("GameControllerKit monitors registered %{public}d/%{public}d", succeeded, attempted);
+			GPLOGI("GameControllerKit monitors registered %{public}d/%{public}d (mask=0x%{public}x)",
+				succeeded, attempted, s_registered_mask);
 			return succeeded > 0;
 		}
 	}

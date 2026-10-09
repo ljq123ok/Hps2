@@ -53,7 +53,34 @@
 
 #include "hps2_surface.h"
 
+#include <deque>
+#include <functional>
 #include <native_window/external_window.h>
+
+// ---------------------------------------------------------------------------
+// CPU 线程任务队列（Host::RunOnCPUThread 的后端）
+//
+// 与 Android(native-lib.cpp:131-133) / iOS 平台前端同一套结构：
+//   - 未登记 CPU 线程、或就在该线程上时**内联执行**，否则入队；
+//   - 由 CPU 线程在 Running / Paused 两条循环里调
+//     Host::PumpMessagesOnCPUThread() 排空。
+//
+// 【线程身份复用上游，不另建一份】
+//   "当前是否在 CPU 线程"直接问 VMManager::Internal::IsOnCPUThread()：
+//   它在 CPUThreadInitialize() 里登记、CPUThreadShutdown() 里清空
+//   （VMManager.cpp:441 / 540），且未登记时返回 true（启动前/停机后
+//   允许前端内联驱动）。我们自己再存一份 thread::id 只会引入
+//   "两份状态可能不一致"的风险。
+// ---------------------------------------------------------------------------
+static std::mutex g_cpu_thread_mutex;
+static std::deque<std::function<void()>> g_cpu_thread_queue;
+
+// 丢弃尚未执行的任务（VM 停止时调用，避免旧状态的任务在下一轮被跑）
+void Hps2Host_ClearPendingTasks()
+{
+	std::lock_guard<std::mutex> lock(g_cpu_thread_mutex);
+	g_cpu_thread_queue.clear();
+}
 
 // 以下头文件声明了 Host 接口中与 UI 相关的成员
 // （LocaleCircleConfirm / RequestExitApplication / BeginTextInput /
@@ -302,7 +329,61 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
-	pxFailRel("Not implemented");
+	// ---------------------------------------------------------------------
+	// 把任务投递到 VM/CPU 线程执行。
+	//
+	// 【为什么不能保留 pxFailRel】
+	//   pxFailRel 经 pxOnAssertFail 在 **Release 也会 abort**（Assertions.h:17）。
+	//   而上游核心多处调用本函数（Hotkeys.cpp 的换卡/重载补丁、Patch.cpp:829
+	//   的即时打补丁、MTGS/GS 的窗口操作等）—— 一旦命中就是进程崩溃，
+	//   不是"功能暂时不生效"。
+	//
+	// 【实现照上游平台前端】Android(native-lib.cpp:3622) 与 iOS(main.cpp:1567)
+	//   是同一套：就在 CPU 线程上（或尚无 CPU 线程）时**内联执行**，否则入队，
+	//   由 CPU 线程在 Running 与 Paused 两条循环里排空。
+	//   block=true 时额外等待完成（当前上游所有调用点都是默认的 false）。
+	//
+	// 【与 Hps2VmSync::RunOnVmThread 的分工】
+	//   那个函数用于"存/读档"这类需要**同步等结果**的场景（block 语义 +
+	//   超时 + 与暂停握手）。本函数是上游的原生投递入口，语义是
+	//   默认 fire-and-forget，二者各自保留、互不替代。
+	// ---------------------------------------------------------------------
+	if (!function)
+		return;
+
+	// 当前就在 CPU 线程上（或根本没有 CPU 线程）→ 内联执行。
+	// 后者很关键：CPU 线程内部再投递会等自己排空，必然死锁。
+	// 该判断复用上游登记的身份（见文件头说明），不另存一份。
+	if (VMManager::Internal::IsOnCPUThread())
+	{
+		function();
+		return;
+	}
+
+	if (block)
+	{
+		std::mutex wait_mutex;
+		std::condition_variable wait_cv;
+		bool done = false;
+		{
+			std::lock_guard<std::mutex> lock(g_cpu_thread_mutex);
+			g_cpu_thread_queue.push_back([&]() {
+				function();
+				{
+					std::lock_guard<std::mutex> wait_lock(wait_mutex);
+					done = true;
+				}
+				wait_cv.notify_one();
+			});
+		}
+		std::unique_lock<std::mutex> wait_lock(wait_mutex);
+		wait_cv.wait(wait_lock, [&]() { return done; });
+	}
+	else
+	{
+		std::lock_guard<std::mutex> lock(g_cpu_thread_mutex);
+		g_cpu_thread_queue.push_back(std::move(function));
+	}
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -417,7 +498,21 @@ END_HOTKEY_LIST()
 
 void Host::PumpMessagesOnCPUThread()
 {
-	// Headless — no platform message pump.
+	// 排空 Host::RunOnCPUThread 投递过来的任务队列。
+	//
+	// 由 CPU 线程在两条循环里调用：Running 分支在 Execute() 返回后、
+	// Paused 分支在空转循环里（见 napi_init.cpp 的 VMThreadMain）。
+	// 上游把"重载补丁/换记忆卡/GS 窗口操作"这类必须落在 CPU 线程上的
+	// 动作投递到这里，若不排空就会一直积压。
+	//
+	// swap 后再执行：避免执行任务期间持有队列锁（任务本身可能再次投递）。
+	std::deque<std::function<void()>> queue;
+	{
+		std::lock_guard<std::mutex> lock(g_cpu_thread_mutex);
+		queue.swap(g_cpu_thread_queue);
+	}
+	for (auto& fn : queue)
+		fn();
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(

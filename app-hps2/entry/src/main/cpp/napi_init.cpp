@@ -74,6 +74,16 @@
 #include "hps2_savestate.h"
 #include "hps2_dataprobe.h"
 
+// ---------------------------------------------------------------------------
+// CPU 线程任务队列的清理（实现在 hps2_host.cpp）
+//
+// Host::RunOnCPUThread 会把任务投进队列，由 CPU 线程排空。
+// VM 停止时要丢弃残留任务，避免上一轮遗留的闭包在下一轮被跑。
+// "当前是否在 CPU 线程"由上游 VMManager::Internal::IsOnCPUThread() 判断，
+// 不需要我们另存线程身份。
+// ---------------------------------------------------------------------------
+void Hps2Host_ClearPendingTasks();
+
 #include "CDVD/CDVD.h"
 #include "Config.h"
 #include "GameList.h"
@@ -103,6 +113,7 @@ constexpr bool kStoreBuild = false;
 namespace Hps2Surface {
 	std::mutex g_mutex;
 	void* g_window = nullptr;   // OHNativeWindow*
+	unsigned long long g_surface_id = 0;   // g_window 对应的 surfaceId
 	int g_width = 0;
 	int g_height = 0;
 	bool g_ready = false;
@@ -547,6 +558,8 @@ bool InitializeConfig() {
 }
 
 void VMThreadMain() {
+	// CPU 线程身份由上游的 CPUThreadInitialize() 自行登记
+	// （VMManager.cpp:441 写 s_cpu_thread_id），故此处不再单独登记。
 	if (!VMManager::Internal::CPUThreadInitialize()) {
 		SetError("CPUThreadInitialize failed");
 		SetStage(BootStage::kFailed);
@@ -1047,6 +1060,12 @@ void VMThreadMain() {
 				}
 			}
 			g_vm_task_done_cv.notify_all();
+
+			// 暂停期间同样排空 Host::RunOnCPUThread 的后端队列。
+			// 上游把"重载补丁/换记忆卡"这类操作投递到这里，而暂停时
+			// Execute() 根本不跑，若只依赖上面那条路径就会一直积压。
+			// 与 Android 平台前端 native-lib.cpp:2860 的 Paused 分支一致。
+			Host::PumpMessagesOnCPUThread();
 			continue;
 		}
 
@@ -1066,6 +1085,11 @@ void VMThreadMain() {
 		g_vm_in_execute.store(false);
 		execute_calls++;
 
+		// Execute() 返回即回到 CPU 线程上下文，排空外部投递的任务
+		// （Host::RunOnCPUThread 的后端队列）。与 Android 平台前端
+		// native-lib.cpp:2857 在 Running 分支的做法一致。
+		Host::PumpMessagesOnCPUThread();
+
 		// 每 5000 次返回报一次存活，正常应极少触发（Execute 是长跑）。
 		if ((execute_calls % 5000) == 0) {
 			LOGI("WARN: Execute returned %{public}d times, state=%{public}d "
@@ -1078,9 +1102,15 @@ void VMThreadMain() {
 	if (monitor.joinable())
 		monitor.join();
 
+	// 退出前再排空一次，把收尾阶段投递的任务执行掉。
+	Host::PumpMessagesOnCPUThread();
+
 	VMManager::Internal::CPUThreadShutdown();
 	g_execution_mode.store(static_cast<int>(
 		kStoreBuild ? ExecutionMode::kInterpreter : ExecutionMode::kUnknown));
+	// 丢弃尚未执行的任务：CPU 线程即将退出（线程身份也由上游在
+	// CPUThreadShutdown 里清空），残留闭包不应留到下一轮。
+	Hps2Host_ClearPendingTasks();
 	LOGI("VM thread exited");
 }
 
@@ -1364,50 +1394,72 @@ static napi_value NapiNotifyResize(napi_env env, napi_callback_info info) {
 	//   · 表现为"画面位置不对、且无法全屏"
 	//   （启动时不受影响，因为 ApplyPendingConfigBeforeVM() 有被调用。）
 	//
-	// 为什么必须经 RunOnVmThread：上游要求 MTGS 的调用发生在 CPU 线程，
-	// 从 ArkUI 线程直接调会触发跨线程断言与环形队列竞态。
-	// RunOnVmThread 内部已检查 g_vm_running 并做任务串行化，
-	// 因此 VM 未启动时（如停留在首页）会安全返回 false，无需额外判断。
+	// 【为什么现在是"投递"而不是"同步等待"】
+	//   MTGS 的调用必须发生在 CPU 线程，而本函数由 ArkUI 的 onAreaChange
+	//   调用（即 UI 线程）。此前用 Hps2VmSync::RunOnVmThread 同步等待，
+	//   那条路径要先 SetPaused 再自旋等 Execute() 退出 —— 折叠/展开时
+	//   会把 UI 线程卡住数秒（ANR 风险）。
+	//
+	//   现在改用 Host::RunOnCPUThread：它的队列由 CPU 线程在 Running
+	//   （Execute 返回后）与 Paused 两条分支里排空，**投递即返回**。
+	//   为让 Running 中的长跑 Execute() 尽快返回以排空队列，这里仍请求
+	//   一次暂停，但**由被投递的任务自己负责恢复** —— 调用方不再等待，
+	//   也就不存在"回到 UI 线程时状态未知"的竞态：
+	//     任务在 Paused 分支跑到 → 应用尺寸 → 恢复运行（仅当本来在跑）
+	//     任务在 Running 时跑到 → 应用尺寸 → 恢复是无操作 → VM 继续跑
+	//   两种时序的最终状态一致（尺寸已应用 + VM 按调用前状态运行）。
 	// ---------------------------------------------------------------------
 	if (ok)
 	{
-		bool dispatched = false;
-		int waited_ms = 0;
 		const bool has_vm = VMManager::HasValidVM();
 		const bool was_running = has_vm && VMManager::GetState() == VMState::Running;
 
-		// RunOnVmThread 的任务队列只在 VM 处于 Paused 时取任务。正常游戏中
-		// VMManager::Execute() 是长跑调用，直接投递会等到超时并被取消。
-		// 因此与存/读档使用同一套握手：先请求暂停，等待 CPU 线程真正退出
-		// Execute()，在该线程应用尺寸，最后只恢复调用前本来处于 Running 的 VM。
-		if (was_running)
+		// 仅有 VM 时才需要驱动 CPU 线程；没有 VM 时暂存值会在
+		// ApplyPendingConfigBeforeVM() 里按启动路径生效。
+		if (has_vm)
 		{
-			VMManager::SetPaused(true);
-			constexpr int kMaxWaitMs = 3000;
-			constexpr int kStepMs = 2;
-			while (Hps2VmSync::IsInExecute() && waited_ms < kMaxWaitMs)
-			{
-				std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
-				waited_ms += kStepMs;
-			}
-		}
+			if (was_running)
+				VMManager::SetPaused(true);   // 让长跑的 Execute() 尽快返回
 
-		if (has_vm && !Hps2VmSync::IsInExecute())
-		{
-			dispatched = Hps2VmSync::RunOnVmThread([]() {
+			// fire-and-forget：不阻塞 UI 线程
+			Host::RunOnCPUThread([was_running]() {
 				Hps2Video::ApplyPendingSettingsOnCPUThread();
-			}, 3000);
+				// 只恢复"自己造成的暂停"，不干扰用户手动的暂停
+				if (was_running)
+					VMManager::SetPaused(false);
+			});
 		}
 
-		if (was_running)
-			VMManager::SetPaused(false);
-
-		LOGI("NotifyResize: apply dispatched=%{public}d waited=%{public}dms "
-		     "resumed=%{public}d (%{public}dx%{public}d)",
-			dispatched ? 1 : 0, waited_ms, was_running ? 1 : 0, w, h);
+		LOGI("NotifyResize: apply posted to CPU thread (was_running=%{public}d) %{public}dx%{public}d",
+			was_running ? 1 : 0, w, h);
 	}
 
 	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
+}
+
+// ---------------------------------------------------------------------------
+// 把字符串转义成可安全放进 JSON 双引号内的形式。
+//
+// 【为什么必须有】所有返回给 ArkTS 的 JSON 都是手工拼接的，其中 message
+// 可能来自上游错误串（例如 VMManager 的 "Cannot back up old save state 'x'"），
+// 一旦含 `"` 或 `\`，拼出的 JSON 就非法 —— ArkTS 侧 JSON.parse 抛异常，
+// 用户只能看到"操作失败"，真正原因被吞掉。
+// 定义放在各调用点之前（本文件内多处使用）。
+// ---------------------------------------------------------------------------
+static std::string JsonEscape(const std::string& value)
+{
+	std::string out;
+	out.reserve(value.size() + 8);
+	for (const char c : value)
+	{
+		if (c == '"' || c == '\\')
+			out.push_back('\\');
+		if (c == '\n' || c == '\r')
+			out.push_back(' ');
+		else
+			out.push_back(c);
+	}
+	return out;
 }
 
 // checkBios(path) -> JSON 字符串
@@ -1437,8 +1489,8 @@ static napi_value NapiCheckBios(napi_env env, napi_callback_info info) {
 	std::string json = std::string("{\"sizeOk\":") + (r.size_ok ? "true" : "false")
 		+ ",\"signatureOk\":" + (r.signature_ok ? "true" : "false")
 		+ ",\"size\":" + std::to_string(r.size)
-		+ ",\"sizeText\":\"" + r.size_text + "\""
-		+ ",\"message\":\"" + r.message + "\"}";
+		+ ",\"sizeText\":\"" + JsonEscape(r.size_text) + "\""
+		+ ",\"message\":\"" + JsonEscape(r.message) + "\"}";
 
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
@@ -1464,7 +1516,7 @@ static napi_value NapiSaveState(napi_env env, napi_callback_info info) {
 
 	const Hps2SaveState::Result r = Hps2SaveState::Save(slot);
 	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
-		+ ",\"message\":\"" + r.message + "\"}";
+		+ ",\"message\":\"" + JsonEscape(r.message) + "\"}";
 
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
@@ -1524,7 +1576,7 @@ static napi_value NapiDeleteSaveState(napi_env env, napi_callback_info info) {
 
 	const Hps2SaveState::Result r = Hps2SaveState::Remove(slot);
 	const std::string json = std::string("{\"ok\":") + (r.ok ? "true" : "false")
-		+ ",\"message\":\"" + r.message + "\"}";
+		+ ",\"message\":\"" + JsonEscape(r.message) + "\"}";
 
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), json.size(), &out);
@@ -1604,6 +1656,42 @@ static napi_value NapiSetSurface(napi_env env, napi_callback_info info) {
 	LOGI("setSurface: id=%{public}llu %{public}dx%{public}d",
 		static_cast<unsigned long long>(surface_id), w, h);
 
+	// ---------------------------------------------------------------------
+	// 【避免重复引用：surfaceId 未变时复用已有窗口】
+	//
+	// 官方头文件 external_window.h:743 对本函数的要求是：
+	//   "needs to be used in conjunction with OH_NativeWindow_DestroyNativeWindow,
+	//    otherwise memory leaks will occur."
+	// 即每次调用都会产生一个**待释放**的引用。
+	//
+	// 而它会被反复调用：onAreaChange 在进入沉浸式、旋转、折叠/展开时都会触发。
+	// 真机日志证实同一 surfaceId 反复返回同一地址（0x5f3e5aff40 出现 16 次），
+	// 说明这些调用都在给同一对象叠加引用，而旧实现从不归还。
+	//
+	// 【为什么选"复用"而不是"释放上一个"】
+	//   归还引用需要判断它是否仍被 EGL/GS 持有 —— GSDeviceOGL 的
+	//   m_window_info.window_handle 会跨帧缓存，直到 UpdateWindow() 才
+	//   重新 AcquireWindow(false)。判错即 use-after-free 崩溃。
+	//   而"surfaceId 未变就不重复创建"从根上消除了多余引用：
+	//   既不需要释放，也就不存在判错风险。
+	//
+	// surfaceId 真的变化时（XComponent 被重建）才新建；旧引用保守地
+	// 不归还 —— 宁可少还一个，也不制造悬垂。
+	// ---------------------------------------------------------------------
+	{
+		std::lock_guard<std::mutex> lock(Hps2Surface::g_mutex);
+		if (Hps2Surface::g_window != nullptr && Hps2Surface::g_surface_id == surface_id)
+		{
+			Hps2Surface::g_width = w;
+			Hps2Surface::g_height = h;
+			Hps2Surface::g_ready = true;
+			Hps2Surface::g_cv.notify_all();
+			LOGI("setSurface: reusing OHNativeWindow (%{public}p) id=%{public}llu %{public}dx%{public}d",
+				Hps2Surface::g_window, static_cast<unsigned long long>(surface_id), w, h);
+			napi_value r; napi_create_int32(env, 1, &r); return r;
+		}
+	}
+
 	OHNativeWindow* window = nullptr;
 	const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(surface_id, &window);
 	if (err != 0 || window == nullptr) {
@@ -1611,14 +1699,25 @@ static napi_value NapiSetSurface(napi_env env, napi_callback_info info) {
 		napi_value r; napi_create_int32(env, 0, &r); return r;
 	}
 
+	OHNativeWindow* previous = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(Hps2Surface::g_mutex);
+		previous = static_cast<OHNativeWindow*>(Hps2Surface::g_window);
 		Hps2Surface::g_window = window;
+		Hps2Surface::g_surface_id = surface_id;
 		Hps2Surface::g_width = w;
 		Hps2Surface::g_height = h;
 		Hps2Surface::g_ready = true;
 	}
 	Hps2Surface::g_cv.notify_all();
+
+	if (previous != nullptr && previous != window)
+	{
+		// 换了表面，但旧引用不归还（可能仍被 EGL/GS 持有）。留日志便于定位。
+		LOGW("setSurface: surface changed (%{public}p -> %{public}p); "
+		     "keeping the old reference (may still be held by EGL/GS)",
+			static_cast<void*>(previous), static_cast<void*>(window));
+	}
 
 	LOGI("setSurface: OHNativeWindow OK (%{public}p)", static_cast<void*>(window));
 	napi_value r; napi_create_int32(env, 1, &r); return r;
@@ -1676,17 +1775,33 @@ static napi_value NapiStop(napi_env env, napi_callback_info info) {
 	//   而 result=1 正是 VMBootResult::StartupFailure。
 	//
 	// 上游 Qt 的顺序（QtHost.cpp:429 与 450）：
-	//     CPUThreadShutdown() 在 CPU 线程循环退出后调；
-	//     VMManager::Shutdown() 随后在 UI 线程调（负责完整拆解 + 置 Shutdown）。
+	//   CPUThreadShutdown() 在 CPU 线程循环退出后调；
+	//   VMManager::Shutdown() 随后在 UI 线程调（负责完整拆解 + 置 Shutdown）。
 	// 我们照此顺序执行。
+	//
+	// 【为什么必须判状态】VMManager::Shutdown 不是幂等的：它会无条件
+	// 走 WaitGS / SPU2::Close / Pad::Shutdown / FileMcd_EmuClose 等一整套
+	// 拆解。重复调用（用户连点"返回"、或从未启动过就调 stop）会对已经
+	// 关闭的子系统再拆一次；部分子系统内部有守卫（如 MTGS::WaitGS 的
+	// !IsOpen 早退），但不能假设全都如此。
+	// 故仅在"确实处于活动状态"时才执行。
 	//
 	// save_resume_state=false：不写 resume 存档
 	// （本应用不提供"恢复上次会话"功能，避免在沙箱里留下额外文件）。
 	// ---------------------------------------------------------------------
-	LOGW("calling VMManager::Shutdown() to reset VM state");
-	VMManager::Shutdown(false);
-	LOGW("VMManager::Shutdown() done, state=%{public}d",
-		static_cast<int>(VMManager::GetState()));
+	const VMState state_before_shutdown = VMManager::GetState();
+	if (state_before_shutdown != VMState::Shutdown)
+	{
+		LOGW("calling VMManager::Shutdown() to reset VM state (from %{public}d)",
+			static_cast<int>(state_before_shutdown));
+		VMManager::Shutdown(false);
+		LOGW("VMManager::Shutdown() done, state=%{public}d",
+			static_cast<int>(VMManager::GetState()));
+	}
+	else
+	{
+		LOGW("VMManager::Shutdown() skipped: VM is already Shutdown");
+	}
 
 	// ---------------------------------------------------------------------
 	// 重置静态状态。
@@ -1962,21 +2077,7 @@ static bool IsSafeMemoryCardName(const std::string& name)
 	return true;
 }
 
-static std::string JsonEscape(const std::string& value)
-{
-	std::string out;
-	out.reserve(value.size() + 8);
-	for (const char c : value)
-	{
-		if (c == '"' || c == '\\')
-			out.push_back('\\');
-		if (c == '\n' || c == '\r')
-			out.push_back(' ');
-		else
-			out.push_back(c);
-	}
-	return out;
-}
+static std::string JsonEscape(const std::string& value);
 
 static bool PrepareMemoryCardDirectory(const std::string& data_root, std::string& out_dir)
 {
@@ -2617,7 +2718,14 @@ namespace Hps2VmSync
 	 * 读档/存档必须经此调用 —— 它们要重建重编译器状态与 TLB 映射，
 	 * 这些操作只允许在 VM 线程上下文里发生。
 	 *
-	 * 返回 false 表示 VM 线程不可用（未运行）或超时。
+	 * 返回 false 表示**没有做成**，调用方必须走失败分支，三种情形：
+	 *   - VM 线程不可用（未运行）；
+	 *   - 投递前已有任务在忙（串行化拒绝）；
+	 *   - 等待超时（含"任务已开始但 timeout 内未结束"）。
+	 *
+	 * 最后一情形下任务**可能仍会跑完**，但调用方已按失败处理，不会把
+	 * 未完成误当成功。调用方为此必须用 shared_ptr 捕获结果（或空捕获），
+	 * 否则任务晚于调用方结束时会有悬垂风险。
 	 */
 	bool RunOnVmThread(std::function<void()> fn, int timeout_ms)
 	{
@@ -2659,14 +2767,28 @@ namespace Hps2VmSync
 				return false;
 			}
 
-			// 一旦任务已经开始，就不能让捕获状态先于任务析构，也不能让
-			// 调用方恢复 VM 后再继续读写存档。此时同步等到任务真正结束。
+			// 任务已被取走、但超过 timeout 仍未结束。
+			//
+			// 【为什么直接返回 false，而不是无限等待】
+			//   原实现这里是无超时 wait，顾虑是"不能让调用方在任务还在跑时
+			//   就去读写那些状态"。但该顾虑对**当前三个调用点都不成立**：
+			//   Save/Load 的 outcome 是 shared_ptr、notifyResize 是空捕获，
+			//   任务晚于调用方结束也不会悬垂；且三个调用方在 !dispatched
+			//   分支都**立即返回错误**，不会再读那些状态。
+			//
+			//   而代价很大：任务一旦卡住（平台 API 阻塞、上游内部自旋），
+			//   调用方就是 ArkTS 线程 —— 无限等待 = UI 永久冻结。
+			//
+			//   故返回 false 让调用方走失败分支（它会恢复 VM 并如实报错）。
+			//   任务本身仍可能稍后跑完，但调用方不会把未完成误当成功。
+			//
+			//   不追加"宽限窗口"：那会把最坏阻塞时间翻倍（读档 8s→16s），
+			//   与"限制 UI 阻塞"的目的相悖。
 			if (g_vm_task_running)
 			{
-				LOGW("RunOnVmThread: timeout elapsed while task is running; waiting for safe completion");
-				g_vm_task_done_cv.wait(lk,
-					[] { return !g_vm_task_pending && !g_vm_task_running; });
-				return true;
+				LOGE("RunOnVmThread: timeout elapsed while task still running; "
+				     "reporting failure (task may complete later)");
+				return false;
 			}
 		}
 		return true;

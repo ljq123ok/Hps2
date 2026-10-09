@@ -174,6 +174,11 @@ namespace Hps2Video
 				MTGS::ResizeDisplayWindow(width, height, 1.0f);
 				MTGS::UpdateDisplayWindow();
 				VLOGI("display resize applied on CPU thread: %{public}ux%{public}u", width, height);
+				// 【消费后清零】否则每次调用本函数都会把最后一次尺寸
+				// 重复应用一遍（本函数也会被 setAspect/upscale/vuThread
+				// 的设置路径调用，那时并没有新尺寸要处理）。
+				s_pending_width.store(0);
+				s_pending_height.store(0);
 			}
 			VLOGI("upscale multiplier applied on CPU thread: %{public}f", multiplier);
 		}
@@ -203,7 +208,13 @@ namespace Hps2Video
 
 	float GetUpscaleMultiplier()
 	{
-		return MTGS::IsOpen() ? GSConfig.UpscaleMultiplier : s_upscale_multiplier.load();
+		// 【只在 UI 线程读原子量，不读 GS 线程会写的 GSConfig】
+		// GSConfig.UpscaleMultiplier 由本文件的 ApplyPendingSettingsOnCPUThread()
+		// 在 VM/GS 线程上写，而本函数由 ArkTS 的 getUpscaleMultiplier()
+		// 在 UI 线程调用 —— 直接读它构成数据竞争（非原子 float）。
+		// s_upscale_multiplier 是 std::atomic，且始终反映用户设定值，
+		// 用它回答"当前设置是多少"既正确又无竞争。
+		return s_upscale_multiplier.load();
 	}
 
 	bool NotifyResize(unsigned int width, unsigned int height)

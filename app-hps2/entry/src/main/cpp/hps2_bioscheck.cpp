@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace Hps2BiosCheck
 {
@@ -71,10 +72,13 @@ namespace Hps2BiosCheck
 		//
 		// PS2 BIOS ROM 内固定含 "Sony Computer Entertainment" 字样。
 		// 在开头 256KB 内搜索即可命中（不同版本位置略有差异）。
-		char buf[256 * 1024];
-		std::memset(buf, 0, sizeof(buf));
+		//
+		// 【为什么放堆而不是栈】本函数由 N-API 回调在 ArkTS 线程上调用，
+		// 该线程栈通常只有 1MB 量级；一个 256KB 的栈数组占掉四分之一，
+		// 叠加调用链上的其它帧就有溢出风险。堆分配的代价可忽略。
+		std::vector<char> buf(256 * 1024, 0);
 		std::fseek(fp, 0, SEEK_SET);
-		const size_t n = std::fread(buf, 1, sizeof(buf), fp);
+		const size_t n = std::fread(buf.data(), 1, buf.size(), fp);
 		std::fclose(fp);
 
 		if (n > 0)
@@ -85,7 +89,7 @@ namespace Hps2BiosCheck
 			{
 				for (size_t i = 0; i + needle_len <= n; ++i)
 				{
-					if (std::memcmp(buf + i, needle, needle_len) == 0)
+					if (std::memcmp(buf.data() + i, needle, needle_len) == 0)
 					{
 						r.signature_ok = true;
 						break;

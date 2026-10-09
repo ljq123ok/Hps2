@@ -81,6 +81,16 @@ export interface PadLayoutVariant {
 }
 
 /**
+ * 编辑器进入时的完整布局快照，用于"返回"（取消）回滚。
+ * 见 PadLayoutStore.snapshot() / restore() 的说明。
+ */
+export interface PadLayoutSnapshot {
+  landscape: PadLayoutVariant;
+  portrait: PadLayoutVariant;
+  styleIndex: number;
+}
+
+/**
  * 落盘结构（Map 不能直接 JSON 序列化，故用普通对象）。
  *
  * 【版本 2 的由来】v1 时期拖动存在单位错配（px 当 vp 用），
@@ -231,6 +241,41 @@ export class PadLayoutStore {
       this.portrait = defaultVariant();
     }
     this.styleIndex = 0;
+  }
+
+  /**
+   * 进入编辑器时的快照，供"返回"（取消）真正回滚。
+   *
+   * 【为什么需要】编辑器里的几个操作会**立即**写盘：
+   *   - 拖动结束（handlePadDragEnd）
+   *   - 切换配色、点恢复默认
+   * 原实现"返回"时只是从磁盘重读 —— 而磁盘早已被这些操作覆盖，
+   * 于是"取消"看起来什么都没撤销，语义是假的。
+   * 现在进入编辑前存一份内存快照，取消时用它覆盖（含内存与磁盘）。
+   */
+  snapshot(): PadLayoutSnapshot {
+    return {
+      landscape: this.cloneVariant(this.landscape),
+      portrait: this.cloneVariant(this.portrait),
+      styleIndex: this.styleIndex,
+    };
+  }
+
+  /** 用快照覆盖当前布局（内存），调用方随后应自行 save() 落盘 */
+  restore(snap: PadLayoutSnapshot): void {
+    this.landscape = this.cloneVariant(snap.landscape);
+    this.portrait = this.cloneVariant(snap.portrait);
+    this.styleIndex = clampStyleIndex(snap.styleIndex);
+  }
+
+  /** 深拷贝一个变体（offsets 是数组，需逐项复制，避免共享引用）*/
+  private cloneVariant(v: PadLayoutVariant): PadLayoutVariant {
+    const offsets: Array<PadOffsetEntry> = [];
+    for (let i = 0; i < v.offsets.length; i++) {
+      const e = v.offsets[i];
+      offsets.push({ group: e.group, dx: e.dx, dy: e.dy });
+    }
+    return { offsets: offsets, opacity: v.opacity };
   }
 
   private toData(v: PadLayoutVariant): PadLayoutData {
