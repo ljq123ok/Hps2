@@ -1352,6 +1352,61 @@ static napi_value NapiNotifyResize(napi_env env, napi_callback_info info) {
 		napi_get_value_int32(env, argv[1], &h);
 	}
 	const bool ok = Hps2Video::NotifyResize(static_cast<unsigned int>(w), static_cast<unsigned int>(h));
+
+	// ---------------------------------------------------------------------
+	// 【关键修复】把新尺寸真正应用到 GS。
+	//
+	// 背景：NotifyResize 只把尺寸存进 s_pending_width/height（暂存），
+	// 真正生效需要调用 ApplyPendingSettingsOnCPUThread()，它内部会执行
+	// MTGS::ResizeDisplayWindow + UpdateDisplayWindow。
+	// 此前该函数**全工程没有任何调用点**，导致：
+	//   · 折叠/展开（内外屏切换）后 GS 仍按旧尺寸渲染
+	//   · 表现为"画面位置不对、且无法全屏"
+	//   （启动时不受影响，因为 ApplyPendingConfigBeforeVM() 有被调用。）
+	//
+	// 为什么必须经 RunOnVmThread：上游要求 MTGS 的调用发生在 CPU 线程，
+	// 从 ArkUI 线程直接调会触发跨线程断言与环形队列竞态。
+	// RunOnVmThread 内部已检查 g_vm_running 并做任务串行化，
+	// 因此 VM 未启动时（如停留在首页）会安全返回 false，无需额外判断。
+	// ---------------------------------------------------------------------
+	if (ok)
+	{
+		bool dispatched = false;
+		int waited_ms = 0;
+		const bool has_vm = VMManager::HasValidVM();
+		const bool was_running = has_vm && VMManager::GetState() == VMState::Running;
+
+		// RunOnVmThread 的任务队列只在 VM 处于 Paused 时取任务。正常游戏中
+		// VMManager::Execute() 是长跑调用，直接投递会等到超时并被取消。
+		// 因此与存/读档使用同一套握手：先请求暂停，等待 CPU 线程真正退出
+		// Execute()，在该线程应用尺寸，最后只恢复调用前本来处于 Running 的 VM。
+		if (was_running)
+		{
+			VMManager::SetPaused(true);
+			constexpr int kMaxWaitMs = 3000;
+			constexpr int kStepMs = 2;
+			while (Hps2VmSync::IsInExecute() && waited_ms < kMaxWaitMs)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
+				waited_ms += kStepMs;
+			}
+		}
+
+		if (has_vm && !Hps2VmSync::IsInExecute())
+		{
+			dispatched = Hps2VmSync::RunOnVmThread([]() {
+				Hps2Video::ApplyPendingSettingsOnCPUThread();
+			}, 3000);
+		}
+
+		if (was_running)
+			VMManager::SetPaused(false);
+
+		LOGI("NotifyResize: apply dispatched=%{public}d waited=%{public}dms "
+		     "resumed=%{public}d (%{public}dx%{public}d)",
+			dispatched ? 1 : 0, waited_ms, was_running ? 1 : 0, w, h);
+	}
+
 	napi_value r; napi_create_int32(env, ok ? 1 : 0, &r); return r;
 }
 

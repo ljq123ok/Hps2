@@ -18,6 +18,7 @@ import { Theme } from '../common/Theme';
 import { VirtualPad } from './VirtualPad';
 import { GamepadCatcher } from './GamepadCatcher';
 import { PadGroup, PadLayoutVariant } from '../common/PadLayout';
+import display from '@ohos.display';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -27,7 +28,7 @@ export struct GameScreen {
   /** 是否显示虚拟按键（接入手柄后可由父组件关闭） */
   @Prop showPad: boolean = true;
   /** 由父组件传入是否在游玩中（决定是否叠加按键） */
-  @Prop playing: boolean = false;
+  @Prop @Watch('onPlayingChanged') playing: boolean = false;
   /** 官方 GameControllerKit 已接管实体手柄；此时不能再让 ArkUI 抢焦点。 */
   @Prop nativeGamepad: boolean = false;
   /**
@@ -38,9 +39,14 @@ export struct GameScreen {
    * 也会把按键事件消耗在不可见的交互上。
    */
   @Prop padEditMode: boolean = false;
-  /** 用户自定义布局（父组件持有并持久化）*/
-  @Prop padLayout: PadLayoutVariant | null = null;
-  /** 配色索引 */
+  /**
+   * 配色索引。
+   *
+   * 注：布局版本号**不再经本组件透传** —— VirtualPad 已改用
+   * @StorageLink 直接订阅 AppStorage 的 hps2_pad_layout_version。
+   * 逐层 @Prop 在真机上会断链（中间层不重渲染则不向下传播），
+   * 详见 VirtualPad 中的说明。
+   */
   @Prop padStyleIndex: number = 0;
   /** 拖动某组的归一化位移，上报父组件 */
   onPadGroupDragged?: (group: PadGroup, dxNorm: number, dyNorm: number) => void;
@@ -56,6 +62,19 @@ export struct GameScreen {
   /** 上次已知的方向（用于识别旋转）。0=未知 1=竖屏 2=横屏 */
   private lastOrientation: number = 0;
   /**
+   * 上次已上报给 native 的尺寸（px）。
+   *
+   * 【为什么必须去重】onAreaChange 会在很多与"画面尺寸变化"无关的时机
+   * 触发（进入沉浸式、系统栏显隐、同级组件重排等），而每次都会调到
+   * native 的 notifyResize —— 而 native 那条路径会暂停 VM、等待 CPU
+   * 线程退出执行循环，再恢复运行（见 napi_init.cpp 的 NapiNotifyResize）。
+   * 尺寸没变时的重复调用纯属白付这份代价，还可能打断 FPS 统计与音频。
+   *
+   * 注意：这里只拦"与上次上报完全相同"的尺寸；尺寸真的变了仍会照常上报。
+   */
+  private lastNotifiedPxW: number = 0;
+  private lastNotifiedPxH: number = 0;
+  /**
    * 当前是否横屏。虚拟按键按此切换布局 ——
    * 竖屏与横屏的可视空间差异很大，用同一套布局必然溢出或挤在一起
    * （参考 PPSSPP 1.20：横竖屏的触控布局应各自独立设置）。
@@ -68,6 +87,42 @@ export struct GameScreen {
    */
   @State vpW: number = 440;
   @State vpH: number = 674;
+
+  /**
+   * vp → px 换算。
+   *
+   * 【为什么必须有这一步 —— 真机实测的 bug 根因】
+   *   ArkUI 的 onAreaChange 给的是 **vp**（虚拟像素），而 native 侧
+   *   拿到的尺寸会直接进 OHNativeWindow 与 GS 视口，二者都按 **px** 解释。
+   *
+   *   真机证据（Pura X Max 展开大屏）：
+   *     ArkTS 传 940x665（vp），设备真实窗口 2584x1828（px），
+   *     换算比 2584/940 = 2.749。
+   *     native 把 940 当 px 用 → 画面只占窗口 36.4%，
+   *     其余留空 → 表现为"画面不在中间、且无法全屏"。
+   *
+   *   外屏（1264x1848）时密度更低，错配不明显，故该问题只在展开大屏暴露。
+   *
+   * 取密度失败时回退 1.0 —— 宁可保持旧行为（画面偏小），也不要崩溃；
+   * 日志会记录回退，便于定位。
+   */
+  private density(): number {
+    try {
+      const d = display.getDefaultDisplaySync();
+      const r = d.densityPixels;
+      if (Number.isFinite(r) && r > 0) {
+        return r;
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'getDefaultDisplaySync failed, fallback density=1');
+    }
+    return 1.0;
+  }
+
+  /** vp → px（四舍五入到整数像素）*/
+  private vp2px(v: number): number {
+    return Math.round(v * this.density());
+  }
 
   /**
    * 把 XComponent 的 surfaceId 交给 native，换取 OHNativeWindow。
@@ -83,11 +138,38 @@ export struct GameScreen {
         hilog.error(DOMAIN, TAG, 'getXComponentSurfaceId returned empty');
         return;
       }
-      const ok: number = hps2core.setSurface(sid, Math.round(w), Math.round(h));
-      hilog.info(DOMAIN, TAG, 'setSurface(%{public}s, %{public}dx%{public}d) -> %{public}d',
-        sid, Math.round(w), Math.round(h), ok);
+      // 传 px：native 的 OHNativeWindow/GS 视口按 px 解释（见 density 注释）
+      const pw = this.vp2px(w);
+      const ph = this.vp2px(h);
+      const ok: number = hps2core.setSurface(sid, pw, ph);
+      hilog.info(DOMAIN, TAG,
+        // 注意：float 占位符(%{public}f)在本机 hilog 上会串位，
+        // 表现为"success 码位置显示成密度值"。改用字符串传递密度。
+        'setSurface(%{public}s, %{public}dx%{public}d px [vp=%{public}dx%{public}d, density=%{public}s]) -> %{public}d',
+        sid, pw, ph, Math.round(w), Math.round(h), this.density().toFixed(3), ok);
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'pushSurface failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  /**
+   * 进入游玩态时清空尺寸去重记录。
+   *
+   * 【为什么必须清】GameScreen 是**常驻挂载**的（首页只是覆盖层，
+   * 见 Index.build 的说明），所以本组件实例会跨越多轮「启动→返回」。
+   * 若不清空：上一轮已经在相同窗口尺寸下上报过，新一轮启动后
+   * onAreaChange 因尺寸相同而被去重拦掉 —— 新 VM 可能收不到
+   * 它需要的尺寸，画面停在旧尺寸（Bug B 的回归形态）。
+   *
+   * 这里只清标记、不直接补发：此刻的 vpW/vpH 可能是初始默认值
+   * （440x674），直接发等于把默认值当成真实尺寸报上去。清空后，
+   * 启动流程里必然会到来的一次 onAreaChange（进入沉浸式会改变
+   * 布局）就会正常上报真实尺寸。
+   */
+  private onPlayingChanged(): void {
+    if (this.playing) {
+      this.lastNotifiedPxW = 0;
+      this.lastNotifiedPxH = 0;
     }
   }
 
@@ -109,7 +191,17 @@ export struct GameScreen {
     this.vpW = w;
     this.vpH = h;
     try {
-      const ok: number = hps2core.notifyResize(Math.round(w), Math.round(h));
+      // 同样传 px（native 据此重建 GS 视口与正交投影）
+      const pw = this.vp2px(w);
+      const ph = this.vp2px(h);
+      // 尺寸没变就不打扰 native —— notifyResize 会暂停/恢复 VM，
+      // 代价远高于一次比较（见上方 lastNotifiedPxW 的说明）。
+      if (pw === this.lastNotifiedPxW && ph === this.lastNotifiedPxH) {
+        return;
+      }
+      this.lastNotifiedPxW = pw;
+      this.lastNotifiedPxH = ph;
+      const ok: number = hps2core.notifyResize(pw, ph);
       if (orientation !== this.lastOrientation) {
         hilog.info(DOMAIN, TAG,
           'orientation changed: %{public}s -> notifyResize(%{public}dx%{public}d) = %{public}d',
@@ -158,7 +250,6 @@ export struct GameScreen {
         VirtualPad({
           landscape: false, vpW: this.vpW, vpH: this.vpH,
           editMode: this.padEditMode,
-          layout: this.padLayout,
           styleIndex: this.padStyleIndex,
           onGroupDragged: (g: PadGroup, dx: number, dy: number) => {
             if (this.onPadGroupDragged) { this.onPadGroupDragged(g, dx, dy); }
@@ -172,7 +263,6 @@ export struct GameScreen {
         VirtualPad({
           landscape: this.landscape, vpW: this.vpW, vpH: this.vpH,
           editMode: this.padEditMode,
-          layout: this.padLayout,
           styleIndex: this.padStyleIndex,
           onGroupDragged: (g: PadGroup, dx: number, dy: number) => {
             if (this.onPadGroupDragged) { this.onPadGroupDragged(g, dx, dy); }

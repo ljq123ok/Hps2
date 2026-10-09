@@ -27,9 +27,10 @@ import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
-  PadGroup, PadLayoutVariant, PadStyle, PadLayoutStore,
+  PadGroup, PadLayoutVariant, PadOffsetEntry, PadStyle, PadLayoutStore,
   PAD_STYLES, PAD_OPACITY_MIN, PAD_OPACITY_MAX,
-  offsetOf, setOffset, defaultVariant, clampOpacity, clampStyleIndex
+  offsetOf, setOffset, defaultVariant, clampOpacity, clampStyleIndex,
+  SharedPadLayout
 } from '../common/PadLayout';
 import common from '@ohos.app.ability.common';
 
@@ -280,10 +281,35 @@ struct Index {
   // 子组件改了传不回来（会导致"拖动能看见、重启就丢"），
   // 故子组件只上报位移，真值在这里，并由这里落盘。
   @State padEditMode: boolean = false;
-  /** 当前方向的布局（横竖屏各一套，见 PadLayout.ets 的说明）*/
-  @State padLayout: PadLayoutVariant = defaultVariant();
+  /**
+   * 布局版本号 —— 传给 GameScreen/VirtualPad 的唯一刷新信号。
+   *
+   * 【为什么不再传布局对象】真机实测：对象经两层 @Prop 传递后，
+   * 拖动事件与落盘均正常，但 VirtualPad 读到的偏移恒为 0、画面不重绘。
+   * 现布局数据放在 SharedPadLayout 单例里（双方直接读），
+   * 组件间只传这个 number —— 原始类型跨层传播绝对可靠。
+   */
+  /**
+   * 布局版本号 —— 写入 AppStorage 全局键，由 VirtualPad 用
+   * @StorageLink 直接订阅（绕开逐层 @Prop，见 VirtualPad 的说明）。
+   */
+  @StorageLink('hps2_pad_layout_version') padLayoutVersion: number = 0;
+  /** 版本号对应的横屏状态 */
+  @State padLayoutLandscape: boolean = false;
   @State padStyleIndex: number = 0;
-  private padStore: PadLayoutStore = new PadLayoutStore();
+  /**
+   * 当前方向的按键透明度（0.15–1.0）。
+   *
+   * 【为什么需要一个独立的 @State 镜像】
+   *   透明度本体存在 SharedPadLayout 单例里，而模块级单例**不是可观察对象** ——
+   *   ArkUI 不会因为它的字段变化而重绘。此前编辑器里的百分比文本直接调
+   *   currentPadVariant().opacity，读的是单例，因此数值永不刷新
+   *   （滑杆本身能动，是因为 Slider 的 value 由用户手势驱动，与本问题无关）。
+   *
+   *   同样的问题在配色上早已解决：padStyleIndex 就是单例值的 @State 镜像，
+   *   由 syncPadLayoutFromStore() 在每次变更后同步。这里照同一套做。
+   */
+  @State padOpacity: number = 0.6;
   // 进入编辑前用户的开关状态，退出时恢复
   private padEditRememberShow: boolean = true;
   private padEditRememberOverlay: boolean = false;
@@ -379,67 +405,92 @@ struct Index {
    * 旋转后必须重新取一次，否则横屏会沿用竖屏的偏移
    * （PadLayout.ets 说明了为何两套必须独立）。
    */
+  /**
+   * 把当前方向的布局同步到共享单例，并**自增版本号**通知 UI 重绘。
+   *
+   * 【为什么用版本号而不是传布局对象】
+   *   真机实测：布局对象经 Index → GameScreen → VirtualPad 两层 @Prop
+   *   传递时，拖动事件正常到达、数据也成功落盘（日志有 HPS2_DRAG 与
+   *   saved pad layout），但 VirtualPad 读到的偏移恒为 0、画面不重绘
+   *   —— 跨层 @Prop 对"对象 + 联合类型"的观察不可靠（Map 亦然）。
+   *
+   *   现在布局数据放在 SharedPadLayout 单例中，读写双方直接访问；
+   *   组件间只传一个 number。原始类型跨层传播绝对可靠：
+   *   版本号一变 → 子组件重绘 → 重绘时从单例读最新布局。
+   */
   private syncPadLayoutFromStore(): void {
     const landscape = this.surfaceW > this.surfaceH;
-    this.padLayout = this.padStore.variant(landscape);
-    this.padStyleIndex = this.padStore.getStyleIndex();
+    // 只操作单例本身，不再持有独立的 store 字段 ——
+    // 避免"页面一份、单例一份"两处数据不同步（这正是难查的坑来源）。
+    this.padLayoutLandscape = landscape;
+    this.padStyleIndex = SharedPadLayout.store.getStyleIndex();
+    // 透明度同样镜像到 @State —— 面板上的百分比文本依赖它才会刷新
+    // （单例本身不可观察，见 padOpacity 的说明）。
+    this.padOpacity = SharedPadLayout.store.variant(landscape).opacity;
+    // 自增版本号：这是唯一的重绘触发器
+    this.padLayoutVersion = SharedPadLayout.bump();
+    // 链路诊断第 2 环：确认 @State 已写入新版本号
+    console.info(`HPS2_CHAIN_2: padLayoutVersion -> ${this.padLayoutVersion} ` +
+      `landscape=${landscape}`);
   }
 
   /** 启动时恢复布局（坏文件回退默认，不阻断游戏）*/
   private restorePadLayout(): void {
-    this.padStore.load(this.dataRoot());
+    SharedPadLayout.store.load(this.dataRoot());
     this.syncPadLayoutFromStore();
   }
 
   /**
    * 拖动某组的回调。
    *
-   * 接收的是**归一化位移**（VirtualPad 已按屏宽/屏高换算），
-   * 累加到 store 持有的布局上，再同步回 @State 触发重绘。
+   * 接收的是**归一化位移**（VirtualPad 已按 px→vp 换算后归一化），
+   * 累加到共享 store 上，再自增版本号触发重绘。
    * 每次只改一个组，故 O(1)。
    */
   private handlePadGroupDragged(group: PadGroup, dxNorm: number, dyNorm: number): void {
+    // 链路诊断第 1 环：确认子组件回调是否到达父组件
+    console.info(`HPS2_CHAIN_1: parent received drag group=${group} ` +
+      `dx=${dxNorm.toFixed(4)} dy=${dyNorm.toFixed(4)}`);
     const landscape = this.surfaceW > this.surfaceH;
-    const v = this.padStore.variant(landscape);
+    const v = SharedPadLayout.store.variant(landscape);
     const cur = offsetOf(v, group);
-    // setOffset 内部会做边界钳制（±45%），
-    // 保证控件主体不会拖出屏幕导致再也点不到。
+    // setOffset 内部做边界钳制（±30%），保证控件主体不会被拖出屏幕
     setOffset(v, group, cur.dx + dxNorm, cur.dy + dyNorm);
     this.syncPadLayoutFromStore();
   }
 
   /** 拖动结束：落盘一次（避免每帧写盘）*/
   private handlePadDragEnd(): void {
-    this.padStore.save(this.dataRoot());
+    SharedPadLayout.store.save(this.dataRoot());
   }
 
   /** 透明度改变 */
   private handlePadOpacityChange(v: number): void {
     const landscape = this.surfaceW > this.surfaceH;
-    const layout = this.padStore.variant(landscape);
+    const layout = SharedPadLayout.store.variant(landscape);
     layout.opacity = clampOpacity(v);
     this.syncPadLayoutFromStore();
   }
 
   /** 配色改变（立即生效并保存 —— 与拖动不同，这是一次离散操作）*/
   private handlePadStyleChange(index: number): void {
-    this.padStore.setStyleIndex(clampStyleIndex(index));
+    SharedPadLayout.store.setStyleIndex(clampStyleIndex(index));
     this.syncPadLayoutFromStore();
-    this.padStore.save(this.dataRoot());
+    SharedPadLayout.store.save(this.dataRoot());
   }
 
   /** 恢复默认布局 */
   private handlePadReset(): void {
     const landscape = this.surfaceW > this.surfaceH;
-    this.padStore.resetCurrent(landscape);
+    SharedPadLayout.store.resetCurrent(landscape);
     this.syncPadLayoutFromStore();
-    this.padStore.save(this.dataRoot());
+    SharedPadLayout.store.save(this.dataRoot());
   }
 
   /** 当前方向的布局对象（供面板读写）*/
   private currentPadVariant(): PadLayoutVariant {
     const landscape = this.surfaceW > this.surfaceH;
-    return this.padStore.variant(landscape);
+    return SharedPadLayout.store.variant(landscape);
   }
 
   /** 当前配色 */
@@ -472,7 +523,7 @@ struct Index {
       // 取消：丢弃本次未保存的改动，从磁盘重新读回
       this.restorePadLayout();
     } else {
-      this.padStore.save(this.dataRoot());
+      SharedPadLayout.store.save(this.dataRoot());
     }
     this.showPad = this.padEditRememberShow;
     this.padEditMode = false;
@@ -491,13 +542,15 @@ struct Index {
         Row() {
           Text('按键透明度').fontSize(12).fontColor(OVERLAY_FG_DIM)
           Blank()
-          Text(Math.round(this.currentPadVariant().opacity * 100).toString() + '%')
+          // 读 @State 镜像而非单例：单例不可观察，百分比不会刷新
+          // （见 padOpacity 的说明）。
+          Text(Math.round(this.padOpacity * 100).toString() + '%')
             .fontSize(12).fontColor(OVERLAY_FG)
         }
         .width('100%')
 
         Slider({
-          value: Math.round(this.currentPadVariant().opacity * 100),
+          value: Math.round(this.padOpacity * 100),
           min: Math.round(PAD_OPACITY_MIN * 100),
           max: Math.round(PAD_OPACITY_MAX * 100),
           step: 5,
@@ -577,6 +630,15 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    // ---------------------------------------------------------------------
+    // 初始化 AppStorage 的布局版本键。
+    //
+    // 必须先于任何组件挂载执行：@StorageLink 在组件创建时会读取该键，
+    // 若键不存在则取默认值 0；先建立键可保证后续自增被正确观察。
+    // ---------------------------------------------------------------------
+    if (AppStorage.get<number>('hps2_pad_layout_version') === undefined) {
+      AppStorage.setOrCreate<number>('hps2_pad_layout_version', 0);
+    }
     // Native 状态只在当前进程内有效；先恢复持久化设置，再读取 UI 初始值。
     this.restoreVideoSettings();
     // 触控布局同样要恢复；坏文件回退默认，不阻断启动。
@@ -627,6 +689,17 @@ struct Index {
     // 而不是点了启动才发现失败。
     this.checkJit();
 
+  }
+
+  /**
+   * 页面销毁：释放本页面持有的定时器。
+   *
+   * 【为什么必须有】此前只有 startPolling 而没有对应的清理，
+   * 页面销毁后 setInterval 仍会触发 —— 回调持有 this，
+   * 既阻止回收，又在页面已不可见时继续调 native 并写状态。
+   */
+  aboutToDisappear(): void {
+    this.stopPolling();
   }
 
   /*
@@ -1287,6 +1360,58 @@ struct Index {
   }
 
   /**
+   * 展开态面板的左上角 x。
+   *
+   * 【为什么不能直接用球的位置】真机反馈："悬浮球在屏幕边缘时，
+   * 点开后无法正常显示"。
+   *
+   * 根因：clampBall() 只按**球**（56vp）钳制位置，而展开后的面板
+   * 宽约 136vp（ballBtnW 最大 120 + 左右 padding 各 8）。
+   * 球贴右边缘时 x 可达 616（=672-56），面板右边缘 616+136=752，
+   * 超出屏宽 672 达 80vp → 面板被裁掉，按钮点不到。
+   *
+   * 修法：展开态改为按**面板宽度**重新钳制：
+   *   - 默认（球在左侧）：从球的左边缘向右展开；
+   *   - 球在右半边：面板向左展开（右边缘对齐球右边缘），
+   *     避免溢出屏幕。
+   */
+  private panelLeft(): number {
+    const ballX = this.ballX >= 0 ? this.ballX : this.ballLeft();
+    const panelW = this.panelWidth();
+    const w = this.screenW();
+    const maxLeft = Math.max(0, w - panelW);
+    // 球在右半边时向左展开
+    const preferLeftEdge = ballX > (w - this.ballSize()) / 2;
+    if (preferLeftEdge) {
+      const rightAligned = ballX + this.ballSize() - panelW;
+      return Math.max(0, Math.min(maxLeft, rightAligned));
+    }
+    return Math.max(0, Math.min(maxLeft, ballX));
+  }
+
+  /** 展开态面板的左上角 y（同样避免超出屏幕下边缘）*/
+  private panelTop(): number {
+    const ballTop = this.ballY >= 0 ? this.ballY : this.ballTop();
+    const h = this.screenH();
+    // 面板高度按内容估：状态行 + 6 个按钮 + padding，约 280vp。
+    // 这里保守取实际渲染后的钳制：先按可用高度预留，避免底部按钮被裁。
+    const panelH = this.panelEstimatedHeight();
+    const maxTop = Math.max(0, h - panelH);
+    return Math.max(0, Math.min(maxTop, ballTop));
+  }
+
+  /** 展开面板的宽度（与 padEditorPanel / 按钮宽度保持一致）*/
+  private panelWidth(): number {
+    return this.ballBtnW() + 16;   // 左右 padding 各 8
+  }
+
+  /** 展开面板的估算高度（用于垂直钳制）*/
+  private panelEstimatedHeight(): number {
+    // 状态行(约 26) + 6 个按钮(32/28 + space 8) + 上下 padding(16)
+    return 26 + 5 * 40 + 36 + 16;
+  }
+
+  /**
    * 把球钳制在屏幕内。
    *
    * 为什么要钳：拖动可能越界，导致球部分或完全移出屏幕，
@@ -1385,6 +1510,10 @@ struct Index {
       // 回首页必须恢复系统栏，否则用户看不到导航条、难以切换应用
       this.setImmersive(false);
       this.setGameOrientation(false);
+      // 停止状态轮询：轮询是"游玩时"才需要的能力（FPS/阶段/暂停态），
+      // 回首页后 VM 已停止，再每 500ms 调 getStatus 既无意义，
+      // 又会持续覆写首页状态（例如把 discTitle 反复刷成空串）。
+      this.stopPolling();
     }
   }
 
@@ -2001,10 +2130,22 @@ struct Index {
   }
 
   private startPolling(): void {
+    this.stopPolling();
+    this.timerId = setInterval(() => this.refreshStatus(), 500);
+  }
+
+  /**
+   * 停止状态轮询。
+   *
+   * 必须在"离开游玩态"与"页面销毁"时调用 —— 否则定时器会一直
+   * 持有 this 并每 500ms 调一次 native：页面已不可见却仍在写状态，
+   * 也会让首页的 discTitle/statusStage 之类的值被反复覆写。
+   */
+  private stopPolling(): void {
     if (this.timerId >= 0) {
       clearInterval(this.timerId);
+      this.timerId = -1;
     }
-    this.timerId = setInterval(() => this.refreshStatus(), 500);
   }
 
   private refreshStatus(): void {
@@ -2301,15 +2442,33 @@ struct Index {
         showPad: this.showPad,
         nativeGamepad: this.nativeGamepad,
         padEditMode: this.padEditMode,
-        padLayout: this.padLayout,
         padStyleIndex: this.padStyleIndex,
         onPadGroupDragged: (g: PadGroup, dx: number, dy: number) => {
           this.handlePadGroupDragged(g, dx, dy);
         },
         onPadDragEnd: () => { this.handlePadDragEnd(); },
         onSurfaceSize: (w: number, h: number) => {
+          // -----------------------------------------------------------------
+          // 【为什么必须在尺寸变化时重新同步布局】
+          //
+          // padStore 里横竖屏各存一套偏移。方向一变（尤其内屏⇄外屏
+          // 这种同时改变尺寸与方向的情况），必须重新取对应变体，
+          // 否则会**继续沿用旧方向的偏移** —— 真机现象就是
+          // "展开切到折叠后虚拟按键完全错位"。
+          //
+          // 此前只在拖动与启动时同步，遗漏了这里。
+          // -----------------------------------------------------------------
+          const wasLandscape = this.surfaceW > this.surfaceH;
           this.surfaceW = w;
           this.surfaceH = h;
+          const nowLandscape = w > h;
+          if (wasLandscape !== nowLandscape) {
+            hilog.info(DOMAIN, TAG,
+              'surface orientation changed: %{public}s -> %{public}s, re-sync pad layout',
+              wasLandscape ? 'landscape' : 'portrait',
+              nowLandscape ? 'landscape' : 'portrait');
+            this.syncPadLayoutFromStore();
+          }
         },
         // 首次检测到蓝牙手柄 → 自动隐藏虚拟按键。
         // 理由：玩家接上手柄就不需要屏幕按键了，留着反而遮挡画面。
@@ -2453,7 +2612,8 @@ struct Index {
             .padding(8)
             .backgroundColor(OVERLAY_BG)
             .borderRadius(Theme.radius)
-            .position({ x: this.ballLeft(), y: this.ballTop() })
+            // 展开态：按**面板尺寸**钳制，避免贴边时被裁切（见 panelLeft）
+            .position({ x: this.panelLeft(), y: this.panelTop() })
           } else {
             // ---- 收起态：FPS 悬浮球（可拖动）----
             Column({ space: 1 }) {
