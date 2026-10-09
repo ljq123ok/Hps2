@@ -45,7 +45,27 @@ export const listMemoryCards: (dataRoot: string, gamePath?: string) => string;
  *
  * ⚠️ 运行中调用会返回空数组 —— 扫描光盘元数据会干扰 CDVD 状态。
  */
+/**
+ * 在应用启动阶段设定逐游戏设置 / 封面目录（<dataRoot>/gamesettings、covers）。
+ *
+ * 必须在读写逐游戏设置**之前**调用：这些 EmuFolders 原本只在"启动游戏"时
+ * 才赋值，未启动游戏时为空字符串，会让路径退化成从根目录拼而写入失败。
+ */
+export const initGameFolders: (dataRoot: string) => number;
 export const listGames: (gamesDir: string) => string;
+/**
+ * 读取某游戏的独立设置（复用上游的 gamesettings/<serial>_<CRC>.ini）。
+ * 返回 `{ok,serial,crc,path,hasFile,aspect,upscale,vuThread,aspectSet,upscaleSet,vuThreadSet}`。
+ * `*Set` 区分"文件里显式写了"与"未写、继承全局"。
+ * ⚠️ VM 运行中返回 `{ok:false}` —— 取值需要扫描镜像。
+ */
+export const readGameSettings: (gamePath: string) => string;
+/**
+ * 写入某游戏的独立设置。json 形如 `{"aspect":2,"upscale":3,"vuThread":true}`；
+ * 值为 `null` 表示删除该覆盖（回退全局）。三项全空时删除整个 INI 文件。
+ * ⚠️ VM 运行中拒绝写入（值只在启动时读取）。
+ */
+export const writeGameSettings: (gamePath: string, json: string) => string;
 /** 返回被 HarmonyOS 文件管理器捐献的 memcards 目录路径。 */
 export const memoryCardsDirectory: (dataRoot: string) => string;
 /** 创建标准 PS2 文件记忆卡，sizeMb 支持 8/16/32/64。 */

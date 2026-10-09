@@ -87,6 +87,8 @@ void Hps2Host_ClearPendingTasks();
 #include "CDVD/CDVD.h"
 #include "Config.h"
 #include "GameList.h"
+#include "INISettingsInterface.h"
+#include <cerrno>
 #include "Host.h"
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
@@ -390,8 +392,23 @@ bool InitializeConfig() {
 	}
 
 	EmuFolders::Bios = s_bios_dir;
+	// 【为什么必须显式设置这几个目录】
+	//   上游的取值来自 EmuFolders::SetDefaults()/LoadConfig()，而本移植
+	//   没有走到那一步 —— 结果 GameSettings / Covers 一直是空字符串。
+	//   空字符串会让 Path::Combine 退化成"从根目录拼"，例如逐游戏设置
+	//   曾被写成 "/SCPS-15062_1C4E2A9F.ini"，落盘报 errno 13（EACCES）。
+	//   实测证据：game settings write failed: path=/SCPS-15062_1C4E2A9F.ini
+	//   故与 Bios 同样显式赋值，并确保目录存在。
+	EmuFolders::GameSettings = s_data_root + "/gamesettings";
+	EmuFolders::Covers = s_data_root + "/covers";
+	EmuFolders::Savestates = s_data_root + "/sstates";
+	EmuFolders::Snapshots = s_data_root + "/snaps";
 	FileSystem::CreateDirectoryPath(EmuFolders::Cache.c_str(), true);
 	FileSystem::CreateDirectoryPath(EmuFolders::Bios.c_str(), true);
+	FileSystem::CreateDirectoryPath(EmuFolders::GameSettings.c_str(), true);
+	FileSystem::CreateDirectoryPath(EmuFolders::Covers.c_str(), true);
+	FileSystem::CreateDirectoryPath(EmuFolders::Savestates.c_str(), true);
+	FileSystem::CreateDirectoryPath(EmuFolders::Snapshots.c_str(), true);
 
 	CrashHandler::SetWriteDirectory(EmuFolders::DataRoot);
 
@@ -2487,6 +2504,53 @@ static napi_value NapiMemoryCardsDirectory(napi_env env, napi_callback_info info
 	return out;
 }
 
+// initGameFolders(dataRoot) -> 1/0
+//
+// 【为什么需要单独的接口】
+//   EmuFolders::GameSettings / Covers 等只在 InitializeConfig() 里赋值，
+//   而 InitializeConfig() 是**启动游戏时**才调用的（NapiStartBios）。
+//   于是应用刚起来、还没运行任何游戏时，这些目录仍是空字符串 ——
+//   此时去写逐游戏设置，Path::Combine 会退化成从根目录拼：
+//     "/SCPS-15062_1C4E2A9F.ini" → errno 13 (EACCES)
+//   本接口让 ArkTS 在启动阶段就把这些目录定好，与"启动游戏"解耦。
+//
+// 幂等：重复调用只是重新赋值与 mkdir（已存在则无操作）。
+static napi_value NapiInitGameFolders(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string root;
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], root) || root.empty())
+	{
+		napi_value out;
+		napi_create_int32(env, 0, &out);
+		return out;
+	}
+
+	// 只设这几个"UI 在没启动游戏时也要用"的目录。
+	// AppRoot/DataRoot/Bios 仍由 InitializeConfig 在启动游戏时设置，
+	// 但这里也一并设好，保证两条路径看到的是同一个根。
+	EmuFolders::AppRoot = root;
+	EmuFolders::DataRoot = root;
+	EmuFolders::GameSettings = root + "/gamesettings";
+	EmuFolders::Covers = root + "/covers";
+
+	// CreateDirectoryPath 对"已存在"返回 false，故不把返回值当失败判据；
+	// 真正决定成败的是路径已设置正确（下面据此返回）。
+	FileSystem::CreateDirectoryPath(EmuFolders::GameSettings.c_str(), true);
+	FileSystem::CreateDirectoryPath(EmuFolders::Covers.c_str(), true);
+
+	const bool ok = !EmuFolders::GameSettings.empty() && !EmuFolders::Covers.empty();
+	LOGI("initGameFolders: ok=%{public}d gameSettings=%{public}s covers=%{public}s",
+		ok ? 1 : 0, EmuFolders::GameSettings.c_str(), EmuFolders::Covers.c_str());
+
+	napi_value out;
+	napi_create_int32(env, ok ? 1 : 0, &out);
+	return out;
+}
+
 // listGames(gamesDir) -> JSON 数组
 //
 // 返回沙箱 games/ 目录下每个镜像的元数据，供游戏库列表展示：
@@ -2590,6 +2654,425 @@ static napi_value NapiListGames(napi_env env, napi_callback_info info)
 	json += "]";
 
 	LOGI("listGames: %{public}d file(s) scanned in dir", static_cast<int>(results.size()));
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// 逐游戏设置（per-game settings）
+//
+// 上游本身就有这一层：VMManager 在启动游戏时按 serial+CRC 去
+// <UserSettings>/gamesettings/<serial>_<CRC>.ini 找 INI，找到就叠在全局
+// 设置之上（见 VMManager::UpdateGameSettingsLayer）。我们不需要自己发明
+// 存储格式，直接读写同一份 INI 即可 —— 这样与上游行为天然一致。
+//
+// 支持的键（均是上游实际读取的键名，未自行命名）：
+//   EmuCore/GS   AspectRatio         0=Auto 1=4:3 2=Stretch 3=16:9
+//   EmuCore/GS   upscale_multiplier  内部渲染倍率
+//   EmuCore/Speedhacks  vuThread     MTVU（VU1 独立线程）
+//
+// 【运行中禁止改写】这些值在 VM 启动时被读取并作用于渲染器。运行期改
+// 只会写进文件、不影响当前会话（与 UI 文案"下次启动生效"一致），但为
+// 避免用户在游戏运行中误以为"改了没用"，读取侧照常、写入侧要求先停止。
+// ---------------------------------------------------------------------------
+
+/** 每个游戏设置 INI 的路径（复用上游的路径推导，保证与它读的是同一份）*/
+static std::string GameSettingsPathFor(const std::string& serial, u32 crc)
+{
+	if (serial.empty() || crc == 0)
+		return {};
+	return VMManager::GetGameSettingsPath(serial, crc);
+}
+
+// readGameSettings(gamePath) -> JSON
+//
+// 返回 { ok, serial, crc, path, hasFile, aspect, upscale, vuThread,
+//        aspectSet, upscaleSet, vuThreadSet }
+//
+// hasFile=false 表示该游戏还没有独立设置（UI 应显示"跟随全局"）。
+// 各个 *Set 字段区分"文件里显式写了"与"没写、继承全局" —— 这很重要，
+// 否则 UI 无法表达"这一项我不覆盖，用全局的"。
+static napi_value NapiReadGameSettings(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string game_path;
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], game_path) || game_path.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "{\"ok\":false}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 取 serial/CRC：与游戏库列表同一套扫描（故同样要求 VM 未运行）
+	GameList::Entry entry;
+	if (g_vm_running.load() || !GameList::PopulateEntryFromPath(game_path, &entry))
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "{\"ok\":false}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	std::string json = "{\"ok\":true";
+	json += ",\"serial\":\"" + JsonEscape(entry.serial) + "\"";
+	json += ",\"crc\":" + std::to_string(entry.crc);
+
+	const std::string path = GameSettingsPathFor(entry.serial, entry.crc);
+	json += ",\"path\":\"" + JsonEscape(path) + "\"";
+
+	bool has_file = false;
+	int aspect = 0;
+	float upscale = 0.0f;
+	bool vu_thread = false;
+	bool aspect_set = false;
+	bool upscale_set = false;
+	bool vu_set = false;
+
+	if (!path.empty() && FileSystem::FileExists(path.c_str()))
+	{
+		INISettingsInterface si(path);
+		if (si.Load())
+		{
+			has_file = true;
+			// 三个键都可能不存在 —— Get* 返回 false 即"未设置"
+			aspect_set = si.GetIntValue("EmuCore/GS", "AspectRatio", &aspect);
+			upscale_set = si.GetFloatValue("EmuCore/GS", "upscale_multiplier", &upscale);
+			vu_set = si.GetBoolValue("EmuCore/Speedhacks", "vuThread", &vu_thread);
+		}
+		else
+		{
+			LOGW("game settings ini parse failed: %{public}s", path.c_str());
+		}
+	}
+
+	json += ",\"hasFile\":" + std::string(has_file ? "true" : "false");
+	json += ",\"aspect\":" + std::to_string(aspect);
+	json += ",\"upscale\":" + std::to_string(upscale);
+	json += ",\"vuThread\":" + std::string(vu_thread ? "true" : "false");
+	json += ",\"aspectSet\":" + std::string(aspect_set ? "true" : "false");
+	json += ",\"upscaleSet\":" + std::string(upscale_set ? "true" : "false");
+	json += ",\"vuThreadSet\":" + std::string(vu_set ? "true" : "false");
+	json += "}";
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// writeGameSettings(gamePath, json) -> JSON { ok, message }
+//
+// json 形如 {"aspect":2,"upscale":3,"vuThread":true}；
+// 值为 null 表示"删除该覆盖、回退到全局"。三个键都可选。
+//
+// 全部删空时直接删除 INI 文件，避免留下一个空文件让上游仍认为
+// "这个游戏有独立设置"（那会让 UI 的 hasFile 判断变得没意义）。
+static napi_value NapiWriteGameSettings(napi_env env, napi_callback_info info)
+{
+	size_t argc = 2;
+	napi_value argv[2] = {nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string game_path;
+	std::string payload;
+	if (argc < 2 || !GetUtf8Arg(env, argv[0], game_path) || !GetUtf8Arg(env, argv[1], payload) ||
+		game_path.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "{\"ok\":false,\"message\":\"invalid args\"}",
+			NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 运行期改写无意义（值在启动时读取），且需要扫描镜像取 serial/CRC
+	if (g_vm_running.load())
+	{
+		napi_value out;
+		napi_create_string_utf8(env,
+			"{\"ok\":false,\"message\":\"游戏运行中，无法修改设置\"}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	GameList::Entry entry;
+	if (!GameList::PopulateEntryFromPath(game_path, &entry))
+	{
+		napi_value out;
+		napi_create_string_utf8(env,
+			"{\"ok\":false,\"message\":\"无法识别该游戏镜像\"}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	const std::string path = GameSettingsPathFor(entry.serial, entry.crc);
+	if (path.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env,
+			"{\"ok\":false,\"message\":\"无法生成该游戏的设置路径\"}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 极简 JSON 取值：只认 "key":<number|true|false|null>，够用且不引入依赖
+	auto find_value = [&payload](const char* key, std::string& out) -> bool {
+		const std::string needle = std::string("\"") + key + "\"";
+		size_t p = payload.find(needle);
+		if (p == std::string::npos)
+			return false;
+		p = payload.find(':', p + needle.size());
+		if (p == std::string::npos)
+			return false;
+		size_t e = p + 1;
+		while (e < payload.size() && (payload[e] == ' ' || payload[e] == '\t'))
+			e++;
+		const size_t st = e;
+		while (e < payload.size() && payload[e] != ',' && payload[e] != '}')
+			e++;
+		out = payload.substr(st, e - st);
+		while (!out.empty() && (out.back() == ' ' || out.back() == '\t'))
+			out.pop_back();
+		return true;
+	};
+
+	// ---------------------------------------------------------------------
+	// 【为什么不用 INISettingsInterface::Save 落盘】
+	//   它内部走 GetTemporaryFile → mkstemp() 在同目录建临时文件，
+	//   而 HarmonyOS 应用沙箱**拒绝 mkstemp**：
+	//     实测 mkstemp() failed: errno 13: Permission denied
+	//   （目录权限是 0777、uid 也一致，普通 open+write 完全正常 ——
+	//     被拒的是 mkstemp 这个调用本身。）
+	//
+	//   改为：读出现有文本 → 逐行做 INI 编辑（保留我们不认识的键）
+	//   → FileSystem::WriteStringToFile（内部是普通 fopen/fwrite）。
+	// ---------------------------------------------------------------------
+
+	std::string content;
+	if (FileSystem::FileExists(path.c_str()))
+	{
+		// 读现有内容以保留其它键；读失败则当作空文件重写
+		if (std::FILE* rf = FileSystem::OpenCFile(path.c_str(), "rb"))
+		{
+			char buf[4096];
+			size_t n;
+			while ((n = std::fread(buf, 1, sizeof(buf), rf)) > 0)
+				content.append(buf, n);
+			std::fclose(rf);
+		}
+	}
+
+	// 待写入的 (节, 键, 值)；值为空 optional 表示删除该键
+	struct IniEdit
+	{
+		std::string section;
+		std::string key;
+		bool remove;
+		std::string value;
+	};
+	std::vector<IniEdit> edits;
+
+	// 【注意】json_key 是前端发来的键名，ini_key 是写入 INI 的键名，
+	// 两者**不同**。此前把 ini_key 直接当 json_key 查，导致一次编辑都没
+	// 生成、却因"没有覆盖→删文件"分支返回 ok=1 的假成功。
+	auto want_value = [&](const char* json_key, const char* section, const char* ini_key) {
+		std::string raw;
+		if (!find_value(json_key, raw))
+			return;
+		edits.push_back({section, ini_key, raw == "null", raw});
+	};
+	// 浮点按整数写法存（倍率都是 1/2/3），上游 GetFloatValue 能解析 "3"
+	want_value("aspect", "EmuCore/GS", "AspectRatio");
+	want_value("upscale", "EmuCore/GS", "upscale_multiplier");
+	want_value("vuThread", "EmuCore/Speedhacks", "vuThread");
+
+	// 逐行处理：按节跟踪当前 section，命中的键就地替换或删除
+	auto split_lines = [](const std::string& src) {
+		std::vector<std::string> lines;
+		size_t i = 0;
+		while (i <= src.size())
+		{
+			size_t j = src.find('\n', i);
+			if (j == std::string::npos)
+			{
+				if (i < src.size())
+					lines.push_back(src.substr(i));
+				break;
+			}
+			lines.push_back(src.substr(i, j - i));
+			i = j + 1;
+		}
+		return lines;
+	};
+	auto trim = [](std::string v) {
+		size_t a = v.find_first_not_of(" \t\r");
+		size_t b = v.find_last_not_of(" \t\r");
+		return (a == std::string::npos) ? std::string() : v.substr(a, b - a + 1);
+	};
+
+	std::vector<std::string> lines = split_lines(content);
+	std::vector<bool> done(edits.size(), false);
+	std::vector<std::string> out_lines;
+	std::string cur_section;
+
+	for (const std::string& line : lines)
+	{
+		const std::string t = trim(line);
+		if (!t.empty() && t[0] == '[' && t.back() == ']')
+		{
+			cur_section = t.substr(1, t.size() - 2);
+			out_lines.push_back(line);
+			continue;
+		}
+
+		// 形如 key=value 的行，且属于目标节 → 交给 edits 处理
+		bool handled = false;
+		const size_t eq = t.find('=');
+		if (eq != std::string::npos && !cur_section.empty())
+		{
+			const std::string k = trim(t.substr(0, eq));
+			for (size_t i = 0; i < edits.size(); i++)
+			{
+				if (done[i])
+					continue;
+				if (edits[i].section == cur_section && edits[i].key == k)
+				{
+					// remove=true 表示"删除该覆盖、回退全局" ——
+					// 此时**不能**把原行放回 out_lines，否则删除永远不生效
+					// （此前的 bug：remove 被当成"跳过"，原值原样保留）。
+					if (!edits[i].remove)
+						out_lines.push_back(edits[i].key + "=" + edits[i].value);
+					done[i] = true;
+					handled = true;
+					break;
+				}
+			}
+		}
+		if (!handled)
+			out_lines.push_back(line);
+	}
+
+	// 未被现有内容覆盖的键：补到对应节末尾（节不存在则新建）
+	for (size_t i = 0; i < edits.size(); i++)
+	{
+		if (done[i] || edits[i].remove)
+			continue;
+		// 找该节
+		size_t insert_at = out_lines.size();
+		bool found = false;
+		std::string cs;
+		for (size_t j = 0; j < out_lines.size(); j++)
+		{
+			const std::string t = trim(out_lines[j]);
+			if (!t.empty() && t[0] == '[' && t.back() == ']')
+			{
+				cs = t.substr(1, t.size() - 2);
+				if (cs == edits[i].section)
+				{
+					// 插入到该节结束前
+					size_t k = j + 1;
+					while (k < out_lines.size())
+					{
+						const std::string tk = trim(out_lines[k]);
+						if (!tk.empty() && tk[0] == '[' && tk.back() == ']')
+							break;
+						k++;
+					}
+					insert_at = k;
+					found = true;
+					break;
+				}
+			}
+		}
+		if (!found)
+		{
+			if (!out_lines.empty() && !trim(out_lines.back()).empty())
+				out_lines.push_back("");
+			out_lines.push_back("[" + edits[i].section + "]");
+			insert_at = out_lines.size();
+		}
+		out_lines.insert(out_lines.begin() + static_cast<long>(insert_at),
+			edits[i].key + "=" + edits[i].value);
+	}
+
+	// 删除"已无任何键"的空节，避免留下 [EmuCore/GS] 这样的空壳
+	std::vector<std::string> cleaned;
+	for (size_t i = 0; i < out_lines.size(); i++)
+	{
+		const std::string t = trim(out_lines[i]);
+		if (!t.empty() && t[0] == '[' && t.back() == ']')
+		{
+			// 往后看该节是否还有非空、非注释行
+			bool has_key = false;
+			for (size_t j = i + 1; j < out_lines.size(); j++)
+			{
+				const std::string tj = trim(out_lines[j]);
+				if (!tj.empty() && tj[0] == '[' && tj.back() == ']')
+					break;
+				if (!tj.empty() && tj[0] != ';' && tj[0] != '#')
+				{
+					has_key = true;
+					break;
+				}
+			}
+			if (!has_key)
+				continue;   // 丢掉这个空节标题
+		}
+		cleaned.push_back(out_lines[i]);
+	}
+
+	// 重新拼接；末尾保证一个换行
+	std::string final_content;
+	for (size_t i = 0; i < cleaned.size(); i++)
+	{
+		final_content += cleaned[i];
+		final_content += "\n";
+	}
+
+	// 请求里没有任何可识别的键 → 明确报错。否则下面"内容为空→删文件"
+	// 分支会把它当成"清空成功"而返回 ok=1（正是此前的假成功）。
+	if (edits.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env,
+			"{\"ok\":false,\"message\":\"请求里没有可识别的设置项\"}", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	Error error;
+	bool ok = false;
+	if (trim(final_content).empty())
+	{
+		// 已无任何覆盖 → 删除文件，让上游回到"这款游戏没有独立设置"
+		if (!FileSystem::FileExists(path.c_str()) ||
+			FileSystem::DeleteFilePath(path.c_str(), &error))
+		{
+			ok = true;
+		}
+	}
+	else
+	{
+		ok = FileSystem::WriteStringToFile(path.c_str(), final_content);
+		if (!ok)
+		{
+			// 带上 errno：EACCES / ENOENT / EROFS 的处置方式完全不同
+			LOGW("game settings write failed: path=%{public}s errno=%{public}d",
+				path.c_str(), errno);
+			Error::SetStringFmt(&error, "写入失败（errno {}）: {}", errno, path);
+		}
+		else
+		{
+			LOGI("game settings written: %{public}s (%{public}d bytes)",
+				path.c_str(), static_cast<int>(final_content.size()));
+		}
+	}
+
+	std::string json = std::string("{\"ok\":") + (ok ? "true" : "false") + ",\"path\":\"" +
+		JsonEscape(path) + "\"";
+	if (!ok)
+		json += ",\"message\":\"" + JsonEscape(error.GetDescription()) + "\"";
+	else
+		json += ",\"message\":\"已保存（下次启动该游戏生效）\"";
+	json += "}";
 
 	napi_value out;
 	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
@@ -2794,7 +3277,10 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"runJitPrctlExperiment", nullptr, NapiJitPrctlExperiment, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listMemoryCards", nullptr, NapiListMemoryCards, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"initGameFolders", nullptr, NapiInitGameFolders, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listGames", nullptr, NapiListGames, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"readGameSettings", nullptr, NapiReadGameSettings, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"writeGameSettings", nullptr, NapiWriteGameSettings, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"memoryCardsDirectory", nullptr, NapiMemoryCardsDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"createMemoryCard", nullptr, NapiCreateMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"deleteMemoryCard", nullptr, NapiDeleteMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},

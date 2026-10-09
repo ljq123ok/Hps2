@@ -73,6 +73,8 @@ export struct HomeScreen {
   onDownloadCovers?: () => void;
   /** 只为指定游戏下载封面 */
   onDownloadCoverFor?: (g: GameEntry) => void;
+  /** 打开指定游戏的独立设置 */
+  onOpenPerGameSettings?: (g: GameEntry) => void;
   /** 打开封面源设置 */
   onOpenCoverSources?: () => void;
   onStart?: () => void;
@@ -210,6 +212,13 @@ export struct HomeScreen {
           Text('✓ 已选')
             .fontSize(11)
             .fontColor(Theme.ok())
+        }
+        // 逐游戏设置入口（未识别的镜像没有 serial/CRC，无法定位其设置文件）
+        if (!g.invalid && g.serial.length > 0) {
+          Text('设置')
+            .fontSize(10)
+            .fontColor(Theme.accentHi())
+            .onClick(() => { if (this.onOpenPerGameSettings) this.onOpenPerGameSettings(g); })
         }
         // 无封面且能定位（有 serial）时提供单条下载入口
         if (!this.coverPaths.has(g.path) && !g.invalid && g.serial.length > 0) {

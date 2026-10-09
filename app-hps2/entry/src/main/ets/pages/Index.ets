@@ -151,6 +151,26 @@ interface GameSelection {
 }
 
 
+/**
+ * 某游戏的独立设置（对应 native readGameSettings()）。
+ *
+ * `*Set` 字段区分"该游戏显式覆盖了此项"与"未设置、继承全局设置" ——
+ * 这是逐游戏设置的关键语义，UI 必须能表达"这一项我不覆盖"。
+ */
+interface PerGameSettings {
+  ok: boolean;
+  serial: string;
+  crc: number;
+  path: string;
+  hasFile: boolean;
+  aspect: number;
+  upscale: number;
+  vuThread: boolean;
+  aspectSet: boolean;
+  upscaleSet: boolean;
+  vuThreadSet: boolean;
+}
+
 /** 即时存档槽状态（对应 native 的 listSaveSlots()） */
 interface SaveSlotInfo {
   slot: number;
@@ -246,6 +266,13 @@ struct Index {
   @State newSourceUrl: string = '';
   /** 新增失败的原因（成功则清空）*/
   @State newSourceError: string = '';
+  /**
+   * 逐游戏设置面板：正在为哪个游戏编辑（null = 未打开）。
+   * 同时持有读到的当前值，避免面板每次重绘都重扫镜像（扫描是重 IO）。
+   */
+  @State perGameTarget: GameEntry | null = null;
+  @State perGame: PerGameSettings | null = null;
+  @State perGameMessage: string = '';
   @State picking: string = '';   // '' | 'bios' | 'game' —— 区分正在选哪个
   @State surfaceReady: boolean = false;
   @State surfaceSize: string = '';
@@ -631,6 +658,35 @@ struct Index {
     .border({ width: 1, color: Theme.border() })
   }
 
+  /**
+   * 逐游戏设置里的一项标题行：名称 + 状态说明 +（已覆盖时）"跟随全局"按钮。
+   *
+   * "跟随全局"是本功能的必要组成：没有它，用户一旦点过某项就再也回不到
+   * 继承状态（只能去手改 INI 或删文件）。
+   */
+  @Builder
+  perGameSection(title: string, subtitle: string, overridden: boolean, onClear: () => void) {
+    Row() {
+      Column({ space: 2 }) {
+        Text(title).fontSize(13).fontColor(Theme.textPri())
+          .width('100%').textAlign(TextAlign.Start)
+        Text(subtitle).fontSize(10)
+          .fontColor(overridden ? Theme.ok() : Theme.textDim())
+          .width('100%').textAlign(TextAlign.Start)
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      if (overridden) {
+        Text('跟随全局')
+          .fontSize(11).fontColor(Theme.accentHi())
+          .padding(4)
+          .onClick(() => { onClear(); })
+      }
+    }
+    .width('100%')
+  }
+
   /** 编辑器右侧/底部设置面板 */
   @Builder
   padEditorPanel() {
@@ -774,6 +830,10 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'game storage directory prepared');
       // 目录就绪后恢复上次选中的游戏（此前只写不读）
       this.restoreGameSelection();
+      // 【必须在读写逐游戏设置/封面之前】native 侧的 GameSettings/Covers
+      // 原本只在"启动游戏"时才赋值，未启动游戏时为空字符串，会让路径
+      // 退化成从根目录拼（实测写成 /SCPS-15062_1C4E2A9F.ini → errno 13）。
+      hps2core.initGameFolders(this.dataRoot());
       // 封面源配置（决定后续下载走哪个库）
       SharedCoverSources.store.load(this.dataRoot());
       // 再扫描整个 games/ 目录填充游戏库列表。
@@ -2186,6 +2246,112 @@ struct Index {
     }
   }
 
+  // ===================== 逐游戏设置 =====================
+
+  /**
+   * 打开某游戏的独立设置面板。
+   *
+   * 【为什么需要单独读一次】值来自该游戏的 INI 文件，与全局设置是两套。
+   * native 侧读取时要扫描镜像取 serial/CRC（重 IO），故只在打开时读一次，
+   * 结果存在 @State 里，面板重绘不重复扫描。
+   */
+  private openPerGameSettings(g: GameEntry): void {
+    if (this.statusRunning) {
+      this.statusError = '游戏运行中无法修改设置，请先返回。';
+      return;
+    }
+    if (g.invalid || !g.serial || g.serial.length === 0) {
+      this.statusError = '该镜像未被识别，无法使用逐游戏设置。';
+      return;
+    }
+    this.perGameTarget = g;
+    this.perGameMessage = '';
+    this.perGame = null;
+    try {
+      const raw: string = hps2core.readGameSettings(g.path);
+      const st = JSON.parse(raw) as PerGameSettings;
+      if (!st.ok) {
+        this.perGameMessage = '读取该游戏的设置失败（见日志）。';
+        return;
+      }
+      this.perGame = st;
+      hilog.info(DOMAIN, TAG, 'readGameSettings ok hasFile=%{public}d', st.hasFile ? 1 : 0);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'readGameSettings failed');
+      this.perGameMessage = '读取设置失败。';
+    }
+  }
+
+  private closePerGameSettings(): void {
+    this.perGameTarget = null;
+    this.perGame = null;
+    this.perGameMessage = '';
+  }
+
+  /**
+   * 写入一项逐游戏设置。
+   *
+   * value 传 null 表示"删除该覆盖、回退全局" —— 这是本功能的核心语义：
+   * 用户应当能明确表达"这一项我不管，用全局的"。
+   */
+  private writePerGameSetting(key: string, value: number | boolean | null): void {
+    const target = this.perGameTarget;
+    if (target === null) {
+      return;
+    }
+    let payload = '{';
+    if (value === null) {
+      payload += '"' + key + '":null';
+    } else if (typeof value === 'boolean') {
+      payload += '"' + key + '":' + (value ? 'true' : 'false');
+    } else {
+      payload += '"' + key + '":' + value.toString();
+    }
+    payload += '}';
+
+    try {
+      const raw: string = hps2core.writeGameSettings(target.path, payload);
+      const r = JSON.parse(raw) as SaveOpResult;
+      this.perGameMessage = r.message;
+      // 把失败原因也打进日志 —— 只在 UI 上显示的话，排查时拿不到
+      hilog.info(DOMAIN, TAG, 'writeGameSettings ok=%{public}d msg=%{public}s',
+        r.ok ? 1 : 0, r.message ? r.message : '');
+      if (r.ok) {
+        // 重新读回，让面板显示真实落盘结果（而不是我们以为写进去的值）
+        this.openPerGameSettings(target);
+        this.perGameMessage = r.message;
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'writeGameSettings failed');
+      this.perGameMessage = '保存失败。';
+    }
+  }
+
+  /** 面板显示用的"当前有效值"：有覆盖用覆盖值，否则回退全局设置 */
+  private effectiveAspect(): number {
+    const pg = this.perGame;
+    if (pg !== null && pg.aspectSet) {
+      return pg.aspect;
+    }
+    return this.aspectMode;
+  }
+
+  private effectiveUpscale(): number {
+    const pg = this.perGame;
+    if (pg !== null && pg.upscaleSet && pg.upscale > 0) {
+      return Math.round(pg.upscale);
+    }
+    return this.upscaleMultiplier;
+  }
+
+  private effectiveVuThread(): boolean {
+    const pg = this.perGame;
+    if (pg !== null && pg.vuThreadSet) {
+      return pg.vuThread;
+    }
+    return this.vuThread;
+  }
+
   // ===================== 封面 =====================
 
   /** 封面目录（与 native 的 EmuFolders::Covers 一致：<dataRoot>/covers）*/
@@ -3005,6 +3171,7 @@ struct Index {
             onDownloadCovers: () => { this.downloadMissingCovers(); },
             onDownloadCoverFor: (g: GameEntry) => { this.downloadOneCover(g); },
             onOpenCoverSources: () => { this.showCoverSources = true; },
+            onOpenPerGameSettings: (g: GameEntry) => { this.openPerGameSettings(g); },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
             onJitPrctlExperiment: () => { this.runJitPrctlExperiment(); },
@@ -3645,6 +3812,112 @@ struct Index {
         .justifyContent(FlexAlign.Center)
         .backgroundColor(Theme.overlayScrim())
         .onClick(() => { this.showSettings = false; this.showMemoryCardManager = false; })
+      }
+
+      // ---- 逐游戏设置弹层 ----
+      // 每个游戏可独立覆盖画面比例/渲染倍率/MTVU；未覆盖的项继承全局。
+      // 值写入上游自己的 gamesettings/<serial>_<CRC>.ini。
+      if (this.perGameTarget !== null && this.perGame !== null) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Column({ space: 2 }) {
+                Text('本游戏设置').fontSize(17).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+                Text(libGameTitle(this.perGameTarget))
+                  .fontSize(11).fontColor(Theme.textDim())
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(this.perGame.serial + ' · 仅对这款游戏生效，覆盖全局设置')
+                  .fontSize(10).fontColor(Theme.textDim())
+              }
+              .layoutWeight(1).alignItems(HorizontalAlign.Start)
+              Button('关闭')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.closePerGameSettings(); })
+            }
+            .width('100%')
+
+            Scroll() {
+              Column({ space: Theme.gap }) {
+                // ---- 画面比例 ----
+                this.perGameSection('画面比例',
+                  this.perGame.aspectSet ? '已为这款游戏单独设置' : '当前跟随全局设置',
+                  this.perGame.aspectSet,
+                  () => { this.writePerGameSetting('aspect', null); })
+                Row({ space: 6 }) {
+                  ForEach([0, 1, 2, 3], (m: number) => {
+                    Text(this.aspectLabel(m))
+                      .fontSize(11)
+                      .fontColor(this.effectiveAspect() === m ? '#FFFFFF' : Theme.textSec())
+                      .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                      .backgroundColor(this.effectiveAspect() === m ? Theme.accent() : Theme.bgCardHi())
+                      .borderRadius(Theme.radiusSm)
+                      .layoutWeight(1)
+                      .textAlign(TextAlign.Center)
+                      .onClick(() => { this.writePerGameSetting('aspect', m); })
+                  }, (m: number) => 'aspect-' + m.toString())
+                }
+                .width('100%')
+
+                // ---- 内部渲染倍率 ----
+                this.perGameSection('内部渲染倍率',
+                  this.perGame.upscaleSet ? '已为这款游戏单独设置' : '当前跟随全局设置',
+                  this.perGame.upscaleSet,
+                  () => { this.writePerGameSetting('upscale', null); })
+                Row({ space: 6 }) {
+                  ForEach([1, 2, 3], (m: number) => {
+                    Text(this.upscaleLabel(m))
+                      .fontSize(11)
+                      .fontColor(this.effectiveUpscale() === m ? '#FFFFFF' : Theme.textSec())
+                      .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+                      .backgroundColor(this.effectiveUpscale() === m ? Theme.accent() : Theme.bgCardHi())
+                      .borderRadius(Theme.radiusSm)
+                      .layoutWeight(1)
+                      .textAlign(TextAlign.Center)
+                      .onClick(() => { this.writePerGameSetting('upscale', m); })
+                  }, (m: number) => 'up-' + m.toString())
+                }
+                .width('100%')
+
+                // ---- MTVU ----
+                this.perGameSection('MTVU（VU1 独立线程）',
+                  this.perGame.vuThreadSet ? '已为这款游戏单独设置' : '当前跟随全局设置',
+                  this.perGame.vuThreadSet,
+                  () => { this.writePerGameSetting('vuThread', null); })
+                Row() {
+                  Text('把 VU1 移到独立线程；个别游戏可能不兼容')
+                    .fontSize(10).fontColor(Theme.textDim()).layoutWeight(1)
+                  Toggle({ type: ToggleType.Switch, isOn: this.effectiveVuThread() })
+                    .onChange((on: boolean) => { this.writePerGameSetting('vuThread', on); })
+                }
+                .width('100%')
+
+                if (this.perGameMessage.length > 0) {
+                  Text(this.perGameMessage)
+                    .fontSize(11).fontColor(Theme.ok()).width('100%')
+                }
+                Text('这些值在启动游戏时读取，因此改动对**下次启动**生效。')
+                  .fontSize(10).fontColor(Theme.textDim()).width('100%')
+              }
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .scrollBar(BarState.Auto)
+          }
+          .width('92%')
+          .height('86%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase())
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi() })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        .onClick(() => { this.closePerGameSettings(); })
       }
 
       // ---- 封面源管理弹层 ----
