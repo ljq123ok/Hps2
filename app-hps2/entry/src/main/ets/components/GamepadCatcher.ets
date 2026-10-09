@@ -21,6 +21,7 @@ import hilog from '@ohos.hilog';
 import hps2core from 'libhps2core.so';
 import { keyCodeToVpad, keyCodeToVpadAxis, axisModelToVpad, normalizeAxisValue }
   from '../common/GamepadKeyMap';
+import { VpadAxis } from '../common/VpadCodes';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_PAD';
@@ -90,11 +91,17 @@ export struct GamepadCatcher {
           return true;
         }
 
-        // 2) L2/R2 若以"按键"形式上报，转成轴（按下满量程、抬起归零）
+        // 2) L2/R2 若以"按键"形式上报，转成轴。
+        //
+        // 【抬起值必须是 TRIGGER_REST（-32768），不是 0】
+        //   SDL 的扳机轴静止值是 SDL_JOYSTICK_AXIS_MIN = -32768
+        //   （见 VpadCodes.ets 的 TRIGGER_REST 说明）。
+        //   送 0 会被当成"半程扳机"，游戏里表现为松手后 L2/R2 卡住不放。
+        //   虚拟按键路径（VirtualPad.ets）一直用的是 TRIGGER_REST，此处对齐。
         const ax = keyCodeToVpadAxis(event.keyCode);
         if (ax >= 0) {
           this.reportFirst();
-          hps2core.vpadAxis(ax, isDown ? 32767 : 0);
+          hps2core.vpadAxis(ax, isDown ? 32767 : VpadAxis.TRIGGER_REST);
           return true;
         }
 

@@ -25,6 +25,7 @@
  *   → SDL_SetJoystickVirtual* → SDLInputSource → PCSX2 Pad
  * 即：真实手柄与屏幕虚拟按键走**同一条下游**，只是事件来源不同。
  */
+import { VpadAxis } from './VpadCodes';
 
 /** 系统按键码 → SDL 虚拟手柄按键编号；未映射返回 -1 */
 export function keyCodeToVpad(code: number): number {
@@ -100,6 +101,14 @@ export function isStickAxis(axis: number): boolean {
  *   - 扳机常见 0..255（单极），也可能是 -32768..32767
  * 因此这里按"是否双极"分别处理，并按实际范围归一化。
  *
+ * 【扳机必须映射到有符号全域，不能是 0..32767】
+ *   SDL 的扳机轴静止值是 SDL_JOYSTICK_AXIS_MIN = -32768，满程是 32767
+ *   （见 VpadCodes.ets 的 TRIGGER_REST 与 SDL_joystick.h）。
+ *   若把单极扳机的 0..max 直接映射到 0..32767，那么静止时会送出 0 ——
+ *   这是一个**半程扳机**，游戏里表现为 L2/R2 松手后仍被按住。
+ *   故这里与原生 GameControllerKit 路径（hps2_gamepad.cpp 的
+ *   TriggerToSdl：value * 65535 - 32768）保持同一套换算。
+ *
  * 注意：本函数只做**数学换算**，不猜测设备；
  * 若实测发现某手柄范围异常，应在此处按其真实范围调整。
  */
@@ -114,10 +123,18 @@ export function normalizeAxisValue(axis: number, raw: number): number {
     const v = Math.max(-255, Math.min(255, raw));
     return Math.round(v / 255 * 32767);
   }
-  // 单极轴（扳机）：0..max -> 0..32767
-  const v = Math.max(0, raw);
-  if (v <= 255) {
-    return Math.round(v / 255 * 32767);
+
+  // 单极轴（扳机）：行程 -> -32768..32767。
+  //
+  // 静止必须落在 -32768，否则会被当作半程扳机
+  // （游戏里表现为 L2/R2 松手后仍被按住）—— 这是本次修复的核心。
+  //
+  // 行程上限因设备而异（0..255 / 0..1023 / 0..32767 都见过），
+  // 故按实际量级推断分母，而不是写死某一个值。
+  if (raw <= 0) {
+    return VpadAxis.TRIGGER_REST;            // 已是静止
   }
-  return Math.min(32767, Math.round(v));
+  const span = raw <= 255 ? 255 : (raw <= 1023 ? 1023 : 32767);
+  const travel = Math.min(1, raw / span);    // 0..1
+  return Math.round(travel * 65535 - 32768); // -32768..32767
 }

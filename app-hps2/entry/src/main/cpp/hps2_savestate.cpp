@@ -8,6 +8,8 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 
 #include "VMManager.h"
@@ -80,15 +82,38 @@ namespace Hps2SaveState
 		// （上游 Hotkeys.cpp:115 亦如此调用）。
 		// 【关键】经 VM 线程执行 —— 与读档同理，状态操作必须在 VM 线程上下文。
 		//
-		// 注意用 shared_ptr 而非栈上引用：zip_on_thread=true 时回调可能
-		// 在 RunOnVmThread 返回**之后**才触发，捕获栈变量会悬垂（use-after-free）。
-		auto err2 = std::make_shared<std::string>();
-		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, err2]() {
-			VMManager::SaveStateToSlot(slot, true, [slot, err2](const std::string& error) {
+		// 【为什么用带锁的 shared_ptr 取失败信息】
+		// zip_on_thread=true 时，错误回调可能来自两个不同线程：
+		//   a) 同步失败（文件名为空、记忆卡忙）—— 在 SaveStateToSlot 内部
+		//      直接回调，即 VM 线程，RunOnVmThread 返回前完成；
+		//   b) 后台失败（压缩/落盘出错）—— 由 ZipSaveStateOnThread 回调，
+		//      可能在 RunOnVmThread 返回**之后**才触发。
+		// 因此这块状态既不能用栈变量（悬垂），也不能用裸 string
+		// （调用线程读、后台线程写 = 数据竞争 UB）。用 mutex 保护。
+		struct SaveOutcome
+		{
+			std::mutex mutex;
+			std::string error;
+
+			void SetError(const std::string& e)
+			{
+				std::lock_guard<std::mutex> lk(mutex);
+				error = e;
+			}
+
+			std::string GetError()
+			{
+				std::lock_guard<std::mutex> lk(mutex);
+				return error;
+			}
+		};
+		auto outcome = std::make_shared<SaveOutcome>();
+		const bool dispatched = Hps2VmSync::RunOnVmThread([slot, outcome]() {
+			VMManager::SaveStateToSlot(slot, true, [slot, outcome](const std::string& error) {
 				if (!error.empty())
 				{
 					SLOGE("save slot %{public}d failed: %{public}s", slot, error.c_str());
-					*err2 = error;
+					outcome->SetError(error);
 				}
 				else
 				{
@@ -104,16 +129,26 @@ namespace Hps2SaveState
 			return r;
 		}
 
-		// 注意：压缩在后台进行，此处返回"已开始"而非"已完成"。
-		// 措辞需相应保守，避免用户以为立刻可用。
-		if (was_running && err2->empty())
+		// 【必须无条件恢复运行】
+		// 此前写成「仅在 err2 为空时恢复」，于是一次存档失败就会把
+		// 原本运行中的 VM 永久留在 Paused —— 表现为画面冻结、只能重开。
+		//
+		// 恢复运行在此处是安全的：状态快照已在 SaveStateToSlot 内部
+		// 同步取走（DoSaveState 先调 SaveState_DownloadState 复制全部
+		// 状态，之后才把压缩交给后台线程），此刻 VM 已无任何待读状态。
+		if (was_running)
 		{
 			VMManager::SetPaused(false);
-			SLOGI("SAVE: VM resumed");
+			SLOGI("SAVE: VM resumed (was_running)");
 		}
-		if (!err2->empty())
+
+		// 注意：压缩在后台进行，此处返回"已开始"而非"已完成"。
+		// 措辞需相应保守，避免用户以为立刻可用。
+		// 这里只能看到**同步**失败；后台失败发生在返回之后，只记日志。
+		const std::string sync_error = outcome->GetError();
+		if (!sync_error.empty())
 		{
-			r.message = "存档失败：" + *err2;
+			r.message = "存档失败：" + sync_error;
 			return r;
 		}
 
