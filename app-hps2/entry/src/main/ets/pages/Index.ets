@@ -681,6 +681,8 @@ struct Index {
         fs.mkdirSync(gdir);
       }
       hilog.info(DOMAIN, TAG, 'game storage directory prepared');
+      // 目录就绪后恢复上次选中的游戏（此前只写不读）
+      this.restoreGameSelection();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir games directory failed');
     }
@@ -1990,9 +1992,64 @@ struct Index {
     return this.dataRoot() + '/game_selection.json';
   }
 
+  /**
+   * 启动时恢复上次选中的游戏镜像。
+   *
+   * 【为什么必须有】saveGameSelection() 一直在写这个文件，但**从没有人读** ——
+   * "记住上次游戏"是空头承诺：文件在磁盘上，重启后什么都不恢复。
+   * 这里补上读取侧，与 restoreBiosSelection() 同一套路数。
+   *
+   * 容错原则（与 BIOS 恢复一致）：文件缺失 / 损坏 / 镜像已被删，
+   * 都只当作"没有上次选择"处理，不阻断启动。
+   */
+  private restoreGameSelection(): void {
+    try {
+      const marker = this.gameSelectionFile();
+      if (!fs.accessSync(marker)) {
+        return;
+      }
+      const raw = fs.readTextSync(marker);
+      if (!raw || raw.length === 0) {
+        return;
+      }
+      const selection = JSON.parse(raw) as GameSelection;
+      const path = selection.uri;
+      if (!path || path.length === 0) {
+        return;
+      }
+      // 镜像可能已被删除或移走 —— 静默忽略，不打断启动。
+      if (!fs.accessSync(path)) {
+        hilog.info(DOMAIN, TAG, 'saved game image is gone, ignoring selection');
+        return;
+      }
+      let displayName = selection.name || '';
+      if (displayName.length === 0) {
+        // 旧文件可能只存了路径，用文件名兜底
+        const slash = path.lastIndexOf('/');
+        displayName = slash >= 0 ? path.substring(slash + 1) : path;
+      }
+      this.gamePath = path;
+      this.gameName = displayName;
+      hilog.info(DOMAIN, TAG, 'restored game selection');
+    } catch (e) {
+      // 坏文件：当作没有上次选择，不影响启动
+      hilog.error(DOMAIN, TAG, 'restore game selection failed');
+    }
+  }
+
   private clearGame(): void {
     this.gamePath = '';
     this.gameName = '';
+    // 【必须同时删掉持久化记录】否则下次启动 restoreGameSelection()
+    // 会把用户刚清掉的游戏又恢复回来。
+    try {
+      const marker = this.gameSelectionFile();
+      if (fs.accessSync(marker)) {
+        fs.unlinkSync(marker);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'clearGame: remove selection failed');
+    }
   }
 
   private humanSize(n: number): string {

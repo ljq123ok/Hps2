@@ -36,7 +36,9 @@ namespace Hps2Video
 		Wide16_9 = 3,  // 16:9（适合有宽屏补丁的游戏）
 	};
 
-	/// 设置画面比例模式并立即生效。返回 true 表示已应用。
+	/// 设置画面比例模式。值**先暂存**，由 VM CPU 线程稍后应用
+	/// （见 ApplyPendingSettingsOnCPUThread）；返回 true 表示已接受该值，
+	/// **不代表已生效**。
 	bool SetAspectMode(AspectMode mode);
 
 	/// 读取当前模式。
