@@ -52,6 +52,14 @@ export struct HomeScreen {
   @Prop gamesScanning: boolean = false;
   /** 当前已选中的游戏路径（用于在列表里高亮） */
   @Prop currentGamePath: string = '';
+  /** path -> 本地封面文件路径（有封面的项才在表里）*/
+  @Prop coverPaths: Map<string, string> = new Map();
+  /** 正在下载封面的游戏路径 */
+  @Prop coverBusy: Set<string> = new Set();
+  /** 封面操作的结果说明 */
+  @Prop coverMessage: string = '';
+  /** 当前封面源的显示名（用于按钮文案）*/
+  @Prop coverSourceName: string = '';
 
   // ---- 事件回调 ----
   onPickBios?: () => void;
@@ -61,6 +69,12 @@ export struct HomeScreen {
   onSelectGame?: (g: GameEntry) => void;
   /** 重新扫描游戏库 */
   onRefreshGames?: () => void;
+  /** 为所有缺封面的游戏下载 */
+  onDownloadCovers?: () => void;
+  /** 只为指定游戏下载封面 */
+  onDownloadCoverFor?: (g: GameEntry) => void;
+  /** 打开封面源设置 */
+  onOpenCoverSources?: () => void;
   onStart?: () => void;
   onCheckJit?: () => void;
   onJitPrctlExperiment?: () => void;
@@ -98,6 +112,33 @@ export struct HomeScreen {
       }
       .width('100%')
 
+      // ---- 封面：下载 + 源选择 ----
+      Row({ space: 8 }) {
+        Text(this.coverSourceName.length > 0
+          ? `封面源：${this.coverSourceName}`
+          : '封面源：未配置')
+          .fontSize(11).fontColor(Theme.textDim())
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text('源设置')
+          .fontSize(11).fontColor(Theme.accentHi())
+          .padding(4)
+          .onClick(() => { if (this.onOpenCoverSources) this.onOpenCoverSources(); })
+        Text('下载缺失封面')
+          .fontSize(11).fontColor(Theme.accentHi())
+          .padding(4)
+          .onClick(() => { if (this.onDownloadCovers) this.onDownloadCovers(); })
+      }
+      .width('100%')
+
+      if (this.coverMessage.length > 0) {
+        Text(this.coverMessage)
+          .fontSize(10).fontColor(Theme.textDim())
+          .width('100%').maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+
       if (this.games.length === 0) {
         Text(this.gamesScanning
           ? '正在扫描游戏目录…'
@@ -116,10 +157,29 @@ export struct HomeScreen {
     .border({ width: 1, color: Theme.border() })
   }
 
-  /** 游戏库里的单项：标题 + serial/大小 + 兼容性提示 */
+  /** 游戏库里的单项：封面 + 标题 + serial/大小 + 兼容性提示 */
   @Builder
   gameRow(g: GameEntry) {
     Row({ space: 10 }) {
+      // 封面缩略图：有则显示，无则占位（不放"暂无"文字，避免列表噪杂）
+      if (this.coverPaths.has(g.path)) {
+        Image('file://' + this.coverPaths.get(g.path))
+          .width(44)
+          .height(60)
+          .objectFit(ImageFit.Cover)
+          .borderRadius(4)
+          .border({ width: 1, color: Theme.border() })
+      } else {
+        Stack() {
+          Text('🎮').fontSize(20).fontColor(Theme.textDim())
+        }
+        .width(44)
+        .height(60)
+        .backgroundColor(Theme.bgCardHi())
+        .borderRadius(4)
+        .border({ width: 1, color: Theme.border() })
+      }
+
       Column({ space: 3 }) {
         Text(gameDisplayTitle(g))
           .fontSize(14)
@@ -144,12 +204,26 @@ export struct HomeScreen {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      // 当前选中的那个给出明确标记，避免"点了没反应"的错觉
-      if (g.path === this.currentGamePath) {
-        Text('✓ 已选')
-          .fontSize(11)
-          .fontColor(Theme.ok())
+      Column({ space: 4 }) {
+        // 当前选中的那个给出明确标记，避免"点了没反应"的错觉
+        if (g.path === this.currentGamePath) {
+          Text('✓ 已选')
+            .fontSize(11)
+            .fontColor(Theme.ok())
+        }
+        // 无封面且能定位（有 serial）时提供单条下载入口
+        if (!this.coverPaths.has(g.path) && !g.invalid && g.serial.length > 0) {
+          if (this.coverBusy.has(g.path)) {
+            Text('下载中…').fontSize(10).fontColor(Theme.textDim())
+          } else {
+            Text('下封面')
+              .fontSize(10)
+              .fontColor(Theme.accentHi())
+              .onClick(() => { if (this.onDownloadCoverFor) this.onDownloadCoverFor(g); })
+          }
+        }
       }
+      .alignItems(HorizontalAlign.End)
     }
     .width('100%')
     .padding({ top: 10, bottom: 10, left: 8, right: 8 })

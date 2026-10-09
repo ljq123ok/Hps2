@@ -28,6 +28,10 @@ import { LogExport } from '../common/LogExport';
 import { GameEntry, humanSize as libHumanSize, gameDisplayTitle as libGameTitle, gameDisplaySubtitle as libGameSub } from '../common/GameLibrary';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
+  CoverSource, SharedCoverSources, BUILTIN_COVER_SOURCES, buildCoverUrl, isValidCoverTemplate
+} from '../common/CoverSources';
+import http from '@ohos.net.http';
+import {
   PadGroup, PadOffsetEntry, PadStyle, PadLayoutStore, PadLayoutSnapshot,
   PAD_STYLES, PAD_OPACITY_MIN, PAD_OPACITY_MAX,
   offsetOf, setOffset, defaultVariant, clampOpacity, clampStyleIndex,
@@ -214,6 +218,34 @@ struct Index {
   @State games: Array<GameEntry> = [];
   /** 游戏库是否正在扫描（重 IO，需可见反馈） */
   @State gamesScanning: boolean = false;
+  /**
+   * 封面：path -> 本地封面文件路径（无封面则不在表里）。
+   *
+   * 用 Map 而非给 GameEntry 加字段：封面是**异步后到**的（下载/读盘），
+   * 而 games 数组由 native 一次性返回。分开存可以让封面到达时只刷新
+   * 对应那一行，不重建整个列表。
+   */
+  @State coverPaths: Map<string, string> = new Map();
+  /** 正在下载封面的游戏路径集合（用于显示进度/禁用重复点击） */
+  @State coverBusy: Set<string> = new Set();
+  /** 封面下载的最近一次结果说明（成功/失败原因，展示给用户） */
+  @State coverMessage: string = '';
+  /** 封面源面板是否展开 */
+  @State showCoverSources: boolean = false;
+  /**
+   * 封面源列表的版本号。
+   *
+   * 【为什么需要】源列表存在 SharedCoverSources 单例里，而模块级单例
+   * 不是可观察对象 —— 新增/删除/启停源之后界面不会自己重绘。
+   * 这与编辑器里"透明度百分比不刷新"是同一类问题，故照同一套做法：
+   * 改完自增版本号，让它成为可观察的刷新信号。
+   */
+  @State coverSourceVersion: number = 0;
+  /** 新增自定义源的输入（名称 / URL 模板）*/
+  @State newSourceName: string = '';
+  @State newSourceUrl: string = '';
+  /** 新增失败的原因（成功则清空）*/
+  @State newSourceError: string = '';
   @State picking: string = '';   // '' | 'bios' | 'game' —— 区分正在选哪个
   @State surfaceReady: boolean = false;
   @State surfaceSize: string = '';
@@ -554,6 +586,51 @@ struct Index {
     this.padEditMode = false;
   }
 
+  /**
+   * 封面源的一行：单选 + 名称 + 备注 +（内置）启停 /（自定义）删除。
+   *
+   * isBuiltin 决定右侧是开关还是删除按钮 —— 内置源只允许启停
+   * （它们是代码里的常量，删掉没有意义，反而会让"没源可用"更难恢复）。
+   */
+  @Builder
+  coverSourceRow(src: CoverSource, isBuiltin: boolean) {
+    Row({ space: 10 }) {
+      Radio({ value: src.id, group: 'cover-source' })
+        .checked(this.currentCoverSourceId() === src.id)
+        .onChange((checked: boolean) => {
+          if (checked) {
+            this.selectCoverSource(src.id);
+          }
+        })
+
+      Column({ space: 2 }) {
+        Text(src.name).fontSize(13).fontColor(Theme.textPri())
+          .width('100%').textAlign(TextAlign.Start)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(src.note).fontSize(10).fontColor(Theme.textDim())
+          .width('100%').textAlign(TextAlign.Start)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      if (isBuiltin) {
+        Toggle({ type: ToggleType.Switch, isOn: this.isBuiltinCoverEnabled(src.id) })
+          .onChange((on: boolean) => { this.toggleBuiltinCoverSource(src.id, on); })
+      } else {
+        Text('删除')
+          .fontSize(11).fontColor(Theme.warn())
+          .padding(6)
+          .onClick(() => { this.removeCustomCoverSource(src.id); })
+      }
+    }
+    .width('100%')
+    .padding(Theme.pad)
+    .backgroundColor(Theme.bgCard())
+    .borderRadius(Theme.radius)
+    .border({ width: 1, color: Theme.border() })
+  }
+
   /** 编辑器右侧/底部设置面板 */
   @Builder
   padEditorPanel() {
@@ -697,9 +774,13 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'game storage directory prepared');
       // 目录就绪后恢复上次选中的游戏（此前只写不读）
       this.restoreGameSelection();
+      // 封面源配置（决定后续下载走哪个库）
+      SharedCoverSources.store.load(this.dataRoot());
       // 再扫描整个 games/ 目录填充游戏库列表。
       // 放在 restore 之后：即使列表为空，上次选中的游戏也已恢复。
       this.refreshGames();
+      // 扫描完列表后解析本地已有封面（纯查文件，无网络）
+      this.refreshLocalCovers();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir games directory failed');
     }
@@ -2095,12 +2176,267 @@ struct Index {
       });
       this.games = list;
       hilog.info(DOMAIN, TAG, 'listGames -> %{public}d item(s)', list.length);
+      // 列表变了，本地封面表也要重算（否则新导入的游戏没有封面）
+      this.refreshLocalCovers();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'listGames failed');
       this.games = [];
     } finally {
       this.gamesScanning = false;
     }
+  }
+
+  // ===================== 封面 =====================
+
+  /** 封面目录（与 native 的 EmuFolders::Covers 一致：<dataRoot>/covers）*/
+  private coversDir(): string {
+    return this.dataRoot() + '/covers';
+  }
+
+  /**
+   * 上游按 "serial → 文件标题 → 标题" 的顺序在 covers/ 里找图
+   * （GameList::GetCoverImagePathForEntry）。本地查找要照同一套，
+   * 否则会出现"下载成功了但界面不显示"。
+   */
+  private findLocalCover(g: GameEntry): string {
+    const exts: Array<string> = ['.jpg', '.jpeg', '.png', '.webp'];
+    const dir = this.coversDir();
+    const fileTitle = g.name.replace(/\.[^.]+$/, '');
+    // 候选名按上游优先级排列；去重避免同一名字查两遍
+    const cands: Array<string> = [];
+    if (fileTitle.length > 0 && fileTitle !== g.title) {
+      cands.push(fileTitle);
+    }
+    if (g.serial && g.serial.length > 0) {
+      cands.push(g.serial);
+    }
+    if (g.title && g.title.length > 0) {
+      cands.push(g.title);
+    }
+    if (g.titleEn && g.titleEn.length > 0) {
+      cands.push(g.titleEn);
+    }
+    for (const ext of exts) {
+      for (const c of cands) {
+        const sanitized = c.replace(/[\\/:*?"<>|]/g, '_');
+        const p = dir + '/' + sanitized + ext;
+        try {
+          if (fs.accessSync(p)) {
+            return p;
+          }
+        } catch (e) {
+          // 不存在即继续
+        }
+      }
+    }
+    return '';
+  }
+
+  /** 为游戏库里每个条目解析本地封面（同步、只是查文件是否存在）*/
+  private refreshLocalCovers(): void {
+    const next: Map<string, string> = new Map();
+    for (const g of this.games) {
+      const p = this.findLocalCover(g);
+      if (p.length > 0) {
+        next.set(g.path, p);
+      }
+    }
+    this.coverPaths = next;
+  }
+
+  /**
+   * 用当前选中的封面源为一款游戏下载封面。
+   *
+   * 【设计取舍】
+   *   - 串行逐个下载：并发会打满小水管，且失败时难以归因
+   *   - 失败不阻断：无网/源不可用时只记录说明，不影响游戏运行
+   *   - 只按 serial 命名保存（上游最通用的查找方式）
+   *   - 下载完立刻刷新本地封面表，界面即时可见
+   */
+  private async downloadCoverFor(g: GameEntry): Promise<boolean> {
+    const src: CoverSource | null = SharedCoverSources.store.current();
+    if (src === null) {
+      this.coverMessage = '没有可用的封面源，请在「封面源」里启用或添加一个。';
+      return false;
+    }
+    if (!g.serial || g.serial.length === 0) {
+      this.coverMessage = '这款游戏未能识别序列号，无法按 serial 查找封面。';
+      return false;
+    }
+
+    const url = buildCoverUrl(src.urlTemplate, g.serial, g.title, g.name.replace(/\.[^.]+$/, ''));
+    hilog.info(DOMAIN, TAG, 'cover download start via %{public}s', src.id);
+
+    const req = http.createHttp();
+    try {
+      const resp = await req.request(url, {
+        method: http.RequestMethod.GET,
+        connectTimeout: 10000,
+        readTimeout: 20000,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+      });
+      if (resp.responseCode !== 200) {
+        this.coverMessage = `下载失败：HTTP ${resp.responseCode}（源：${src.name}）`;
+        hilog.warn(DOMAIN, TAG, 'cover HTTP %{public}d', resp.responseCode);
+        return false;
+      }
+      const buf = resp.result as ArrayBuffer;
+      if (!buf || buf.byteLength === 0) {
+        this.coverMessage = `下载失败：内容为空（源：${src.name}）`;
+        return false;
+      }
+
+      // 目录可能还不存在（首次运行）
+      try {
+        if (!fs.accessSync(this.coversDir())) {
+          fs.mkdirSync(this.coversDir());
+        }
+      } catch (e) {
+        // 已存在
+      }
+
+      // 统一存成 .jpg：上游按扩展名探测，且封面库给的就是 jpg
+      const dest = this.coversDir() + '/' + g.serial + '.jpg';
+      const file = fs.openSync(dest,
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, buf);
+      } finally {
+        fs.closeSync(file);
+      }
+      hilog.info(DOMAIN, TAG, 'cover saved for %{public}s', g.serial);
+      this.coverMessage = `已下载封面：${libGameTitle(g)}`;
+      return true;
+    } catch (e) {
+      const err = e as BusinessError;
+      // 网络类失败最常见（无网 / 源被墙 / 超时），如实说明而不是笼统"失败"
+      this.coverMessage = `下载失败：${err.message ? err.message : JSON.stringify(e)}（源：${src.name}）`;
+      hilog.error(DOMAIN, TAG, 'cover download failed');
+      return false;
+    } finally {
+      req.destroy();
+    }
+  }
+
+  /** 标记封面源配置已变更，触发界面重绘 */
+  private bumpCoverSources(): void {
+    this.coverSourceVersion++;
+  }
+
+  /** 当前选中的源 id（供单选按钮判断勾选态；复用 current() 的回退逻辑）*/
+  private currentCoverSourceId(): string {
+    const src = SharedCoverSources.store.current();
+    return src === null ? '' : src.id;
+  }
+
+  /** 全部可用源（供面板渲染；读一次 coverSourceVersion 建立依赖）*/
+  private coverSourceList(): Array<CoverSource> {
+    const v = this.coverSourceVersion;
+    if (v < 0) {
+      // 不可达分支，仅为让编译器保留上面的读取
+      console.info('unreachable');
+    }
+    return SharedCoverSources.store.all();
+  }
+
+  /** 内置源列表（面板里单独一组，支持启停）*/
+  private builtinCoverSources(): Array<CoverSource> {
+    return BUILTIN_COVER_SOURCES;
+  }
+
+  private selectCoverSource(id: string): void {
+    SharedCoverSources.store.select(id);
+    SharedCoverSources.store.save(this.dataRoot());
+    this.bumpCoverSources();
+  }
+
+  private toggleBuiltinCoverSource(id: string, enabled: boolean): void {
+    SharedCoverSources.store.setBuiltinEnabled(id, enabled);
+    SharedCoverSources.store.save(this.dataRoot());
+    this.bumpCoverSources();
+  }
+
+  private isBuiltinCoverEnabled(id: string): boolean {
+    return SharedCoverSources.store.isBuiltinEnabled(id);
+  }
+
+  private addCustomCoverSource(): void {
+    const err = SharedCoverSources.store.addCustom(this.newSourceName, this.newSourceUrl);
+    if (err.length > 0) {
+      this.newSourceError = err;
+      return;
+    }
+    SharedCoverSources.store.save(this.dataRoot());
+    this.newSourceName = '';
+    this.newSourceUrl = '';
+    this.newSourceError = '';
+    this.bumpCoverSources();
+  }
+
+  private removeCustomCoverSource(id: string): void {
+    if (SharedCoverSources.store.removeCustom(id)) {
+      SharedCoverSources.store.save(this.dataRoot());
+      this.bumpCoverSources();
+    }
+  }
+
+  /** 当前封面源的显示名（未配置时返回空串）*/
+  private currentCoverSourceName(): string {
+    const src = SharedCoverSources.store.current();
+    return src === null ? '' : src.name;
+  }
+
+  /** 为单个游戏下载封面（列表行内按钮）*/
+  private async downloadOneCover(g: GameEntry): Promise<void> {
+    const busy = new Set(this.coverBusy);
+    busy.add(g.path);
+    this.coverBusy = busy;
+    await this.downloadCoverFor(g);
+    const after = new Set(this.coverBusy);
+    after.delete(g.path);
+    this.coverBusy = after;
+    this.refreshLocalCovers();
+  }
+
+  /** 为列表里**所有缺封面**的游戏逐个下载 */
+  private async downloadMissingCovers(): Promise<void> {
+    const todo: Array<GameEntry> = [];
+    for (const g of this.games) {
+      if (g.invalid || !g.serial || g.serial.length === 0) {
+        continue;
+      }
+      if (this.findLocalCover(g).length > 0) {
+        continue;
+      }
+      todo.push(g);
+    }
+    if (todo.length === 0) {
+      this.coverMessage = '所有已识别的游戏都已有封面。';
+      return;
+    }
+
+    let ok = 0;
+    let fail = 0;
+    for (const g of todo) {
+      // 每项标记 busy，让界面能看出进度
+      const busy = new Set(this.coverBusy);
+      busy.add(g.path);
+      this.coverBusy = busy;
+
+      const done = await this.downloadCoverFor(g);
+      if (done) {
+        ok++;
+      } else {
+        fail++;
+      }
+
+      const after = new Set(this.coverBusy);
+      after.delete(g.path);
+      this.coverBusy = after;
+    }
+
+    this.refreshLocalCovers();
+    this.coverMessage = `封面下载完成：成功 ${ok}，失败 ${fail}。`;
   }
 
   /** 从游戏库选中一项作为当前游戏（不复制 —— 它已经在沙箱里了）。*/
@@ -2662,6 +2998,13 @@ struct Index {
             onClearGame: () => { this.clearGame(); },
             onSelectGame: (g: GameEntry) => { this.selectGameFromLibrary(g); },
             onRefreshGames: () => { this.refreshGames(); },
+            coverPaths: this.coverPaths,
+            coverBusy: this.coverBusy,
+            coverMessage: this.coverMessage,
+            coverSourceName: this.currentCoverSourceName(),
+            onDownloadCovers: () => { this.downloadMissingCovers(); },
+            onDownloadCoverFor: (g: GameEntry) => { this.downloadOneCover(g); },
+            onOpenCoverSources: () => { this.showCoverSources = true; },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
             onJitPrctlExperiment: () => { this.runJitPrctlExperiment(); },
@@ -3302,6 +3645,96 @@ struct Index {
         .justifyContent(FlexAlign.Center)
         .backgroundColor(Theme.overlayScrim())
         .onClick(() => { this.showSettings = false; this.showMemoryCardManager = false; })
+      }
+
+      // ---- 封面源管理弹层 ----
+      // 内置源可启停、自定义源可增删；当前源决定"下载封面"走哪个库。
+      if (this.showCoverSources) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Column({ space: 2 }) {
+                Text('封面源').fontSize(17).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+                Text('选择从哪个封面库下载；可按需启停或添加自己的源')
+                  .fontSize(10).fontColor(Theme.textDim())
+              }
+              .layoutWeight(1).alignItems(HorizontalAlign.Start)
+              Button('关闭')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.showCoverSources = false; })
+            }
+            .width('100%')
+
+            Scroll() {
+              Column({ space: Theme.gap }) {
+                // ---- 内置源 ----
+                Text('内置源').fontSize(13).fontColor(Theme.textSec()).width('100%')
+                ForEach(this.builtinCoverSources(), (src: CoverSource) => {
+                  this.coverSourceRow(src, true)
+                }, (src: CoverSource) => src.id)
+
+                // ---- 自定义源 ----
+                Text('自定义源').fontSize(13).fontColor(Theme.textSec()).width('100%')
+                if (SharedCoverSources.store.customSources().length === 0) {
+                  Text('还没有自定义源。若内置源在你的网络下都不可用，可在下面添加。')
+                    .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                } else {
+                  ForEach(SharedCoverSources.store.customSources(), (src: CoverSource) => {
+                    this.coverSourceRow(src, false)
+                  }, (src: CoverSource) => src.id)
+                }
+
+                // ---- 新增自定义源 ----
+                Column({ space: 8 }) {
+                  Text('添加自定义源').fontSize(13).fontColor(Theme.textSec()).width('100%')
+                  TextInput({ placeholder: '名称，例如：我的图床', text: this.newSourceName })
+                    .height(38).fontSize(13)
+                    .backgroundColor(Theme.bgCardHi())
+                    .onChange((v: string) => { this.newSourceName = v; })
+                  TextInput({
+                    placeholder: 'URL 模板，须含 ${serial} / ${title} / ${filetitle}',
+                    text: this.newSourceUrl
+                  })
+                    .height(38).fontSize(12)
+                    .backgroundColor(Theme.bgCardHi())
+                    .onChange((v: string) => { this.newSourceUrl = v; })
+                  Text('示例：https://你的域名/covers/${serial}.jpg')
+                    .fontSize(10).fontColor(Theme.textDim()).width('100%')
+                  if (this.newSourceError.length > 0) {
+                    Text(this.newSourceError).fontSize(11).fontColor(Theme.warn()).width('100%')
+                  }
+                  Button('添加')
+                    .width('100%').height(38).fontSize(13)
+                    .backgroundColor(Theme.accent()).fontColor('#FFFFFF')
+                    .borderRadius(Theme.radiusSm)
+                    .onClick(() => { this.addCustomCoverSource(); })
+                }
+                .width('100%')
+                .padding(Theme.pad)
+                .backgroundColor(Theme.bgCard())
+                .borderRadius(Theme.radius)
+                .border({ width: 1, color: Theme.border() })
+              }
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .scrollBar(BarState.Auto)
+          }
+          .width('92%')
+          .height('86%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase())
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi() })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        .onClick(() => { this.showCoverSources = false; })
       }
 
       // ---- 独立存档管理页 ----
