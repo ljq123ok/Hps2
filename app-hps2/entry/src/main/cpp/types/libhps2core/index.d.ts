@@ -39,6 +39,13 @@ export const checkJit: () => string;
 
 /** PS2 记忆卡列表：[{name,path,size,fileType,formatted,gameIds,matchedGameSerial}] */
 export const listMemoryCards: (dataRoot: string, gamePath?: string) => string;
+/**
+ * 游戏库：扫描 gamesDir 下的镜像并返回元数据
+ * `[{name,path,size,invalid,serial,title,titleEn,region,type,crc,compatibility,lastPlayed}]`。
+ *
+ * ⚠️ 运行中调用会返回空数组 —— 扫描光盘元数据会干扰 CDVD 状态。
+ */
+export const listGames: (gamesDir: string) => string;
 /** 返回被 HarmonyOS 文件管理器捐献的 memcards 目录路径。 */
 export const memoryCardsDirectory: (dataRoot: string) => string;
 /** 创建标准 PS2 文件记忆卡，sizeMb 支持 8/16/32/64。 */

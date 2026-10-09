@@ -2487,6 +2487,115 @@ static napi_value NapiMemoryCardsDirectory(napi_env env, napi_callback_info info
 	return out;
 }
 
+// listGames(gamesDir) -> JSON 数组
+//
+// 返回沙箱 games/ 目录下每个镜像的元数据，供游戏库列表展示：
+//   [{name, path, size, serial, title, region, type, compatibility, valid}]
+//
+// 【为什么需要】此前 UI 只能保存**单个**游戏（gamePath/gameName），
+// 换一个就得重新选择。有了列表，用户可存放多个镜像并按需点选。
+//
+// 【扫描代价】GameList::PopulateEntryFromPath 走 CDVD 打开镜像、
+// 读取其中的 ELF 头来算 serial 与 CRC（不是全盘扫描），所以对
+// 2GB 级别的 ISO 也是可接受的。但它是**重 IO**，故：
+//   - 只在 VM 未运行时允许调用（上游明确警告运行中扫描会破坏 CDVD 状态）
+//   - 逐个文件串行扫描，遇到无效文件不中断（valid=false 照常返回）
+static napi_value NapiListGames(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string dir;
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], dir) || dir.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 运行中不扫描：会干扰 CDVD 状态（与 memory card 路径同一守卫）。
+	if (g_vm_running.load())
+	{
+		LOGI("listGames refused: VM is running");
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	FileSystem::FindResultsArray results;
+	if (!FileSystem::FindFiles(dir.c_str(), "*",
+			FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RELATIVE_PATHS, &results))
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 只认这些扩展名，避免把封面/日志之类当游戏
+	auto has_game_ext = [](const std::string& lower) {
+		static const char* kExts[] = {".iso", ".chd", ".bin", ".img", ".elf", ".cso", ".gz"};
+		for (const char* e : kExts)
+		{
+			const size_t n = std::strlen(e);
+			if (lower.size() > n && lower.compare(lower.size() - n, n, e) == 0)
+				return true;
+		}
+		return false;
+	};
+
+	std::string json = "[";
+	bool first = true;
+	for (const auto& it : results)
+	{
+		const std::string& rel = it.FileName;
+		std::string lower = rel;
+		std::transform(lower.begin(), lower.end(), lower.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (!has_game_ext(lower))
+			continue;
+
+		const std::string full = dir + "/" + rel;
+
+		// 逐个扫描；失败也要返回条目（valid=false），让用户看得见文件存在
+		GameList::Entry entry;
+		const bool valid = GameList::PopulateEntryFromPath(full, &entry);
+
+		if (!first)
+			json += ",";
+		first = false;
+
+		json += "{\"name\":\"" + JsonEscape(rel) + "\"";
+		json += ",\"path\":\"" + JsonEscape(full) + "\"";
+		json += ",\"size\":" + std::to_string(valid ? entry.total_size : it.Size);
+		json += ",\"invalid\":" + std::string(valid ? "false" : "true");
+		if (valid)
+		{
+			json += ",\"serial\":\"" + JsonEscape(entry.serial) + "\"";
+			json += ",\"title\":\"" + JsonEscape(entry.title) + "\"";
+			json += ",\"titleEn\":\"" + JsonEscape(entry.title_en) + "\"";
+			json += ",\"region\":" + std::to_string(static_cast<int>(entry.region));
+			json += ",\"type\":" + std::to_string(static_cast<int>(entry.type));
+			json += ",\"crc\":" + std::to_string(entry.crc);
+			json += ",\"compatibility\":" + std::to_string(static_cast<int>(entry.compatibility_rating));
+			json += ",\"lastPlayed\":" + std::to_string(static_cast<long long>(entry.last_played_time));
+		}
+		else
+		{
+			json += ",\"serial\":\"\",\"title\":\"\",\"titleEn\":\"\"";
+			json += ",\"region\":0,\"type\":0,\"crc\":0,\"compatibility\":0,\"lastPlayed\":0";
+		}
+		json += "}";
+	}
+	json += "]";
+
+	LOGI("listGames: %{public}d file(s) scanned in dir", static_cast<int>(results.size()));
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
 // createMemoryCard(dataRoot, name, sizeMb) -> {ok,message}
 static napi_value NapiCreateMemoryCard(napi_env env, napi_callback_info info)
 {
@@ -2685,6 +2794,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"checkJit",  nullptr, NapiCheckJit,  nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"runJitPrctlExperiment", nullptr, NapiJitPrctlExperiment, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listMemoryCards", nullptr, NapiListMemoryCards, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"listGames", nullptr, NapiListGames, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"memoryCardsDirectory", nullptr, NapiMemoryCardsDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"createMemoryCard", nullptr, NapiCreateMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"deleteMemoryCard", nullptr, NapiDeleteMemoryCard, nullptr, nullptr, nullptr, napi_default, nullptr},

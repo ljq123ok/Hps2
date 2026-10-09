@@ -25,6 +25,7 @@ import { StatusBar } from '../components/StatusBar';
 import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
+import { GameEntry, humanSize as libHumanSize, gameDisplayTitle as libGameTitle, gameDisplaySubtitle as libGameSub } from '../common/GameLibrary';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
   PadGroup, PadOffsetEntry, PadStyle, PadLayoutStore, PadLayoutSnapshot,
@@ -145,6 +146,7 @@ interface GameSelection {
   name: string;
 }
 
+
 /** 即时存档槽状态（对应 native 的 listSaveSlots()） */
 interface SaveSlotInfo {
   slot: number;
@@ -200,6 +202,18 @@ struct Index {
   @State biosName: string = '';
   @State gamePath: string = '';
   @State gameName: string = '';
+  /**
+   * 游戏库列表（games/ 目录下的镜像元数据）。
+   *
+   * 【为什么需要】此前 UI 只能保存**单个**游戏，换一个就得重新选择并
+   * 再复制一份。现在把目录里已有的镜像都列出来供点选。
+   *
+   * 内容由 native listGames() 扫描得出（serial/title/CRC 等），故
+   * **只在 VM 未运行时刷新** —— 运行中扫描会破坏 CDVD 状态。
+   */
+  @State games: Array<GameEntry> = [];
+  /** 游戏库是否正在扫描（重 IO，需可见反馈） */
+  @State gamesScanning: boolean = false;
   @State picking: string = '';   // '' | 'bios' | 'game' —— 区分正在选哪个
   @State surfaceReady: boolean = false;
   @State surfaceSize: string = '';
@@ -683,6 +697,9 @@ struct Index {
       hilog.info(DOMAIN, TAG, 'game storage directory prepared');
       // 目录就绪后恢复上次选中的游戏（此前只写不读）
       this.restoreGameSelection();
+      // 再扫描整个 games/ 目录填充游戏库列表。
+      // 放在 restore 之后：即使列表为空，上次选中的游戏也已恢复。
+      this.refreshGames();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir games directory failed');
     }
@@ -971,7 +988,7 @@ struct Index {
       const stat = fs.statSync(destPath);
       hilog.info(DOMAIN, TAG, '%{public}s copied, size=%{public}d', kind, stat.size);
       this.picking = '';
-      return destPath + '|' + fileName + '|' + this.humanSize(stat.size);
+      return destPath + '|' + fileName + '|' + libHumanSize(stat.size);
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'pick %{public}s failed', kind);
@@ -1068,7 +1085,7 @@ struct Index {
 
       if (displayName.length === 0) {
         const stat = fs.statSync(restoredPath);
-        displayName = fileName + ' (' + this.humanSize(stat.size) + ')';
+        displayName = fileName + ' (' + libHumanSize(stat.size) + ')';
       }
       this.biosPath = restoredPath;
       this.biosName = displayName;
@@ -1146,7 +1163,7 @@ struct Index {
       }
 
       this.picking = '';
-      const sizeText = size > 0 ? this.humanSize(size) : '未知大小';
+      const sizeText = size > 0 ? libHumanSize(size) : '未知大小';
       // 【注意】返回的是 **URI**，不是转换后的文件系统路径。
       //
       // 我一度把 URI 转成 `/storage/...` 再复制，结果报 13900002
@@ -1956,6 +1973,8 @@ struct Index {
       this.gamePath = destPath;
       this.gameName = fileName + ' (' + sizeText + ')';
       this.saveGameSelection(destPath, fileName);
+      // 新导入的镜像要立刻出现在游戏库里（否则列表要等下次启动才更新）
+      this.refreshGames();
       // 选择 ISO 后立即用其真实序列号重扫记忆卡，命中的存档会自动归类。
       this.refreshMemoryCards();
       hilog.info(DOMAIN, TAG, 'game ready in sandbox');
@@ -2052,15 +2071,57 @@ struct Index {
     }
   }
 
-  private humanSize(n: number): string {
-    if (n >= 1048576) {
-      return (n / 1048576).toFixed(1) + ' MB';
+  /**
+   * 刷新游戏库列表。
+   *
+   * 【为什么必须判 VM 状态】native 侧扫描走 CDVD 打开镜像读取 ELF 头，
+   * 上游在 GameList.h:116 明确警告"运行中调用会破坏 CDVD 状态"。
+   * 故运行中直接跳过（列表保持上次内容），而不是硬扫。
+   */
+  private refreshGames(): void {
+    if (this.statusRunning) {
+      hilog.info(DOMAIN, TAG, 'refreshGames skipped: VM is running');
+      return;
     }
-    if (n >= 1024) {
-      return (n / 1024).toFixed(1) + ' KB';
+    this.gamesScanning = true;
+    try {
+      const raw: string = hps2core.listGames(this.gameDir());
+      const list = JSON.parse(raw) as Array<GameEntry>;
+      // 按标题（无标题则文件名）排序，让列表稳定可预期
+      list.sort((a: GameEntry, b: GameEntry) => {
+        const ka = (a.title && a.title.length > 0 ? a.title : a.name).toLowerCase();
+        const kb = (b.title && b.title.length > 0 ? b.title : b.name).toLowerCase();
+        return ka < kb ? -1 : (ka > kb ? 1 : 0);
+      });
+      this.games = list;
+      hilog.info(DOMAIN, TAG, 'listGames -> %{public}d item(s)', list.length);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'listGames failed');
+      this.games = [];
+    } finally {
+      this.gamesScanning = false;
     }
-    return n + ' B';
   }
+
+  /** 从游戏库选中一项作为当前游戏（不复制 —— 它已经在沙箱里了）。*/
+  private selectGameFromLibrary(g: GameEntry): void {
+    if (this.statusRunning) {
+      this.statusError = '游戏运行中无法更换，请先返回。';
+      return;
+    }
+    this.gamePath = g.path;
+    // 显示名与"从选择器导入"保持同一形态：文件名 (大小)
+    this.gameName = g.name + ' (' + libHumanSize(g.size) + ')';
+    this.saveGameSelection(g.path, this.gameName);
+    this.clearError();
+    // 换了镜像，记忆卡的"匹配当前游戏"要重算
+    this.refreshMemoryCards();
+    hilog.info(DOMAIN, TAG, 'game selected from library');
+  }
+
+
+
+
 
   private async startBoot(): Promise<void> {
     // 停止过程中不允许启动 —— 否则会出现"刚启动就被停掉"的竞态
@@ -2593,9 +2654,14 @@ struct Index {
 			discSerial: this.discSerial,
 			discTitle: this.discTitle,
 			discCRC: this.discCRC,
+            games: this.games,
+            gamesScanning: this.gamesScanning,
+            currentGamePath: this.gamePath,
             onPickBios: () => { this.chooseBios(); },
             onPickGame: () => { this.chooseGame(); },
             onClearGame: () => { this.clearGame(); },
+            onSelectGame: (g: GameEntry) => { this.selectGameFromLibrary(g); },
+            onRefreshGames: () => { this.refreshGames(); },
             onStart: () => { this.startBoot(); },
             onCheckJit: () => { this.checkJit(); },
             onJitPrctlExperiment: () => { this.runJitPrctlExperiment(); },

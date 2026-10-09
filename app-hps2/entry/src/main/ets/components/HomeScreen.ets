@@ -10,6 +10,7 @@
  *   点「启动」后切到全屏游玩页（GameScreen）。
  */
 import { Theme } from '../common/Theme';
+import { GameEntry, gameDisplayTitle, gameDisplaySubtitle, compatibilityLabel } from '../common/GameLibrary';
 import { StatusBar } from './StatusBar';
 
 @Component
@@ -45,16 +46,117 @@ export struct HomeScreen {
   @Prop discSerial: string = '';
   @Prop discTitle: string = '';
   @Prop discCRC: string = '';
+  /** 游戏库列表（games/ 目录下的镜像元数据） */
+  @Prop games: Array<GameEntry> = [];
+  /** 游戏库是否正在扫描 */
+  @Prop gamesScanning: boolean = false;
+  /** 当前已选中的游戏路径（用于在列表里高亮） */
+  @Prop currentGamePath: string = '';
 
   // ---- 事件回调 ----
   onPickBios?: () => void;
   onPickGame?: () => void;
   onClearGame?: () => void;
+  /** 从游戏库列表选中一项 */
+  onSelectGame?: (g: GameEntry) => void;
+  /** 重新扫描游戏库 */
+  onRefreshGames?: () => void;
   onStart?: () => void;
   onCheckJit?: () => void;
   onJitPrctlExperiment?: () => void;
   onOpenSettings?: () => void;
   onExportLog?: () => void;
+
+
+  /**
+   * 游戏库列表。
+   *
+   * 【为什么要有它】此前只能保存**一个**游戏（gameName/gamePath），
+   * 换一个就得重新走一遍文件选择器 + 复制。现在把 games/ 目录里已有的
+   * 镜像都列出来，点一下即可切换。
+   *
+   * 扫描由 native 完成（serial/title/CRC 来自镜像内 ELF 头），
+   * 故列表内容可能滞后于目录 —— 提供"重新扫描"按钮手动刷新。
+   */
+  @Builder
+  gameLibrary() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('游戏库').fontSize(15).fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+        Blank()
+        if (this.gamesScanning) {
+          Text('扫描中…').fontSize(12).fontColor(Theme.textDim())
+        } else {
+          Text(`${this.games.length} 个`)
+            .fontSize(12).fontColor(Theme.textDim())
+        }
+        Text('重新扫描')
+          .fontSize(12)
+          .fontColor(Theme.accentHi())
+          .padding({ left: 10, top: 4, bottom: 4 })
+          .onClick(() => { if (this.onRefreshGames) this.onRefreshGames(); })
+      }
+      .width('100%')
+
+      if (this.games.length === 0) {
+        Text(this.gamesScanning
+          ? '正在扫描游戏目录…'
+          : '还没有游戏镜像。用上面的「选择游戏镜像」导入一个，或把文件放进游戏目录。')
+          .fontSize(12).fontColor(Theme.textDim()).width('100%')
+      } else {
+        ForEach(this.games, (g: GameEntry) => {
+          this.gameRow(g)
+        }, (g: GameEntry) => g.path)
+      }
+    }
+    .width('100%')
+    .padding(Theme.pad)
+    .backgroundColor(Theme.bgCard())
+    .borderRadius(Theme.radius)
+    .border({ width: 1, color: Theme.border() })
+  }
+
+  /** 游戏库里的单项：标题 + serial/大小 + 兼容性提示 */
+  @Builder
+  gameRow(g: GameEntry) {
+    Row({ space: 10 }) {
+      Column({ space: 3 }) {
+        Text(gameDisplayTitle(g))
+          .fontSize(14)
+          .fontColor(Theme.textPri())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .textAlign(TextAlign.Start)
+        Text(gameDisplaySubtitle(g))
+          .fontSize(11)
+          .fontColor(g.invalid ? Theme.warn() : Theme.textDim())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .textAlign(TextAlign.Start)
+        if (compatibilityLabel(g.compatibility).length > 0) {
+          Text('兼容性：' + compatibilityLabel(g.compatibility))
+            .fontSize(10).fontColor(Theme.warn())
+            .width('100%').textAlign(TextAlign.Start)
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      // 当前选中的那个给出明确标记，避免"点了没反应"的错觉
+      if (g.path === this.currentGamePath) {
+        Text('✓ 已选')
+          .fontSize(11)
+          .fontColor(Theme.ok())
+      }
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10, left: 8, right: 8 })
+    .borderRadius(Theme.radiusSm)
+    .backgroundColor(g.path === this.currentGamePath ? Theme.bgCardHi() : Color.Transparent)
+    .onClick(() => { if (this.onSelectGame) this.onSelectGame(g); })
+  }
 
   /** 列表项通用样式 */
   @Builder
@@ -282,6 +384,9 @@ export struct HomeScreen {
             () => { if (this.onPickGame) this.onPickGame(); },
             this.gameName.length > 0,
             () => { if (this.onClearGame) this.onClearGame(); })
+
+          // 游戏库：列出 sandbox games/ 目录里已有的镜像，点选即切换
+          this.gameLibrary()
 
           // 运行中才显示（native 未启动时返回空串，避免空卡片干扰）
           if (this.discSerial.length > 0) {
