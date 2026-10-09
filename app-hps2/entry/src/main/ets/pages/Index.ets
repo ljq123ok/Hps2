@@ -2011,6 +2011,21 @@ struct Index {
       this.statusError = '正在停止上一次运行，请稍候再启动。';
       return;
     }
+    // ---------------------------------------------------------------------
+    // 启动进行中不允许重入。
+    //
+    // 【为什么必须有】startBoot 是 async，中间有 await setGameOrientation()。
+    // 在那之前/之后的空隙里，第二次点击也能走到 hps2core.startBios()。
+    // 而 native 侧那次调用会写 s_data_root/s_game_path 等**非原子全局
+    // string**，同时上一轮的 VM 线程可能正在读它们 → use-after-free。
+    //
+    // 按钮上本来有 `.enabled(... && !this.busy)`，但 busy 从未被置位，
+    // 守卫是空的。这里真正把它用起来（并在 finally 里复位）。
+    // ---------------------------------------------------------------------
+    if (this.busy) {
+      hilog.info(DOMAIN, TAG, 'startBoot ignored: already starting');
+      return;
+    }
     if (!this.biosPath) {
       this.statusError = '请先选择 BIOS 文件';
       return;
@@ -2024,6 +2039,7 @@ struct Index {
     }
 
     this.clearError();
+    this.busy = true;
     try {
       // 先锁定窗口方向，再启动 GS，避免 VM 已开始渲染后才发生旋转。
       await this.setGameOrientation(true);
@@ -2063,6 +2079,10 @@ struct Index {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'startBios exception');
       this.statusError = '调用核心失败：' + err.message;
+    } finally {
+      // 无论成功、被拒绝还是抛异常，都要解锁重入守卫，
+      // 否则一次失败会让"启动"按钮永久失效。
+      this.busy = false;
     }
   }
 

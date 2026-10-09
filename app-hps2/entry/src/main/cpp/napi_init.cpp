@@ -1131,6 +1131,27 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 		return true;
 	};
 
+	// ---------------------------------------------------------------------
+	// 【必须在写任何全局路径之前判"已在运行"】
+	//
+	// s_data_root / s_bios_dir / s_game_path 是非原子 std::string：
+	// 本函数在 ArkTS（UI）线程写，而 VMThreadMain 里的 VM 线程会读它们
+	// （InitializeConfig 读 s_data_root/s_bios_dir；VMThreadMain 读
+	//  s_game_path 填 VMBootParameters）。
+	//
+	// 若把守卫放在写入之后，快速连点两次「启动」时：
+	//   T1 写完路径 → 置 g_vm_running → 启动 VM 线程（VM 线程开始读）
+	//   T2 再次进入本函数 → 在 VM 线程读取的同时 clear()/resize() 这些
+	//      string → 缓冲区被释放或重分配 = use-after-free
+	//
+	// 前端的 .enabled(... && !this.busy) 挡不住：busy 从未被置位。
+	// 故把守卫提到最前，已在运行时**一个字节都不写**。
+	// ---------------------------------------------------------------------
+	if (g_vm_running.load()) {
+		LOGI("already running");
+		napi_value r; napi_create_int32(env, 1, &r); return r;
+	}
+
 	if (!getStr(0, s_data_root) || !getStr(1, s_bios_dir)) {
 		SetError("startBios requires (dataRoot, biosDir, [gamePath])");
 		SetStage(BootStage::kFailed);
@@ -1140,11 +1161,6 @@ static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	// 第三个参数可选：游戏镜像路径。不传或空字符串 => 只启动 BIOS。
 	s_game_path.clear();
 	getStr(2, s_game_path);
-
-	if (g_vm_running.load()) {
-		LOGI("already running");
-		napi_value r; napi_create_int32(env, 1, &r); return r;
-	}
 
 	LOGI("startBios requested");
 	g_execution_mode.store(static_cast<int>(
