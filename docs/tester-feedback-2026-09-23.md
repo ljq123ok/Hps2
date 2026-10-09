@@ -114,7 +114,14 @@ OHOS 官方 `GameControllerKit`（`libohgame_controller.z.so`，
 
 ---
 
-## 问题 3：音乐不正常
+## 问题 3：音乐不正常  ✅ 已消解（2026-10-09 更新）
+
+> **本条已关闭。** 2026-10-09 用户确认音频正常。
+> 下方内容是 2026-09-23 当次反馈的记录，保留作历史参考。
+> 另外当时提出的一个疑点（`expansion = Disabled` 是否等于"混响被禁用"）
+> 经核查是**误读**：`AudioExpansionMode` 是**声道扩展**模式
+> （Stereo / StereoLFE / Quadraphonic / Surround51 …），与 SPU2 的混响无关。
+
 
 ### 3.1 已知的音频现状
 
