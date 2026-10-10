@@ -24,7 +24,7 @@ import hps2core from 'libhps2core.so';
 import { VpadButton, VpadAxis } from '../common/VpadCodes';
 import {
   PadGroup, PadLayoutVariant, PadOffsetEntry, PadStyle,
-  PAD_STYLES, clampStyleIndex, SharedPadLayout
+  PAD_STYLES, clampStyleIndex, SharedPadLayout, faceColorOf
 } from '../common/PadLayout';
 
 /**
@@ -348,6 +348,41 @@ export struct VirtualPad {
     return PAD_STYLES[clampStyleIndex(this.styleIndex)];
   }
 
+  // ---- 面键四色（设计稿 v2）----
+  // △○×□ 四键在 faceColors 模式下用 PS2 品牌色；其余键走基色。
+
+  /** 该键的面键品牌色；非面键或未开启四色模式时返回 null */
+  private faceColor(code: number): string | null {
+    if (!this.style().faceColors) {
+      return null;
+    }
+    if (code === VpadButton.NORTH) { return faceColorOf('NORTH'); }
+    if (code === VpadButton.EAST) { return faceColorOf('EAST'); }
+    if (code === VpadButton.SOUTH) { return faceColorOf('SOUTH'); }
+    if (code === VpadButton.WEST) { return faceColorOf('WEST'); }
+    return null;
+  }
+
+  private faceFg(code: number): string {
+    const c = this.faceColor(code);
+    return c ? c : this.style().fg;
+  }
+
+  private faceBg(code: number): string {
+    const c = this.faceColor(code);
+    // 面键：深色底 + 品牌色描边，叠在游戏画面上对比度稳定
+    return c ? '#8C0A0E17' : this.style().bg;
+  }
+
+  private faceBd(code: number): string {
+    const c = this.faceColor(code);
+    return c ? c : this.style().border;
+  }
+
+  private faceBw(code: number): number {
+    return this.faceColor(code) ? 1.5 : 1;
+  }
+
   /**
    * 按键不透明度。
    *
@@ -479,13 +514,13 @@ export struct VirtualPad {
   padButton(spec: BtnSpec) {
     Text(spec.label)
       .fontSize(this.btn() * 0.42)
-      .fontColor(this.style().fg)
+      .fontColor(this.faceFg(spec.code))
       .textAlign(TextAlign.Center)
       .width(this.btn())
       .height(this.btn())
       .borderRadius(this.btn() / 2)
-      .backgroundColor(this.style().bg)
-      .border({ width: 1, color: this.style().border })
+      .backgroundColor(this.faceBg(spec.code))
+      .border({ width: this.faceBw(spec.code), color: this.faceBd(spec.code) })
       .opacity(this.op())
       .position({
         x: this.left(spec.cx, this.btn()) + this.offX(spec.g),

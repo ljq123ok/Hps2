@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hps2 v2 — 游玩页（横屏）· 面键四色</title>
+<style>
+/* ============================================================
+   Hps2 v2 — 横屏游玩页
+   原则：画面优先，按键全落 4:3 黑边，绝不遮游戏内容
+   强调色 = 面键四色：△#22D3A5 ○#FF5C5C ✕#5CA8FF □#FF7AC8
+   ============================================================ */
+:root{
+  --tri:#22D3A5; --cir:#FF5C5C; --crs:#5CA8FF; --sq:#FF7AC8;
+  --tx:#E8EDF5; --tx-dim:#5C6678;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:radial-gradient(1200px 700px at 50% 0%,#0C1322 0%,#04060C 60%,#010203 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-family:"HarmonyOS Sans SC","PingFang SC","MiSans",-apple-system,sans-serif;
+  padding:40px 0;
+}
+.device{
+  width:1720px;height:800px;border-radius:56px;position:relative;
+  background:#05070C;
+  border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 0 0 12px #0a0c10,0 0 0 13px #1c212b,0 60px 130px rgba(0,0,0,.85),0 0 160px rgba(92,168,255,.06);
+  overflow:hidden;
+}
+/* 游戏画面区（中央 4:3，其余为黑边） */
+.stage{position:absolute;inset:0;background:#000}
+.game{
+  position:absolute;top:0;bottom:0;left:50%;transform:translateX(-50%);
+  width:1067px;/* 4:3 of 800 */
+  background:
+    radial-gradient(500px 300px at 70% 75%,rgba(140,90,40,.5),transparent 60%),
+    linear-gradient(180deg,#8FB6D8 0%,#B8D2A8 30%,#7E9C5E 55%,#9C7E52 100%);
+}
+.game .treeline{position:absolute;left:0;right:0;top:38%;height:30%;
+  background:
+    radial-gradient(60px 90px at 8% 80%,#2E4D33 98%,transparent),
+    radial-gradient(70px 110px at 22% 85%,#3A5C3B 98%,transparent),
+    radial-gradient(55px 95px at 36% 82%,#2E4D33 98%,transparent),
+    radial-gradient(75px 120px at 55% 88%,#35563A 98%,transparent),
+    radial-gradient(60px 100px at 72% 84%,#2E4D33 98%,transparent),
+    radial-gradient(70px 115px at 88% 86%,#3A5C3B 98%,transparent);
+  filter:blur(1px)}
+.game .road{position:absolute;left:34%;right:34%;top:60%;bottom:0;background:linear-gradient(180deg,#A98C5F,#8A6C42 70%,#6E5230);clip-path:polygon(35% 0,65% 0,100% 100%,0 100%)}
+.game .rider{position:absolute;left:48%;top:56%;font-size:64px;filter:drop-shadow(0 8px 10px rgba(0,0,0,.4))}
+.game .hud{position:absolute;top:26px;left:30px;color:#fff;font-weight:800;text-shadow:0 2px 6px rgba(0,0,0,.6)}
+.game .hud .lap{position:absolute;top:0;right:-620px;text-align:right}
+.game .speedo{position:absolute;right:36px;bottom:30px;width:150px;height:86px;border-radius:18px;background:rgba(0,0,0,.45);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;flex-direction:column;color:#fff;font-weight:800;font-size:34px}
+.game .speedo small{font-size:15px;opacity:.8;font-weight:600}
+
+/* 顶部信息条 */
+.topbar{position:absolute;top:0;left:0;right:0;height:72px;display:flex;align-items:center;padding:0 40px;z-index:9;
+  background:linear-gradient(180deg,rgba(0,0,0,.72),transparent);font-size:24px;color:var(--tx)}
+.topbar .fps{position:absolute;left:50%;transform:translateX(-50%);font-weight:800;color:var(--crs);letter-spacing:1px;text-shadow:0 0 18px rgba(92,168,255,.5)}
+.topbar .right{margin-left:auto;display:flex;gap:20px;align-items:center;color:var(--tx-dim);font-size:22px}
+.chip{padding:6px 18px;border-radius:20px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:var(--tx)}
+
+/* 左黑边区：方向键 + 左摇杆 + 肩键 */
+.zoneL{position:absolute;left:0;top:72px;bottom:0;width:327px;display:flex;align-items:center;justify-content:center}
+.zoneR{position:absolute;right:0;top:72px;bottom:0;width:327px;display:flex;align-items:center;justify-content:center}
+
+/* 通用按键底座 */
+.btn{
+  position:absolute;display:flex;align-items:center;justify-content:center;
+  border-radius:50%;backdrop-filter:blur(8px);user-select:none;
+  background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.22);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.15),0 10px 24px rgba(0,0,0,.45);
+  color:var(--tx);font-weight:800;
+  transition:transform .08s;
+}
+.btn:active{transform:scale(.92)}
+
+/* 肩键：圆角胶囊，放在黑边最上方 */
+.shoulder{width:120px;height:64px;border-radius:26px;font-size:26px;letter-spacing:1px;background:rgba(255,255,255,.07)}
+.shoulder.L{left:44px;top:36px}
+.shoulder.R{right:44px;top:36px}
+/* 扳机 */
+.trigger{width:86px;height:52px;border-radius:22px;font-size:22px;opacity:.8}
+.trigger.L{left:186px;top:44px}
+.trigger.R{right:186px;top:44px}
+
+/* 十字键 */
+.dpad{position:absolute;width:252px;height:252px;left:38px;top:130px}
+.dpad .btn{width:82px;height:82px;font-size:24px;background:rgba(255,255,255,.08)}
+.dpad .up{left:85px;top:0}.dpad .down{left:85px;bottom:0}.dpad .left{left:0;top:85px}.dpad .right{right:0;top:85px}
+.dpad .hub{position:absolute;left:85px;top:85px;width:82px;height:82px;border-radius:14px;background:transparent;border:none;box-shadow:none}
+/* 摇杆：外圈发光 */
+.stickL{position:absolute;left:58px;top:424px;width:180px;height:180px;border-radius:50%;
+  background:radial-gradient(circle at 38% 32%,#3A4356,#141925 70%);
+  border:1.5px solid rgba(255,255,255,.18);
+  box-shadow:0 0 0 6px rgba(255,255,255,.03),0 16px 34px rgba(0,0,0,.55),inset 0 6px 12px rgba(255,255,255,.08)}
+.stickL::after{content:"";position:absolute;inset:44px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#525D74,#1A2130);box-shadow:inset 0 3px 8px rgba(0,0,0,.6)}
+
+/* 面键：四色发光 */
+.face{position:absolute;width:250px;height:250px;right:44px;top:180px}
+.face .btn{width:88px;height:88px;font-size:30px;background:rgba(10,14,22,.4)}
+.face .tri{right:81px;top:0;color:var(--tri);border-color:rgba(34,211,165,.5);box-shadow:0 0 22px rgba(34,211,165,.22),inset 0 1px 0 rgba(255,255,255,.15)}
+.face .cir{right:-6px;top:81px;color:var(--cir);border-color:rgba(255,92,92,.5);box-shadow:0 0 22px rgba(255,92,92,.22),inset 0 1px 0 rgba(255,255,255,.15)}
+.face .crs{right:81px;bottom:0;color:var(--crs);border-color:rgba(92,168,255,.5);box-shadow:0 0 22px rgba(92,168,255,.22),inset 0 1px 0 rgba(255,255,255,.15)}
+.face .sq{right:168px;top:81px;color:var(--sq);border-color:rgba(255,122,200,.5);box-shadow:0 0 22px rgba(255,122,200,.22),inset 0 1px 0 rgba(255,255,255,.15)}
+.face .tri,.face .cir,.face .crs,.face .sq{background:rgba(10,14,22,.55)}
+/* 面键符号用 CSS 绘制 */
+.face .sym{position:relative;width:30px;height:30px}
+.tri .sym::before{content:"";position:absolute;inset:0;clip-path:polygon(50% 0,100% 100%,0 100%);background:var(--tri)}
+.cir .sym::before{content:"";position:absolute;inset:0;border-radius:50%;border:4px solid var(--cir)}
+.crs .sym::before,.crs .sym::after{content:"";position:absolute;left:50%;top:50%;width:30px;height:4.5px;background:var(--crs);border-radius:2px;transform:translate(-50%,-50%) rotate(45deg)}
+.crs .sym::after{transform:translate(-50%,-50%) rotate(-45deg)}
+.sq .sym::before{content:"";position:absolute;inset:1px;border:4px solid var(--sq);border-radius:3px}
+
+/* 右摇杆 */
+.stickR{position:absolute;right:70px;bottom:52px;width:150px;height:150px;border-radius:50%;
+  background:radial-gradient(circle at 38% 32%,#333C4E,#111724 70%);
+  border:1.5px solid rgba(255,255,255,.16);box-shadow:0 14px 30px rgba(0,0,0,.5)}
+.stickR::after{content:"";position:absolute;inset:38px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#4A5568,#171E2C);box-shadow:inset 0 3px 8px rgba(0,0,0,.6)}
+
+/* 中下：Select/Start */
+.mid{position:absolute;left:50%;transform:translateX(-50%);bottom:26px;display:flex;gap:22px}
+.mid .btn{position:static;width:104px;height:52px;border-radius:26px;font-size:19px;letter-spacing:2px;background:rgba(255,255,255,.06)}
+
+/* FPS 悬浮球（可拖动）——靠左黑边下角 */
+.fpsball{position:absolute;left:118px;bottom:118px;width:96px;height:96px;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,rgba(92,168,255,.28),rgba(8,12,22,.85) 70%);
+  border:1.5px solid rgba(92,168,255,.4);backdrop-filter:blur(10px);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;color:#BFE0FF;
+  box-shadow:0 0 26px rgba(92,168,255,.28)}
+.fpsball b{font-size:27px}
+.fpsball small{font-size:14px;opacity:.8;letter-spacing:2px}
+
+/* 图例标注 */
+.legend{position:absolute;right:24px;top:88px;font-size:14px;color:#6b7690;text-align:right;line-height:1.7;opacity:.75;font-style:italic}
+</style>
+</head>
+<body>
+<div class="device">
+  <div class="stage">
+    <div class="game">
+      <div class="treeline"></div>
+      <div class="road"></div>
+      <div class="rider">🚵</div>
+      <div class="hud">POS 1/6<div class="lap">LAP 2/3</div></div>
+      <div class="speedo">48<small>MPH</small></div>
+    </div>
+  </div>
+
+  <div class="topbar">
+    <span style="color:var(--crs);font-weight:800">⧉ Hps2</span>
+    <span class="fps">60 FPS</span>
+    <span class="right"><span class="chip">NFS · 硬件手柄已接管</span><span>🔋 95%</span></span>
+  </div>
+
+  <!-- 左黑边 -->
+  <div class="zoneL">
+    <div class="shoulder btn L">L1</div>
+    <div class="trigger btn L">L2</div>
+    <div class="dpad">
+      <div class="btn up">▲</div><div class="btn down">▼</div>
+      <div class="btn left">◀</div><div class="btn right">▶</div>
+      <div class="hub"></div>
+    </div>
+    <div class="stickL"></div>
+    <div class="fpsball"><b>60</b><small>FPS</small></div>
+  </div>
+
+  <!-- 右黑边 -->
+  <div class="zoneR">
+    <div class="shoulder btn R">R1</div>
+    <div class="trigger btn R">R2</div>
+    <div class="face">
+      <div class="btn tri"><span class="sym"></span></div>
+      <div class="btn cir"><span class="sym"></span></div>
+      <div class="btn crs"><span class="sym"></span></div>
+      <div class="btn sq"><span class="sym"></span></div>
+    </div>
+    <div class="stickR"></div>
+  </div>
+
+  <div class="mid">
+    <div class="btn">SELECT</div>
+    <div class="btn">START</div>
+  </div>
+
+  <div class="legend">面键四色即强调色<br>按键全落 4:3 黑边<br>FPS 球可拖动 · 半透明</div>
+</div>
+</body>
+</html>

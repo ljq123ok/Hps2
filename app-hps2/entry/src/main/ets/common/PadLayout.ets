@@ -130,8 +130,38 @@ export interface PadStyle {
   border: string;
   /** 文字/图形颜色 */
   fg: string;
+  /**
+   * 面键四色模式（设计稿 v2）：true 时 △○×□ 四键分别使用
+   * PS2 品牌色（青绿/红/蓝/粉）并带同色描边，其余按键保持基色。
+   * 见 faceColorsOf()。
+   */
+  faceColors?: boolean;
 }
 
+/**
+ * 面键四色（设计稿 v2「PS2 记忆殿堂」）。
+ * 返回顺序与 VirtualPad.face() 的绘制顺序无关 —— 用 VpadButton code 匹配。
+ * 【ArkTS】不能用 Record 字面量（arkts-no-untyped-obj-literals），
+ * 改为显式 class。
+ */
+export class FaceColors {
+  static readonly NORTH: string = '#22D3A5'; // △
+  static readonly EAST: string = '#FF5C5C';  // ○
+  static readonly SOUTH: string = '#5CA8FF'; // ×
+  static readonly WEST: string = '#FF7AC8';  // □
+}
+
+/**
+ * 按键配色板。
+ *
+ * 【顺序不可改 —— 真机踩坑】
+ *   配色在磁盘上以**索引**持久化（pad-layout.json 末行）。
+ *   因此**只能在末尾追加**，不能在中间插入或重排：
+ *   设计稿 v2 的「面键四色」最初被放在首位，导致老用户已保存的
+ *   index=3（原本「红」）被静默解释成别的颜色 —— 用户的既有选择被改掉。
+ *   「面键四色」现改为**追加在末尾**，并通过 FACE_STYLE_INDEX 作为
+ *   新安装的默认值（defaultVariant / 首次进入时使用）。
+ */
 export const PAD_STYLES: Array<PadStyle> = [
   { name: '默认', bg: '#40FFFFFF', border: '#80FFFFFF', fg: '#FFFFFF' },
   { name: '灰', bg: '#40000000', border: '#80000000', fg: '#E8E8E8' },
@@ -140,7 +170,27 @@ export const PAD_STYLES: Array<PadStyle> = [
   { name: '绿', bg: '#5046A758', border: '#9046A758', fg: '#FFFFFF' },
   { name: '黄', bg: '#50F5C24B', border: '#90F5C24B', fg: '#FFFFFF' },
   { name: '紫', bg: '#50A855F7', border: '#90A855F7', fg: '#FFFFFF' },
+  // 追加项（设计稿 v2）：△○×□ 分别用 PS2 品牌色
+  { name: '面键四色', bg: '#660A0E17', border: '#80FFFFFF', fg: '#FFFFFF', faceColors: true },
 ];
+
+/** 设计稿 v2 的默认配色索引（面键四色，追加在末尾） */
+export const FACE_STYLE_INDEX: number = PAD_STYLES.length - 1;
+
+/**
+ * 面键四色模式下取某个按键的品牌色。
+ * 返回 null 表示该键不属面键（保持基色）。
+ * key 为 VpadButton 的名字（NORTH/EAST/SOUTH/WEST）。
+ */
+export function faceColorOf(key: string): string | null {
+  switch (key) {
+    case 'NORTH': return FaceColors.NORTH;
+    case 'EAST': return FaceColors.EAST;
+    case 'SOUTH': return FaceColors.SOUTH;
+    case 'WEST': return FaceColors.WEST;
+    default: return null;
+  }
+}
 
 /** 布局的默认值（与 VirtualPad 的公式输出叠加时，偏移全 0） */
 export function defaultVariant(): PadLayoutVariant {
@@ -210,7 +260,7 @@ export function clampStyleIndex(i: number): number {
 export class PadLayoutStore {
   private landscape: PadLayoutVariant = defaultVariant();
   private portrait: PadLayoutVariant = defaultVariant();
-  private styleIndex: number = 0;
+  private styleIndex: number = FACE_STYLE_INDEX;
 
   private filePath(root: string): string {
     return root + '/pad-layout.json';
@@ -233,14 +283,19 @@ export class PadLayoutStore {
     this.styleIndex = clampStyleIndex(i);
   }
 
-  /** 恢复默认（Reset 按钮）：清空偏移、透明度回默认，配色回默认 */
+  /**
+   * 恢复默认（Reset 按钮）：清空偏移、透明度回默认，配色回默认。
+   *
+   * 默认配色 = 面键四色（设计稿 v2）。用户的显式选择仍会被 load() 覆盖，
+   * 这里只决定「没有选择过」时的取值。
+   */
   resetCurrent(landscape: boolean): void {
     if (landscape) {
       this.landscape = defaultVariant();
     } else {
       this.portrait = defaultVariant();
     }
-    this.styleIndex = 0;
+    this.styleIndex = FACE_STYLE_INDEX;
   }
 
   /**

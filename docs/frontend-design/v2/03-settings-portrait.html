@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hps2 v2 — 设置页（竖屏）· 分组抽屉式</title>
+<style>
+:root{
+  --bg-deep:#05070D; --bg-base:#0A0E17;
+  --bg-card:rgba(255,255,255,.045); --bg-card-hi:rgba(255,255,255,.09);
+  --line:rgba(255,255,255,.08); --line-hi:rgba(255,255,255,.16);
+  --tx-hi:#F4F7FB; --tx:#AAB4C6; --tx-dim:#5C6678;
+  --tri:#22D3A5; --cir:#FF5C5C; --crs:#5CA8FF; --sq:#FF7AC8;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:radial-gradient(1200px 800px at 50% -10%,#0D1526 0%,var(--bg-deep) 55%,#020305 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;position:relative;
+  font-family:"HarmonyOS Sans SC","PingFang SC","MiSans",-apple-system,sans-serif;padding:40px 0;
+}
+.phone{width:760px;height:1640px;border-radius:64px;position:relative;flex:none;
+  background:var(--bg-base);border:1px solid rgba(255,255,255,.09);
+  box-shadow:0 0 0 12px #0b0d12,0 0 0 13px #1e232c,0 60px 120px rgba(0,0,0,.8);overflow:hidden}
+.screen{position:absolute;inset:0;background:radial-gradient(560px 360px at 50% 100px,rgba(92,168,255,.10),transparent 65%),var(--bg-base)}
+.statusbar{position:absolute;top:0;left:0;right:0;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 44px;color:#E8EDF5;font-size:24px;font-weight:600;z-index:5}
+.pill{width:110px;height:32px;border-radius:20px;background:#000;position:absolute;top:16px;left:50%;transform:translateX(-50%)}
+
+.nav{position:absolute;top:92px;left:48px;right:48px;display:flex;align-items:center;z-index:3}
+.nav .back{width:72px;height:72px;border-radius:26px;background:var(--bg-card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--tx);font-size:30px}
+.nav .title{position:absolute;left:50%;transform:translateX(-50%);font-size:32px;font-weight:800;color:var(--tx-hi)}
+
+.content{position:absolute;top:200px;left:48px;right:48px;bottom:48px;display:flex;flex-direction:column;gap:26px;overflow:hidden}
+
+.group{border-radius:30px;background:var(--bg-card);border:1px solid var(--line);backdrop-filter:blur(12px);overflow:hidden}
+.group .ghead{display:flex;align-items:center;gap:14px;padding:24px 28px 8px}
+.group .ghead .ic{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px}
+.g1 .ic{background:rgba(92,168,255,.14);color:var(--crs)}
+.g2 .ic{background:rgba(34,211,165,.14);color:var(--tri)}
+.g3 .ic{background:rgba(255,122,200,.14);color:var(--sq)}
+.group .ghead .t{font-size:26px;font-weight:700;color:var(--tx-hi)}
+.row{display:flex;align-items:center;gap:16px;padding:24px 28px;border-top:1px solid rgba(255,255,255,.05)}
+.row:first-of-type{border-top:none}
+.row .name{font-size:25px;color:var(--tx);font-weight:500}
+.row .val{margin-left:auto;font-size:23px;color:var(--tx-dim)}
+.row .chev{color:var(--tx-dim);font-size:24px;margin-left:8px}
+
+/* Switch */
+.sw{margin-left:auto;width:76px;height:44px;border-radius:24px;background:var(--crs);position:relative;box-shadow:0 0 16px rgba(92,168,255,.4)}
+.sw::after{content:"";position:absolute;top:5px;right:5px;width:34px;height:34px;border-radius:50%;background:#fff}
+.sw.off{background:rgba(255,255,255,.12);box-shadow:none}
+.sw.off::after{right:auto;left:5px}
+
+/* Slider */
+.slider{margin-left:auto;width:240px;display:flex;align-items:center;gap:12px}
+.slider .track{flex:1;height:8px;border-radius:4px;background:rgba(255,255,255,.1);position:relative}
+.slider .fill{position:absolute;left:0;top:0;bottom:0;width:62%;border-radius:4px;background:linear-gradient(90deg,#2F6FE0,var(--crs));box-shadow:0 0 12px rgba(92,168,255,.5)}
+.slider .knob{position:absolute;left:62%;top:50%;transform:translate(-50%,-50%);width:30px;height:30px;border-radius:50%;background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.5)}
+.slider .num{font-size:22px;color:var(--tx-dim);width:76px;text-align:right}
+
+/* 面键配色选择 */
+.palette{margin-left:auto;display:flex;gap:12px}
+.sw2{width:44px;height:44px;border-radius:50%;border:2px solid transparent;position:relative}
+.sw2.on{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.15)}
+.sw2.c1{background:#1A2130}.sw2.c2{background:#2F6FE0}.sw2.c3{background:#C03A3A}.sw2.c4{background:#2E8B57}
+
+/* JIT 状态卡（诊断区） */
+.jit{border-radius:30px;padding:28px;background:linear-gradient(140deg,rgba(52,217,123,.10),rgba(52,217,123,.02));border:1px solid rgba(52,217,123,.3)}
+.jit .top{display:flex;align-items:center;gap:16px}
+.jit .led{width:18px;height:18px;border-radius:50%;background:#34D97B;box-shadow:0 0 16px #34D97B}
+.jit .t{font-size:27px;font-weight:800;color:var(--tx-hi)}
+.jit .ok{margin-left:auto;font-size:23px;font-weight:700;color:#34D97B}
+.jit .kv{margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px 20px}
+.jit .kv .item{font-size:20px;color:var(--tx-dim)}
+.jit .kv .item b{color:var(--tx);font-weight:600;margin-left:8px}
+.side-title{font-size:34px;font-weight:900;color:var(--tx-hi);max-width:420px;line-height:1.35}
+.side-title em{font-style:normal;background:linear-gradient(120deg,var(--crs),#8FC6FF);-webkit-background-clip:text;background-clip:text;color:transparent}
+.side-desc{margin-top:26px;font-size:21px;line-height:1.9;color:var(--tx-dim);max-width:420px}
+.legend{margin-top:30px;font-size:16px;color:#6b7690;line-height:1.8;font-style:italic}
+</style>
+</head>
+<body>
+<div style="position:absolute;left:60px;top:80px;max-width:560px;z-index:9">
+  <div class="side-title">设置页<br><em>分组抽屉式</em>重构</div>
+  <div class="side-desc">把 4000 行 Index 里堆叠的扁平设置拆成四个语义分组：图形 / 性能、输入、记忆卡与存档、诊断。诊断区独立成 JIT 状态卡，绿色辉光只给"一切正常"的状态。</div>
+  <div class="legend">设计稿 v2 · 03<br>配色仍走 resources/base+dark 的资源限定符机制<br>本稿为深色态示意</div>
+</div>
+
+<div class="phone">
+  <div class="screen"></div>
+  <div class="pill"></div>
+  <div class="statusbar"><span>9:41</span><span>📶 🔋</span></div>
+
+  <div class="nav">
+    <div class="back">‹</div>
+    <div class="title">设置</div>
+  </div>
+
+  <div class="content">
+    <!-- 图形 / 性能 -->
+    <div class="group g1">
+      <div class="ghead"><div class="ic">▣</div><div class="t">图形与性能</div></div>
+      <div class="row"><span class="name">内部渲染倍率</span><span class="val">3x</span><span class="chev">›</span></div>
+      <div class="row"><span class="name">画面比例</span><span class="val">4:3</span><span class="chev">›</span></div>
+      <div class="row"><span class="name">MTVU（需重启游戏）</span><div class="sw off"></div></div>
+      <div class="row"><span class="name">帧率显示</span><div class="sw"></div></div>
+    </div>
+
+    <!-- 输入 -->
+    <div class="group g2">
+      <div class="ghead"><div class="ic">✛</div><div class="t">输入</div></div>
+      <div class="row"><span class="name">触控布局编辑</span><span class="chev">›</span></div>
+      <div class="row"><span class="name">按键透明度</span><div class="slider"><div class="track"><div class="fill"></div><div class="knob"></div></div><span class="num">60%</span></div></div>
+      <div class="row"><span class="name">按键配色</span><div class="palette"><span class="sw2 c1 on"></span><span class="sw2 c2"></span><span class="sw2 c3"></span><span class="sw2 c4"></span></div></div>
+      <div class="row"><span class="name">接入手柄时隐藏虚拟按键</span><div class="sw"></div></div>
+    </div>
+
+    <!-- 记忆卡与存档 -->
+    <div class="group g3">
+      <div class="ghead"><div class="ic">▤</div><div class="t">记忆卡与存档</div></div>
+      <div class="row"><span class="name">记忆卡导出</span><span class="chev">›</span></div>
+      <div class="row"><span class="name">即时存档管理</span><span class="val">3 个</span><span class="chev">›</span></div>
+    </div>
+
+    <!-- JIT 诊断 -->
+    <div class="jit">
+      <div class="top"><span class="led"></span><span class="t">JIT 运行时</span><span class="ok">通过</span></div>
+      <div class="kv">
+        <div class="item">阶段<b>ok</b></div>
+        <div class="item">errno<b>0</b></div>
+        <div class="item">匿名 RW→RX<b>可用</b></div>
+        <div class="item">SELinux 域<b>debug_hap</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

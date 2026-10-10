@@ -2,67 +2,67 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#0B0F17"
+      "value": "#05070D"
     },
     {
       "name": "hps2_bg_deep",
-      "value": "#0B0F17"
+      "value": "#05070D"
     },
     {
       "name": "hps2_bg_base",
-      "value": "#111827"
+      "value": "#0A0E17"
     },
     {
       "name": "hps2_bg_card",
-      "value": "#1B2233"
+      "value": "#121826"
     },
     {
       "name": "hps2_bg_card_hi",
-      "value": "#232C41"
+      "value": "#1B2335"
     },
     {
       "name": "hps2_bg_glass",
-      "value": "#26FFFFFF"
+      "value": "#99141C2E"
     },
     {
       "name": "hps2_text_pri",
-      "value": "#F9FAFB"
+      "value": "#F4F7FB"
     },
     {
       "name": "hps2_text_sec",
-      "value": "#9CA3AF"
+      "value": "#AAB4C6"
     },
     {
       "name": "hps2_text_dim",
-      "value": "#6B7280"
+      "value": "#5C6678"
     },
     {
       "name": "hps2_accent",
-      "value": "#3B82F6"
+      "value": "#3D7DD8"
     },
     {
       "name": "hps2_accent_hi",
-      "value": "#60A5FA"
+      "value": "#5CA8FF"
     },
     {
       "name": "hps2_ok",
-      "value": "#22C55E"
+      "value": "#34D97B"
     },
     {
       "name": "hps2_warn",
-      "value": "#F59E0B"
+      "value": "#FFB454"
     },
     {
       "name": "hps2_err",
-      "value": "#EF4444"
+      "value": "#FF5C5C"
     },
     {
       "name": "hps2_border",
-      "value": "#2A3548"
+      "value": "#14FFFFFF"
     },
     {
       "name": "hps2_border_hi",
-      "value": "#3B4A63"
+      "value": "#29FFFFFF"
     },
     {
       "name": "hps2_panel_warn_bg",
@@ -99,6 +99,38 @@
     {
       "name": "hps2_game_letterbox",
       "value": "#000000"
+    },
+    {
+      "name": "hps2_face_tri",
+      "value": "#22D3A5"
+    },
+    {
+      "name": "hps2_face_cir",
+      "value": "#FF5C5C"
+    },
+    {
+      "name": "hps2_face_crs",
+      "value": "#5CA8FF"
+    },
+    {
+      "name": "hps2_face_sq",
+      "value": "#FF7AC8"
+    },
+    {
+      "name": "hps2_dock_bg",
+      "value": "#B30E1422"
+    },
+    {
+      "name": "hps2_dock_border",
+      "value": "#17FFFFFF"
+    },
+    {
+      "name": "hps2_cover_playing_bd",
+      "value": "#22D3A5"
+    },
+    {
+      "name": "hps2_cover_bar",
+      "value": "#66456A8F"
     }
   ]
 }

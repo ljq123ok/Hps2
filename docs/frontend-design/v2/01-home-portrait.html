@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hps2 v2 — 首页 · 游戏库（竖屏）</title>
+<style>
+/* ============================================================
+   Hps2 设计稿 v2 — 「PS2 记忆殿堂」视觉方向
+   面键四色作为强调系统：△#22D3A5 ○#FF5C5C ✕#5CA8FF □#FF7AC8
+   ============================================================ */
+:root{
+  --bg-deep:#05070D;
+  --bg-base:#0A0E17;
+  --bg-card:rgba(255,255,255,.045);
+  --bg-card-hi:rgba(255,255,255,.09);
+  --glass:rgba(20,28,46,.55);
+  --line:rgba(255,255,255,.08);
+  --line-hi:rgba(255,255,255,.16);
+  --tx-hi:#F4F7FB;
+  --tx:#AAB4C6;
+  --tx-dim:#5C6678;
+  --tri:#22D3A5; --cir:#FF5C5C; --crs:#5CA8FF; --sq:#FF7AC8;
+  --ok:#34D97B;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:radial-gradient(1200px 800px at 50% -10%,#0D1526 0%,var(--bg-deep) 55%,#020305 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-family:"HarmonyOS Sans SC","PingFang SC","MiSans",-apple-system,"Segoe UI",sans-serif;
+  padding:40px 0;
+}
+/* PS2 开机画面式的漂浮光点 */
+body::before,body::after{
+  content:"";position:fixed;border-radius:50%;filter:blur(2px);pointer-events:none;
+}
+body::before{width:6px;height:6px;left:18%;top:22%;background:rgba(92,168,255,.55);box-shadow:0 0 18px 4px rgba(92,168,255,.35);animation:drift 14s ease-in-out infinite}
+body::after{width:4px;height:4px;right:22%;bottom:18%;background:rgba(255,122,200,.45);box-shadow:0 0 14px 3px rgba(255,122,200,.3);animation:drift 18s ease-in-out infinite reverse}
+@keyframes drift{0%,100%{transform:translate(0,0)}50%{transform:translate(26px,-34px)}}
+
+.phone{
+  width:760px;height:1640px;border-radius:64px;position:relative;
+  background:var(--bg-base);
+  border:1px solid rgba(255,255,255,.09);
+  box-shadow:0 0 0 12px #0b0d12,0 0 0 13px #1e232c,0 60px 120px rgba(0,0,0,.8),0 0 140px rgba(92,168,255,.07);
+  overflow:hidden;
+}
+/* 屏幕内的环境辉光 */
+.screen{position:absolute;inset:0;background:
+  radial-gradient(560px 380px at 50% 118px,rgba(92,168,255,.14),transparent 65%),
+  radial-gradient(400px 300px at 12% 52%,rgba(34,211,165,.05),transparent 60%),
+  var(--bg-base);}
+.statusbar{position:absolute;top:0;left:0;right:0;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 44px;color:#E8EDF5;font-size:24px;font-weight:600;z-index:5}
+.statusbar .icons{display:flex;gap:10px;align-items:center;opacity:.9}
+.pill{width:110px;height:32px;border-radius:20px;background:#000;position:absolute;top:16px;left:50%;transform:translateX(-50%)}
+
+/* ---- 顶栏 ---- */
+.hero{position:absolute;top:96px;left:48px;right:48px;display:flex;align-items:flex-start;z-index:3}
+.logo{display:flex;align-items:baseline;gap:4px}
+.logo .h{font-size:72px;font-weight:900;letter-spacing:-2px;color:var(--tx-hi)}
+.logo .ps2{font-size:72px;font-weight:900;letter-spacing:-2px;background:linear-gradient(120deg,var(--crs),#8FC6FF);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 46px rgba(92,168,255,.35)}
+.logo-sub{margin-top:6px;font-size:22px;color:var(--tx-dim);letter-spacing:6px;font-weight:500}
+.hero-right{margin-left:auto;display:flex;gap:16px}
+.icon-btn{width:76px;height:76px;border-radius:28px;background:var(--bg-card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--tx);font-size:30px;backdrop-filter:blur(10px)}
+.icon-btn.accent{color:var(--crs);border-color:rgba(92,168,255,.25)}
+
+/* ---- 最近游玩 ---- */
+.section-label{display:flex;align-items:center;gap:14px;margin:0 0 22px}
+.section-label .t{font-size:30px;font-weight:700;color:var(--tx-hi);letter-spacing:.5px}
+.section-label .n{font-size:22px;color:var(--tx-dim)}
+.section-label .dot{width:8px;height:8px;border-radius:50%;background:var(--crs);box-shadow:0 0 10px var(--crs)}
+.recent{position:absolute;top:236px;left:0;right:0;padding:0 48px;z-index:2}
+.cover-row{display:flex;gap:24px;overflow:hidden}
+.cover{
+  width:288px;height:400px;border-radius:26px;position:relative;flex:none;overflow:hidden;
+  background:linear-gradient(160deg,#141B2C 0%,#0C1220 60%,#101828 100%);
+  border:1px solid var(--line-hi);
+  box-shadow:0 24px 48px rgba(0,0,0,.5);
+}
+.cover.playing{border-color:rgba(34,211,165,.45);box-shadow:0 0 0 1px rgba(34,211,165,.3),0 24px 56px rgba(0,0,0,.55),0 0 44px rgba(34,211,165,.16)}
+.cover .art{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:88px}
+.cover .ps2bar{position:absolute;top:0;left:0;right:0;height:64px;background:linear-gradient(180deg,rgba(2,4,9,.82),transparent);display:flex;align-items:center;padding:0 20px;font-size:19px;color:#C6D0E0;font-style:italic;font-weight:600;letter-spacing:1px}
+.cover .ps2bar::after{content:"";margin-left:auto;width:34px;height:34px;border-radius:8px;background:conic-gradient(from 220deg,#1B3D8F,#3D6BE0,#1B3D8F);opacity:.9}
+.cover .meta{position:absolute;left:0;right:0;bottom:0;padding:18px 20px 16px;background:linear-gradient(0deg,rgba(3,5,10,.9),transparent)}
+.cover .meta .name{font-size:24px;font-weight:700;color:var(--tx-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cover .meta .when{margin-top:6px;font-size:19px;color:var(--tx-dim);display:flex;align-items:center;gap:8px}
+.badge-live{margin-left:auto;font-size:16px;font-weight:700;color:var(--tri);border:1px solid rgba(34,211,165,.4);border-radius:20px;padding:3px 12px;background:rgba(34,211,165,.1)}
+
+/* ---- 我的游戏 ---- */
+.mygames{position:absolute;top:730px;left:0;right:0;padding:0 48px}
+.glist{display:flex;flex-direction:column;gap:16px}
+.grow{
+  display:flex;align-items:center;gap:22px;padding:20px 22px;border-radius:26px;
+  background:var(--bg-card);border:1px solid var(--line);backdrop-filter:blur(12px);
+}
+.grow.sel{background:linear-gradient(90deg,rgba(92,168,255,.10),rgba(92,168,255,.03));border-color:rgba(92,168,255,.35)}
+.thumb{width:84px;height:112px;border-radius:14px;flex:none;position:relative;overflow:hidden;background:linear-gradient(150deg,#1A2338,#101828);display:flex;align-items:center;justify-content:center;font-size:44px;border:1px solid var(--line-hi)}
+.ginfo{flex:1;min-width:0}
+.gname{font-size:27px;font-weight:700;color:var(--tx-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gsub{margin-top:8px;font-size:20px;color:var(--tx-dim);display:flex;align-items:center;gap:12px}
+.ctag{font-size:16px;padding:2px 10px;border-radius:16px;font-weight:600}
+.ctag.ok{color:var(--ok);background:rgba(52,217,123,.12)}
+.ctag.warn{color:#FFB454;background:rgba(255,180,84,.12)}
+.gacts{display:flex;flex-direction:column;gap:10px;align-items:flex-end}
+.chev{color:var(--tx-dim);font-size:26px}
+.mini-act{font-size:18px;color:var(--crs);background:rgba(92,168,255,.1);border:1px solid rgba(92,168,255,.22);border-radius:16px;padding:6px 14px;font-weight:600}
+
+/* 添加游戏：虚线幽灵卡 */
+.add-card{
+  display:flex;align-items:center;justify-content:center;gap:16px;height:104px;border-radius:26px;
+  border:1.5px dashed rgba(255,255,255,.14);color:var(--tx-dim);font-size:24px;
+  background:rgba(255,255,255,.015);
+}
+.add-card .plus{width:44px;height:44px;border-radius:50%;border:1.5px solid rgba(92,168,255,.5);color:var(--crs);display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 0 18px rgba(92,168,255,.25)}
+
+/* ---- 系统状态条（JIT / BIOS）---- */
+.sysrow{position:absolute;left:48px;right:48px;top:1240px;display:flex;gap:18px}
+.sys{
+  flex:1;padding:22px 24px;border-radius:24px;background:var(--bg-card);border:1px solid var(--line);
+  display:flex;align-items:center;gap:16px;backdrop-filter:blur(12px);
+}
+.sys .led{width:14px;height:14px;border-radius:50%;background:var(--ok);box-shadow:0 0 14px var(--ok)}
+.sys.warn .led{background:#FFB454;box-shadow:0 0 14px #FFB454}
+.sys .k{font-size:22px;font-weight:600;color:var(--tx)}
+.sys .v{margin-left:auto;font-size:22px;font-weight:700;color:var(--ok)}
+.sys.warn .v{color:#FFB454}
+
+/* ---- 主操作：启动 ---- */
+.launch-zone{position:absolute;left:48px;right:48px;top:1360px}
+.launch{
+  height:112px;border-radius:34px;display:flex;align-items:center;justify-content:center;gap:18px;
+  font-size:34px;font-weight:800;color:#fff;letter-spacing:2px;
+  background:linear-gradient(135deg,#2F6FE0 0%,#5CA8FF 55%,#7EC3FF 100%);
+  box-shadow:0 18px 44px rgba(92,168,255,.35),inset 0 1px 0 rgba(255,255,255,.35);
+}
+.launch .sym{font-size:30px;opacity:.95}
+
+/* ---- 底部胶囊 Dock（悬浮内缩，致敬 HarmonyOS 7）---- */
+.dock{
+  position:absolute;bottom:34px;left:44px;right:44px;height:104px;border-radius:52px;
+  background:rgba(14,20,34,.68);border:1px solid rgba(255,255,255,.09);
+  backdrop-filter:blur(24px);
+  display:flex;align-items:center;justify-content:space-around;
+  box-shadow:0 20px 40px rgba(0,0,0,.45);
+}
+.dock-item{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--tx-dim);font-size:17px}
+.dock-item .ic{font-size:34px;line-height:1}
+.dock-item.on{color:var(--tx-hi)}
+.dock-item.on .ic{filter:drop-shadow(0 0 12px rgba(92,168,255,.8));color:var(--crs)}
+.dock-item.on::before{content:"";position:absolute;top:-16px;width:34px;height:5px;border-radius:3px;background:var(--crs);box-shadow:0 0 12px var(--crs)}
+.dock-item{position:relative}
+
+/* 标注（仅设计稿显示） */
+.note{position:absolute;right:24px;font-size:15px;color:#7d8aa5;font-style:italic;opacity:.8}
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="screen"></div>
+  <div class="pill"></div>
+  <div class="statusbar"><span>9:41</span><span class="icons">📶 🔋</span></div>
+
+  <div class="hero">
+    <div>
+      <div class="logo"><span class="h">Hp</span><span class="ps2">s2</span></div>
+      <div class="logo-sub">PS2 SIMULATOR</div>
+    </div>
+    <div class="hero-right">
+      <div class="icon-btn accent">⌕</div>
+      <div class="icon-btn">⚙</div>
+    </div>
+  </div>
+
+  <div class="recent">
+    <div class="section-label"><span class="dot"></span><span class="t">最近游玩</span><span class="n">继续上次进度</span></div>
+    <div class="cover-row">
+      <div class="cover playing">
+        <div class="ps2bar">PlayStation.2</div>
+        <div class="art">🏔️</div>
+        <div class="meta">
+          <div class="name">Downhill Domination</div>
+          <div class="when">◷ 2 小时前 <span class="badge-live">继续</span></div>
+        </div>
+      </div>
+      <div class="cover">
+        <div class="ps2bar">PlayStation.2</div>
+        <div class="art">🏎️</div>
+        <div class="meta">
+          <div class="name">Need for Speed: Most Wanted</div>
+          <div class="when">◷ 昨天</div>
+        </div>
+      </div>
+      <div class="cover" style="opacity:.55;transform:scale(.94);transform-origin:left center">
+        <div class="ps2bar">PlayStation.2</div>
+        <div class="art">⚔️</div>
+        <div class="meta"><div class="name">God of War II</div><div class="when">◷ 3 天前</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mygames">
+    <div class="section-label"><span class="dot" style="background:var(--sq);box-shadow:0 0 10px var(--sq)"></span><span class="t">我的游戏</span><span class="n">7 个镜像</span></div>
+    <div class="glist">
+      <div class="grow sel">
+        <div class="thumb">⚔️</div>
+        <div class="ginfo">
+          <div class="gname">God of War II</div>
+          <div class="gsub">USA · 4.35 GB <span class="ctag ok">可玩</span></div>
+        </div>
+        <div class="gacts"><span class="mini-act">逐游戏设置</span></div>
+      </div>
+      <div class="grow">
+        <div class="thumb">🗿</div>
+        <div class="ginfo">
+          <div class="gname">Shadow of the Colossus</div>
+          <div class="gsub">USA · 2.66 GB <span class="ctag ok">可玩</span></div>
+        </div>
+        <div class="gacts"><span class="chev">›</span></div>
+      </div>
+
+      <div class="add-card"><span class="plus">+</span> 导入 ISO / CHD 镜像</div>
+    </div>
+  </div>
+
+  <div class="sysrow">
+    <div class="sys"><span class="led"></span><span class="k">JIT 已就绪</span><span class="v">通过</span></div>
+    <div class="sys warn"><span class="led"></span><span class="k">BIOS</span><span class="v">未选择</span></div>
+  </div>
+
+  <div class="launch-zone">
+    <div class="launch"><span class="sym">▶</span> 启动游戏</div>
+  </div>
+
+  <div class="dock">
+    <div class="dock-item on"><span class="ic">⌂</span>游戏库</div>
+    <div class="dock-item"><span class="ic">▤</span>记忆卡</div>
+    <div class="dock-item"><span class="ic">◎</span>存档</div>
+    <div class="dock-item"><span class="ic">⚙</span>设置</div>
+  </div>
+</div>
+</body>
+</html>

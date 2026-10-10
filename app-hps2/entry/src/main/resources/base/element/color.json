@@ -2,15 +2,15 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#F5F6F8"
+      "value": "#F4F5F8"
     },
     {
       "name": "hps2_bg_deep",
-      "value": "#F0F2F5"
+      "value": "#E9ECF2"
     },
     {
       "name": "hps2_bg_base",
-      "value": "#F5F6F8"
+      "value": "#F4F5F8"
     },
     {
       "name": "hps2_bg_card",
@@ -18,67 +18,67 @@
     },
     {
       "name": "hps2_bg_card_hi",
-      "value": "#EEF1F6"
+      "value": "#EDF0F6"
     },
     {
       "name": "hps2_bg_glass",
-      "value": "#E6FFFFFF"
+      "value": "#66FFFFFF"
     },
     {
       "name": "hps2_text_pri",
-      "value": "#111827"
+      "value": "#141821"
     },
     {
       "name": "hps2_text_sec",
-      "value": "#4B5563"
+      "value": "#4A5265"
     },
     {
       "name": "hps2_text_dim",
-      "value": "#9CA3AF"
+      "value": "#98A0B0"
     },
     {
       "name": "hps2_accent",
-      "value": "#2563EB"
+      "value": "#2E6FDB"
     },
     {
       "name": "hps2_accent_hi",
-      "value": "#1D4ED8"
+      "value": "#4A8AEF"
     },
     {
       "name": "hps2_ok",
-      "value": "#15803D"
+      "value": "#1F9D5B"
     },
     {
       "name": "hps2_warn",
-      "value": "#B45309"
+      "value": "#B36A0A"
     },
     {
       "name": "hps2_err",
-      "value": "#DC2626"
+      "value": "#D22F3C"
     },
     {
       "name": "hps2_border",
-      "value": "#D8DEE9"
+      "value": "#E1E5EE"
     },
     {
       "name": "hps2_border_hi",
-      "value": "#B9C2D0"
+      "value": "#C4CBDA"
     },
     {
       "name": "hps2_panel_warn_bg",
-      "value": "#FEF6E7"
+      "value": "#FBF3E4"
     },
     {
       "name": "hps2_panel_warn_bd",
-      "value": "#F3D9A4"
+      "value": "#EBD5A8"
     },
     {
       "name": "hps2_panel_err_bg",
-      "value": "#FDECEC"
+      "value": "#FBEBEC"
     },
     {
       "name": "hps2_panel_err_bd",
-      "value": "#F3B9B9"
+      "value": "#EFB9BD"
     },
     {
       "name": "hps2_pad_btn_bg",
@@ -99,6 +99,38 @@
     {
       "name": "hps2_game_letterbox",
       "value": "#000000"
+    },
+    {
+      "name": "hps2_face_tri",
+      "value": "#0E9F7A"
+    },
+    {
+      "name": "hps2_face_cir",
+      "value": "#E04848"
+    },
+    {
+      "name": "hps2_face_crs",
+      "value": "#3D7DD8"
+    },
+    {
+      "name": "hps2_face_sq",
+      "value": "#DD5FAE"
+    },
+    {
+      "name": "hps2_dock_bg",
+      "value": "#E6F2F5FB"
+    },
+    {
+      "name": "hps2_dock_border",
+      "value": "#CCD5E2"
+    },
+    {
+      "name": "hps2_cover_playing_bd",
+      "value": "#59CDA6"
+    },
+    {
+      "name": "hps2_cover_bar",
+      "value": "#33456A8F"
     }
   ]
 }

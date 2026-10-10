@@ -21,7 +21,6 @@ import hps2core from 'libhps2core.so';
 import { Theme } from '../common/Theme';
 import { HomeScreen } from '../components/HomeScreen';
 import { GameScreen } from '../components/GameScreen';
-import { StatusBar } from '../components/StatusBar';
 import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
@@ -3180,6 +3179,12 @@ struct Index {
             onOpenSettings: () => {
               this.showSettings = true;
               this.refreshControllers();
+            },
+            // Dock「记忆卡」入口：直接打开记忆卡管理弹层
+            onOpenMemoryCard: () => {
+              this.memoryCardGroupFilter = '全部';
+              this.showMemoryCardManager = true;
+              this.refreshMemoryCards();
             }
           })
         }

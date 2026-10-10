@@ -111,6 +111,50 @@ export class Theme {
   static panelErrBg(): string  { return Theme.color('hps2_panel_err_bg', '#2A1518'); }
   static panelErrBd(): string  { return Theme.color('hps2_panel_err_bd', '#5B2A2F'); }
 
+  // ---- 面键四色（设计稿 v2：作为整套 UI 的强调色系统）----
+  static faceTri(): string  { return Theme.color('hps2_face_tri', '#22D3A5'); }
+  static faceCir(): string  { return Theme.color('hps2_face_cir', '#FF5C5C'); }
+  static faceCrs(): string  { return Theme.color('hps2_face_crs', '#5CA8FF'); }
+  static faceSq(): string   { return Theme.color('hps2_face_sq', '#FF7AC8'); }
+
+  // ---- 胶囊 Dock（设计稿 v2：悬浮内缩底栏）----
+  static dockBg(): string     { return Theme.color('hps2_dock_bg', '#B30E1422'); }
+  static dockBorder(): string { return Theme.color('hps2_dock_border', '#17FFFFFF'); }
+
+  // ---- 封面卡（「最近游玩」）----
+  static coverPlayingBd(): string { return Theme.color('hps2_cover_playing_bd', '#22D3A5'); }
+  static coverBar(): string       { return Theme.color('hps2_cover_bar', '#66456A8F'); }
+
+  /**
+   * 把 #RRGGBB 加上透明度，返回 #AARRGGBB。
+   *
+   * 【为什么必须有这个函数 —— 真机踩坑】
+   *   ArkUI 的颜色字符串是 **#AARRGGBB**（alpha 在前），
+   *   不是 Web 的 #RRGGBBAA。直接写 `color + '22'` 会被解析成
+   *   A=RR、R=GG、B=BB、G=22 —— 实测表现为**整片卡片边框变成亮黄色**
+   *   （例如 '#5CA8FF22' 被读成 A=5C? 不透明、RGB=FF A8 22 附近）。
+   *   因此需要显式把 alpha 前置。
+   *
+   * @param hex  #RRGGBB 或 #AARRGGBB
+   * @param alpha 0–1
+   */
+  static withAlpha(hex: string, alpha: number): string {
+    let h = hex.startsWith('#') ? hex.substring(1) : hex;
+    // 传入已是 #AARRGGBB 时先剥掉原 alpha，避免叠加两个 alpha
+    if (h.length === 8) {
+      h = h.substring(2);
+    }
+    if (h.length !== 6) {
+      return hex;
+    }
+    let a = Math.round(Math.max(0, Math.min(1, alpha)) * 255);
+    let as = a.toString(16).toUpperCase();
+    if (as.length < 2) {
+      as = '0' + as;
+    }
+    return '#' + as + h.toUpperCase();
+  }
+
   // ---- 虚拟按键 / 叠加层 ----
   static padBtnBg(): string     { return Theme.color('hps2_pad_btn_bg', '#33FFFFFF'); }
   static padBtnBorder(): string { return Theme.color('hps2_pad_btn_border', '#66FFFFFF'); }
@@ -120,9 +164,14 @@ export class Theme {
   static letterbox(): string    { return '#000000'; }
 
   // ---- 尺寸（与主题无关，保持静态常量）----
-  static readonly radius: number = 14;
-  static readonly radiusSm: number = 10;
+  static readonly radius: number = 16;
+  static readonly radiusSm: number = 12;
   static readonly gap: number = 12;
   static readonly pad: number = 16;
   static readonly btnSize: number = 52;
+  /** 胶囊 Dock 高度（设计稿 v2） */
+  static readonly dockHeight: number = 56;
+  /** 封面卡宽高比（PS2 封面约 1:1.4） */
+  static readonly coverW: number = 116;
+  static readonly coverH: number = 160;
 }
