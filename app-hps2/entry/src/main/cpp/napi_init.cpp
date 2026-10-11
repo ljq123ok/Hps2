@@ -46,6 +46,9 @@
 #include <cstring>
 #include <regex>
 #include <set>
+#include <cerrno>
+#include <fcntl.h>   // O_RDONLY（canOpenGameFile 的可读性预检）
+#include <unistd.h>  // close()
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -2660,6 +2663,183 @@ static napi_value NapiListGames(napi_env env, napi_callback_info info)
 	return out;
 }
 
+// canOpenGameFile(path) -> "1" | "0"
+//
+// 【用途】启动前的**可读性预检**。
+//
+// 背景：游戏现在可以放在手机公开目录（Download / Documents）里原地读取，
+// 但那属于应用沙箱之外 —— 系统策略是否允许 native 按真实路径 open()，
+// 必须实测。若不允许，我们不希望用户点「启动」后经历一次失败的 VM 初始化
+// （会留下半初始化状态），而应在启动前就判定并回退到复制方案。
+//
+// 只做 open(O_RDONLY) 后立即关闭：不读内容、不改文件。
+static napi_value NapiCanOpenGameFile(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string path;
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], path) || path.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "0", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	const int fd = FileSystem::OpenFDFile(path.c_str(), O_RDONLY, 0);
+	const bool ok = (fd >= 0);
+	if (ok)
+	{
+		close(fd);
+	}
+	else
+	{
+		LOGW("canOpenGameFile: cannot open path (errno=%{public}d)", errno);
+	}
+
+	napi_value out;
+	napi_create_string_utf8(env, ok ? "1" : "0", NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
+// probeGameFiles(pathsJson) -> JSON 数组
+//
+// 【为什么不复用 listGames 就够 —— 原地读取的需求】
+//   「扫描手机目录添加游戏」拿到的是**手机公开目录**里的文件
+//   （Download / Documents），它们不在应用私有 games/ 沙箱里。
+//   要在不复制的前提下展示标题/序列号/CRC，就必须能对**任意真实路径**
+//   做一次镜像探测。
+//
+// 参数：JSON 字符串数组（路径来自 ArkTS 的 fs.listFile，已是真实路径）。
+// 返回：与 listGames 同形状的条目数组，顺序与入参一致。
+//
+// 【边界】只做**读取探测**，不复制、不移动文件。写操作一概没有 ——
+// 用户的游戏文件保持原样，应用只按路径打开。
+//
+// 【注意】探测会打开镜像并读 ELF 头，属重 IO：
+//   - VM 运行时拒绝（与 listGames 同一守卫，避免破坏 CDVD 状态）
+//   - 由调用方限制单次传入的数量（UI 侧分批）
+static napi_value NapiProbeGameFiles(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+
+	std::string raw;
+	if (argc < 1 || !GetUtf8Arg(env, argv[0], raw) || raw.empty())
+	{
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	if (g_vm_running.load())
+	{
+		LOGI("probeGameFiles refused: VM is running");
+		napi_value out;
+		napi_create_string_utf8(env, "[]", NAPI_AUTO_LENGTH, &out);
+		return out;
+	}
+
+	// 极简 JSON 字符串数组解析：只取双引号内的内容并处理转义。
+	// 不引入 JSON 库 —— 本文件其它地方同样手工拼装/解析，
+	// 且这里的输入完全由本应用自己的 ArkTS 生成，形态固定。
+	std::vector<std::string> paths;
+	{
+		bool inStr = false;
+		bool esc = false;
+		std::string cur;
+		for (char c : raw)
+		{
+			if (!inStr)
+			{
+				if (c == '"')
+				{
+					inStr = true;
+					cur.clear();
+				}
+				continue;
+			}
+			if (esc)
+			{
+				switch (c)
+				{
+					case 'n': cur += '\n'; break;
+					case 't': cur += '\t'; break;
+					case 'r': cur += '\r'; break;
+					case '"': cur += '"'; break;
+					case '\\': cur += '\\'; break;
+					case '/': cur += '/'; break;
+					default: cur += c; break;
+				}
+				esc = false;
+				continue;
+			}
+			if (c == '\\')
+			{
+				esc = true;
+				continue;
+			}
+			if (c == '"')
+			{
+				inStr = false;
+				paths.push_back(cur);
+				continue;
+			}
+			cur += c;
+		}
+	}
+
+	std::string json = "[";
+	bool first = true;
+	for (const std::string& p : paths)
+	{
+		if (p.empty())
+			continue;
+
+		GameList::Entry entry;
+		const bool valid = GameList::PopulateEntryFromPath(p, &entry);
+
+		// 文件名：取最后一个 '/' 之后的部分
+		const size_t slash = p.find_last_of('/');
+		const std::string name = (slash == std::string::npos) ? p : p.substr(slash + 1);
+
+		if (!first)
+			json += ",";
+		first = false;
+
+		json += "{\"name\":\"" + JsonEscape(name) + "\"";
+		json += ",\"path\":\"" + JsonEscape(p) + "\"";
+		json += ",\"size\":" + std::to_string(valid ? entry.total_size : 0);
+		json += ",\"invalid\":" + std::string(valid ? "false" : "true");
+		if (valid)
+		{
+			json += ",\"serial\":\"" + JsonEscape(entry.serial) + "\"";
+			json += ",\"title\":\"" + JsonEscape(entry.title) + "\"";
+			json += ",\"titleEn\":\"" + JsonEscape(entry.title_en) + "\"";
+			json += ",\"region\":" + std::to_string(static_cast<int>(entry.region));
+			json += ",\"type\":" + std::to_string(static_cast<int>(entry.type));
+			json += ",\"crc\":" + std::to_string(entry.crc);
+			json += ",\"compatibility\":" + std::to_string(static_cast<int>(entry.compatibility_rating));
+			json += ",\"lastPlayed\":" + std::to_string(static_cast<long long>(entry.last_played_time));
+		}
+		else
+		{
+			json += ",\"serial\":\"\",\"title\":\"\",\"titleEn\":\"\"";
+			json += ",\"region\":0,\"type\":0,\"crc\":0,\"compatibility\":0,\"lastPlayed\":0";
+		}
+		json += "}";
+	}
+	json += "]";
+
+	LOGI("probeGameFiles: %{public}d path(s) probed", static_cast<int>(paths.size()));
+
+	napi_value out;
+	napi_create_string_utf8(env, json.c_str(), NAPI_AUTO_LENGTH, &out);
+	return out;
+}
+
 // ---------------------------------------------------------------------------
 // 逐游戏设置（per-game settings）
 //
@@ -3279,6 +3459,8 @@ static napi_value Init(napi_env env, napi_value exports) {
 		{"listMemoryCards", nullptr, NapiListMemoryCards, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"initGameFolders", nullptr, NapiInitGameFolders, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"listGames", nullptr, NapiListGames, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"probeGameFiles", nullptr, NapiProbeGameFiles, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"canOpenGameFile", nullptr, NapiCanOpenGameFile, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"readGameSettings", nullptr, NapiReadGameSettings, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"writeGameSettings", nullptr, NapiWriteGameSettings, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"memoryCardsDirectory", nullptr, NapiMemoryCardsDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},

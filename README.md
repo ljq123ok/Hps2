@@ -3,7 +3,7 @@
 基于 [ARMSX2](https://github.com/ARMSX2/ARMSX2)（PCSX2 的原生 ARM64 JIT fork）
 移植到 HarmonyOS / OpenHarmony。
 
-> **当前测试版：v0.16**
+> **当前测试版：v0.17**
 >
 > 本次测试设备：**HUAWEI Pura X View**。欢迎在 GitHub Issues 反馈测试结果。
 > 本版本是开发测试包，不代表已经适配所有 HarmonyOS 设备。
@@ -108,6 +108,15 @@ bundleName 与 Profile 不匹配而失败。
 ---
 
 ## 项目状态
+
+### v0.17 扫描游戏修复与测试说明
+
+- 修复手机目录扫描结果误收录 PS3/损坏 ISO 的问题：现在按 PS2 镜像内容探测结果过滤，不再只看扩展名。
+- 修复扫描到的外部游戏重启后丢失的问题；已加入的游戏路径会持久化，文件失效时自动清理。
+- 修复公开目录 URI 直接交给 native 后无法启动的问题，并增加 native 可读性预检；不可原地读取时明确提示并回退复制。
+- 增加 Download / Documents 递归扫描、权限拒绝提示、扫描结果批量探测和外部游戏移除入口；移除只删除列表项，不删除用户文件。
+- 延续 v0.16 的折叠屏内外屏优化、前端 UI 重构和 JIT 自签测试配置；本次测试设备为 HUAWEI Pura X View。
+- GitHub 发布的 HAP 仍为未签名 debug 包，不含签名材料、BIOS、游戏镜像、用户存档、设备序列号或原始日志。
 
 ### v0.16 更新与测试说明
 

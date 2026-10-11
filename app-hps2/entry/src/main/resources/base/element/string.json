@@ -1,8 +1,24 @@
 {
   "string": [
-    { "name": "module_desc", "value": "Hps2 PS2 模拟器主模块" },
-    { "name": "EntryAbility_desc", "value": "Hps2" },
-    { "name": "EntryAbility_label", "value": "Hps2" },
-    { "name": "reason_internet", "value": "用于按需下载游戏封面（可在封面源设置中关闭）" }
+    {
+      "name": "module_desc",
+      "value": "Hps2 PS2 模拟器主模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Hps2"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Hps2"
+    },
+    {
+      "name": "reason_internet",
+      "value": "用于按需下载游戏封面（可在封面源设置中关闭）"
+    },
+    {
+      "name": "reason_scan_dirs",
+      "value": "用于扫描手机 Download 与 Documents 目录中的游戏镜像，便于批量添加游戏"
+    }
   ]
 }

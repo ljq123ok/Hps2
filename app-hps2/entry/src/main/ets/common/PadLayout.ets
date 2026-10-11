@@ -407,7 +407,7 @@ export class PadLayoutStore {
           data.version, PAD_LAYOUT_VERSION);
         this.landscape = defaultVariant();
         this.portrait = defaultVariant();
-        this.styleIndex = 0;
+        this.styleIndex = FACE_STYLE_INDEX;
         return;
       }
       this.landscape = this.readVariant(data.landscape);
@@ -418,7 +418,7 @@ export class PadLayoutStore {
       hilog.error(DOMAIN, TAG, 'load pad layout failed, using defaults');
       this.landscape = defaultVariant();
       this.portrait = defaultVariant();
-      this.styleIndex = 0;
+      this.styleIndex = FACE_STYLE_INDEX;
     }
   }
 

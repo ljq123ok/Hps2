@@ -41,17 +41,44 @@
       }
     ],
     // 权限说明：
-    //   ohos.permission.INTERNET —— 唯一申请的权限，用于**按需下载游戏封面**。
+    //   ohos.permission.INTERNET —— 用于**按需下载游戏封面**。
     //   它是 system_grant（安装即授予、不弹窗）、availableLevel=normal，
     //   不属于受限权限；不联网时封面功能静默跳过，不影响任何其它功能。
     //
-    // 除此之外不申请任何受限权限：
-    // BIOS 与游戏镜像由用户通过系统文件管理器主动选择，走 DocumentViewPicker，
-    // 不需要读取整个文件系统的权限。
+    //   READ_WRITE_DOWNLOAD_DIRECTORY / READ_WRITE_DOCUMENTS_DIRECTORY ——
+    //   用于「扫描手机目录添加游戏」（2026-10 新增）。二者都是
+    //   user_grant + availableLevel=normal，普通应用可申请，无需 ACL。
+    //
+    //   【为什么需要】此前只能通过系统文件选择器逐个选镜像，用户把游戏
+    //   放进手机目录后无法被应用发现。现允许扫描这两个公开目录，
+    //   让应用直接列出其中的镜像。
+    //
+    //   【边界】Desktop 需要 system_basic（拿不到）；此外没有「全盘」API，
+    //   这是 HarmonyOS 的安全模型决定的，不是本应用的取舍。
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET",
         "reason": "$string:reason_internet",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY",
+        "reason": "$string:reason_scan_dirs",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY",
+        "reason": "$string:reason_scan_dirs",
         "usedScene": {
           "abilities": [
             "EntryAbility"

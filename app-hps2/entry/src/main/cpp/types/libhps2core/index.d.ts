@@ -54,6 +54,23 @@ export const listMemoryCards: (dataRoot: string, gamePath?: string) => string;
 export const initGameFolders: (dataRoot: string) => number;
 export const listGames: (gamesDir: string) => string;
 /**
+ * 探测**任意真实路径**下的游戏镜像元数据（原地读取，不复制文件）。
+ *
+ * 入参是 JSON 字符串数组（路径），返回与 listGames 同形状的条目数组，
+ * 顺序与入参一致。用于「扫描手机目录添加游戏」——那些文件在应用沙箱之外。
+ *
+ * ⚠️ VM 运行中返回 `[]`：探测要打开镜像读 ELF 头，会破坏 CDVD 状态。
+ */
+export const probeGameFiles: (pathsJson: string) => string;
+/**
+ * 启动前的可读性预检：判断 native 能否按该真实路径打开文件。
+ *
+ * 返回 `"1"` 可打开、`"0"` 不可打开。
+ * 用于决定「原地读取」是否成立 —— 不成立时由 UI 回退到复制到沙箱，
+ * 避免用户点启动后才失败（那会留下半初始化的 VM 状态）。
+ */
+export const canOpenGameFile: (path: string) => string;
+/**
  * 读取某游戏的独立设置（复用上游的 gamesettings/<serial>_<CRC>.ini）。
  * 返回 `{ok,serial,crc,path,hasFile,aspect,upscale,vuThread,aspectSet,upscaleSet,vuThreadSet}`。
  * `*Set` 区分"文件里显式写了"与"未写、继承全局"。

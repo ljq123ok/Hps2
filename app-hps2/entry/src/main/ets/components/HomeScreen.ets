@@ -27,6 +27,8 @@ export struct HomeScreen {
   @Prop picking: string = '';
   @Prop statusStage: string = '';
   @Prop statusError: string = '';
+  /** 原地读不可用、已回退为复制时的说明（空 = 未发生回退） */
+  @Prop fallbackNotice: string = '';
   /** 失败类别标签（改进 1）；空则只显示原始错误 */
   @Prop errorKindLabel: string = '';
   @Prop errorAdvice: string = '';
@@ -75,6 +77,12 @@ export struct HomeScreen {
   onSelectGame?: (g: GameEntry) => void;
   /** 重新扫描游戏库 */
   onRefreshGames?: () => void;
+  /** 扫描手机目录（Download / Documents）添加游戏 */
+  onScanPhoneDirs?: () => void;
+  /** 从库中移除某个外部游戏（只移除列表项，不删用户文件） */
+  onRemoveExternalGame?: (g: GameEntry) => void;
+  /** 判断某条目是否为外部（手机目录）游戏 —— 用于显示移除入口 */
+  isExternal?: (g: GameEntry) => boolean;
   /** 为所有缺封面的游戏下载 */
   onDownloadCovers?: () => void;
   /** 只为指定游戏下载封面 */
@@ -305,6 +313,14 @@ export struct HomeScreen {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
+          if (this.isExternal && this.isExternal(g)) {
+            Text('手机目录')
+              .fontSize(9)
+              .fontColor(Theme.faceCrs())
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              .backgroundColor(Theme.withAlpha(Theme.faceCrs(), 0.14))
+              .borderRadius(8)
+          }
           if (compatibilityLabel(g.compatibility).length > 0) {
             Text(compatibilityLabel(g.compatibility))
               .fontSize(9)
@@ -325,6 +341,13 @@ export struct HomeScreen {
           Text('✓').fontSize(14).fontColor(Theme.ok())
         } else {
           Text('›').fontSize(16).fontColor(Theme.textDim())
+        }
+        // 外部（手机目录）游戏可移出列表；**不会删除用户文件**
+        if (this.isExternal && this.isExternal(g)) {
+          Text('移出')
+            .fontSize(10).fontColor(Theme.textDim())
+            .padding({ left: 4, top: 2, bottom: 2 })
+            .onClick(() => { if (this.onRemoveExternalGame) this.onRemoveExternalGame(g); })
         }
       }
       .alignItems(HorizontalAlign.End)
@@ -348,6 +371,14 @@ export struct HomeScreen {
           .fontSize(11).fontColor(Theme.textDim())
           .padding({ left: 8 })
         Blank()
+        // 扫描手机目录：用户把游戏放进手机后，用这个入口发现它们
+        Text('扫描手机目录')
+          .fontSize(11).fontWeight(FontWeight.Medium)
+          .fontColor('#FFFFFF')
+          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          .backgroundColor(Theme.accent())
+          .borderRadius(12)
+          .onClick(() => { if (this.onScanPhoneDirs) this.onScanPhoneDirs(); })
         Text('重新扫描')
           .fontSize(11).fontColor(Theme.accentHi())
           .padding({ left: 10, top: 4, bottom: 4 })
@@ -358,7 +389,7 @@ export struct HomeScreen {
       if (this.games.length === 0) {
         Text(this.gamesScanning
           ? '正在扫描游戏目录…'
-          : '还没有游戏镜像。用「选择游戏镜像」导入一个，或把文件放进游戏目录。')
+          : '还没有游戏。用上方「扫描手机目录」发现已下载的镜像，或点虚线框手动选择文件。')
           .fontSize(12).fontColor(Theme.textDim()).width('100%')
           .padding({ top: 4, bottom: 4 })
       } else {
@@ -584,6 +615,23 @@ export struct HomeScreen {
 
           // ---- 启动按钮 ----
           this.launchButton()
+
+          // ---- 回退复制提示 ----
+          // 用户希望原地读取；若环境不允许而复制了，必须说明，
+          // 否则"空间怎么少了"会变成无法解释的问题。
+          if (this.fallbackNotice.length > 0) {
+            Row({ space: 8 }) {
+              Text('ⓘ').fontSize(13).fontColor(Theme.warn())
+              Text(this.fallbackNotice)
+                .fontSize(11).fontColor(Theme.warn())
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+            .backgroundColor(Theme.panelWarnBg())
+            .borderRadius(Theme.radiusSm)
+            .border({ width: 1, color: Theme.panelWarnBd() })
+          }
 
           // ---- 错误面板（保持 v1 的完整分类 + 建议 + 日志导出）----
           if (this.statusError.length > 0) {

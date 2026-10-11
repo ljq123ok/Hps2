@@ -25,6 +25,7 @@ import { Immersive } from '../common/Immersive';
 import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
 import { GameEntry, humanSize as libHumanSize, gameDisplayTitle as libGameTitle, gameDisplaySubtitle as libGameSub } from '../common/GameLibrary';
+import { ScannedGame, ScanResult, ScanDirs } from '../common/ScanDirs';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
   CoverSource, SharedCoverSources, BUILTIN_COVER_SOURCES, buildCoverUrl, isValidCoverTemplate
@@ -37,6 +38,7 @@ import {
   SharedPadLayout
 } from '../common/PadLayout';
 import common from '@ohos.app.ability.common';
+import uri from '@ohos.uri';
 
 const DOMAIN = 0x3202;
 const TAG = 'HPS2_CORE';
@@ -237,6 +239,30 @@ struct Index {
   @State games: Array<GameEntry> = [];
   /** 游戏库是否正在扫描（重 IO，需可见反馈） */
   @State gamesScanning: boolean = false;
+  /**
+   * 来自手机目录（Download / Documents）的游戏，**原地读取、不复制**。
+   *
+   * 【为什么单独一份】refreshGames() 只扫沙箱 games/；这份是用户通过
+   * 「扫描手机目录」显式加入的，与沙箱条目合并后一起展示。
+   * 持久化在 external-games.json，重启后仍在（路径失效时会被剔除）。
+   */
+  @State externalGames: Array<GameEntry> = [];
+  /** 手机目录扫描结果（弹层用） */
+  @State scannedGames: Array<ScannedGame> = [];
+  /** 扫描弹层可见性 */
+  @State showScanPanel: boolean = false;
+  /** 扫描进行中 */
+  @State scanning: boolean = false;
+  /** 扫描结果的说明（权限被拒等） */
+  @State scanMessage: string = '';
+  /**
+   * 回退复制提示。
+   *
+   * 用户希望"直接读取文件加载"，但部署环境若不允许 native 打开沙箱外
+   * 路径，就必须复制一份（额外占用数 GB）。这种事必须让用户知道，
+   * 不能静默发生。
+   */
+  @State fallbackNotice: string = '';
   /**
    * 封面：path -> 本地封面文件路径（无封面则不在表里）。
    *
@@ -835,6 +861,8 @@ struct Index {
       hps2core.initGameFolders(this.dataRoot());
       // 封面源配置（决定后续下载走哪个库）
       SharedCoverSources.store.load(this.dataRoot());
+      // 恢复「扫描手机目录」加入的游戏（原地读取，路径失效的会被剔除）
+      this.loadExternalGames();
       // 再扫描整个 games/ 目录填充游戏库列表。
       // 放在 restore 之后：即使列表为空，上次选中的游戏也已恢复。
       this.refreshGames();
@@ -2092,8 +2120,7 @@ struct Index {
 
   private async chooseGame(): Promise<void> {
     // PS2 游戏镜像常见格式。
-    // 【改为原地读取，不再复制】见 pickInPlace 的说明 —— 复制 2-4GB 的 ISO
-    // 会同步阻塞 UI 线程（外部反馈：卡 8 秒后闪退）。
+    // 【原地读取】不再复制进沙箱 —— 复制 2-4GB 的 ISO 既占双份空间又很久。
     const r = await this.pickInPlace('game',
       ['.iso', '.ISO', '.chd', '.CHD', '.bin', '.BIN', '.img', '.IMG', '.gz']);
     if (r.length === 0) {
@@ -2105,23 +2132,35 @@ struct Index {
     const srcPath = parts[0];
     const fileName = parts[1];
     const sizeText = parts[2];
+    // 记下大小：回退复制时要用它拼显示名（那时已拿不到 sizeText 之外的信息）
+    try {
+      this.lastFileSize = fs.statSync(srcPath).size;
+    } catch (e) {
+      this.lastFileSize = 0;
+    }
 
     try {
-      // 异步复制到沙箱（native 需要 POSIX 路径）。
-      // 关键改进：不再用同步复制，UI 在复制期间保持响应。
-      const destPath = await this.copyToSandboxAsync(srcPath, this.gameDir(), fileName);
-      this.gamePath = destPath;
+      // 【原地读取】只登记路径与显示名，**不复制文件**。
+      //
+      // 【URI → 真实路径】picker 返回的是 file://docs/... 形式的授权 URI，
+      // 而 PCSX2 的 CDVD 用 open() 打开，要真实 POSIX 路径。
+      // uri.URI.path 给出其路径部分；转换失败则保留原样并让启动阶段
+      // 如实报错（不做静默复制 —— 那会在用户不知情时消耗数 GB 空间）。
+      const realPath = this.uriToPath(srcPath);
+      this.gamePath = realPath;
       this.gameName = fileName + ' (' + sizeText + ')';
-      this.saveGameSelection(destPath, fileName);
-      // 新导入的镜像要立刻出现在游戏库里（否则列表要等下次启动才更新）
+      this.saveGameSelection(realPath, fileName);
+
+      // 同时登记进游戏库（原地读取，重启后仍在）
+      this.addExternalGameEntry(realPath, fileName);
       this.refreshGames();
       // 选择 ISO 后立即用其真实序列号重扫记忆卡，命中的存档会自动归类。
       this.refreshMemoryCards();
-      hilog.info(DOMAIN, TAG, 'game ready in sandbox');
+      hilog.info(DOMAIN, TAG, 'game registered in place (no copy)');
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'copy game failed code=%{public}d', err.code);
-      this.statusError = '复制游戏文件失败：' + (err.message ? err.message : JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'register game failed code=%{public}d', err.code);
+      this.statusError = '添加游戏失败：' + (err.message ? err.message : JSON.stringify(err));
       this.gamePath = '';
       this.gameName = '';
     } finally {
@@ -2130,6 +2169,144 @@ struct Index {
       this.statusStage = '';
       this.picking = '';
     }
+  }
+
+  /**
+   * 把一个路径登记进游戏库（原地读取，不复制）。
+   *
+   * 探测元数据失败也照常登记 —— 让用户看得见文件存在，
+   * 而不是"加了却没反应"。
+   */
+  private addExternalGameEntry(path: string, displayName: string): void {
+    for (let i = 0; i < this.externalGames.length; i++) {
+      if (this.externalGames[i].path === path) {
+        return; // 已在库中
+      }
+    }
+    let entry: GameEntry | null = null;
+    let probeFailed = false;
+    try {
+      const raw: string = hps2core.probeGameFiles(JSON.stringify([path]));
+      const arr = JSON.parse(raw) as Array<GameEntry>;
+      if (arr.length > 0) {
+        entry = arr[0];
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'probe on manual add failed');
+      probeFailed = true;
+    }
+
+    // ---------------------------------------------------------------------
+    // 必须是真正的 PS2 镜像才入库。
+    //
+    // 【为什么不能容错放行 —— 真机实测教训】
+    //   PS3 与 PS2 的镜像扩展名完全相同（.iso）。此前把"探测失败"的条目
+    //   也照常加入，结果用户的 PS3 游戏被当成 PS2 游戏列进库，
+    //   选中后无法运行。内容识别（读 PS2 ELF 头）是唯一可靠的判据。
+    //
+    // 探测不可用（例如 VM 运行中）：不静默降级入库，而是明确告知。
+    // ---------------------------------------------------------------------
+    if (entry === null || !Index.isPlayablePs2Image(entry)) {
+      this.statusError = probeFailed
+        ? '无法识别该文件是否为 PS2 镜像（游戏运行中无法扫描，请先返回首页再试）。'
+        : '该文件不是 PS2 游戏镜像（PS3 等其它平台的 ISO 扩展名相同但无法运行）。';
+      hilog.warn(DOMAIN, TAG, 'manual add rejected: not a PS2 image');
+      return;
+    }
+    this.externalGames = this.externalGames.concat([entry]);
+    this.saveExternalGames();
+  }
+
+  /**
+   * 启动前解析出**最终可用的游戏路径**。
+   *
+   * 策略（按用户选择：原地读优先，失败自动回退复制）：
+   *   1. 未选游戏 → 原样返回（只启动 BIOS）
+   *   2. 路径已在应用沙箱内 → 直接用（无需任何检查）
+   *   3. 沙箱外路径 → 先问 native 能否打开
+   *        - 能 → 原地读取，直接用
+   *        - 不能 → 复制进沙箱，用沙箱副本启动，并把这次回退告知用户
+   *
+   * 【为什么回退要告知】用户明确希望"直接读取文件加载"。回退复制会额外
+   * 占用一份空间（数 GB），静默发生对用户不公平 —— 必须说明原因。
+   */
+  private async resolveGamePathForBoot(): Promise<string> {
+    const p = this.gamePath;
+    if (!p || p.length === 0) {
+      return p;
+    }
+    // 已在沙箱内（应用的私有目录）：native 一定能读，省掉一次预检
+    const sandbox = this.dataRoot();
+    if (p.indexOf(sandbox) === 0) {
+      return p;
+    }
+    // 沙箱外：预检可读性
+    let canOpen = false;
+    try {
+      canOpen = hps2core.canOpenGameFile(p) === '1';
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'canOpenGameFile threw, assume not readable');
+      canOpen = false;
+    }
+    if (canOpen) {
+      hilog.info(DOMAIN, TAG, 'booting in place (no copy)');
+      return p;
+    }
+
+    // ---- 回退：复制进沙箱 ----
+    hilog.warn(DOMAIN, TAG, 'in-place open unavailable, falling back to copy');
+    this.statusStage = 'copying-fallback';
+    const name = p.substring(p.lastIndexOf('/') + 1);
+    try {
+      const dest = await this.copyToSandboxAsync(p, this.gameDir(), name);
+      this.gamePath = dest;
+      this.gameName = name + ' (' + libHumanSize(this.lastFileSize) + ')';
+      this.saveGameSelection(dest, name);
+      // 告知用户发生了回退，避免"空间怎么少了"的困惑
+      this.statusError = '';
+      this.fallbackNotice = '该位置无法直接读取，已复制到应用目录后启动' +
+        '（占用额外空间，可在设置中清理）。';
+      return dest;
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'fallback copy failed code=%{public}d', err.code);
+      this.statusError = '无法直接读取该文件，复制也失败了：' +
+        (err.message ? err.message : JSON.stringify(err));
+      return '';
+    }
+  }
+
+  /** 最近一次选择文件的大小，用于回退复制后拼显示名 */
+  private lastFileSize: number = 0;
+
+  /**
+   * 把 picker 返回的 URI 转成真实文件路径。
+   *
+   * 【为什么需要】native 的 CDVD 用 open() 打开文件，要 POSIX 路径；
+   * 而 picker 给的是 `file://docs/storage/...` 这类授权 URI。
+   * 直接把它交给 open() 会失败（历史实测：13900002 No such file or directory）。
+   *
+   * 【失败时怎么办】原样返回，让启动阶段报出真实错误。
+   * 不在这里静默复制 —— 那会掩盖问题并消耗用户数 GB 空间。
+   */
+  private uriToPath(uriOrPath: string): string {
+    if (!uriOrPath || uriOrPath.length === 0) {
+      return uriOrPath;
+    }
+    // 已经是普通路径（不以 scheme:// 开头）：无需转换
+    if (uriOrPath.indexOf('://') < 0) {
+      return uriOrPath;
+    }
+    try {
+      const u = new uri.URI(uriOrPath);
+      const p = u.path;
+      if (p && p.length > 0) {
+        return decodeURIComponent(p);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'URI -> path conversion failed');
+    }
+    return uriOrPath;
   }
 
   /** 记住上次选中的游戏（含 URI，便于重启后直接恢复）。 */
@@ -2233,16 +2410,295 @@ struct Index {
         const kb = (b.title && b.title.length > 0 ? b.title : b.name).toLowerCase();
         return ka < kb ? -1 : (ka > kb ? 1 : 0);
       });
-      this.games = list;
-      hilog.info(DOMAIN, TAG, 'listGames -> %{public}d item(s)', list.length);
+      // 沙箱列表 + 已加入的手机目录游戏（原地读取，不复制）
+      const merged = list.concat(this.externalGames);
+      this.games = merged;
+      hilog.info(DOMAIN, TAG, 'listGames -> %{public}d sandbox + %{public}d external',
+        list.length, this.externalGames.length);
       // 列表变了，本地封面表也要重算（否则新导入的游戏没有封面）
       this.refreshLocalCovers();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'listGames failed');
-      this.games = [];
+      this.games = this.externalGames;
     } finally {
       this.gamesScanning = false;
     }
+  }
+
+  // ===================== 手机目录扫描（原地添加）=====================
+
+  /** 外部游戏列表的持久化文件 */
+  private externalGamesFile(): string {
+    return this.dataRoot() + '/external-games.json';
+  }
+
+  /**
+   * 从磁盘恢复外部游戏列表。
+   *
+   * 【为什么要校验存在性】手机目录里的文件可能被用户删除或移走；
+   * 直接信任旧清单会让列表里出现点不开的死项。这里逐个 stat，
+   * 不存在的静默剔除（这是清理，不是错误）。
+   */
+  private loadExternalGames(): void {
+    try {
+      const path = this.externalGamesFile();
+      if (!fs.accessSync(path)) {
+        return;
+      }
+      const raw = fs.readTextSync(path);
+      if (!raw || raw.length === 0) {
+        return;
+      }
+      const loaded = JSON.parse(raw) as Array<GameEntry>;
+      const alive: Array<GameEntry> = [];
+      for (let i = 0; i < loaded.length; i++) {
+        const g = loaded[i];
+        if (!g || !g.path || g.path.length === 0) {
+          continue;
+        }
+        // 非 PS2 的条目直接剔除（例如旧版本误加入的 PS3 ISO）。
+        // 这条清理是必要的：用户升级前加进去的错误条目不该一直留在库里。
+        if (!Index.isPlayablePs2Image(g)) {
+          hilog.info(DOMAIN, TAG, 'dropping non-PS2 entry on load');
+          continue;
+        }
+        try {
+          if (fs.accessSync(g.path)) {
+            alive.push(g);
+          }
+        } catch (e) {
+          // 文件已不在：跳过
+        }
+      }
+      this.externalGames = alive;
+      hilog.info(DOMAIN, TAG, 'external games restored: %{public}d alive / %{public}d saved',
+        alive.length, loaded.length);
+      // 有剔除说明清单变了，回写一次保持整洁
+      if (alive.length !== loaded.length) {
+        this.saveExternalGames();
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'load external games failed');
+      this.externalGames = [];
+    }
+  }
+
+  /** 写盘（失败只记日志，不影响本次会话已生效的列表） */
+  private saveExternalGames(): void {
+    try {
+      const file = fs.openSync(this.externalGamesFile(),
+        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, JSON.stringify(this.externalGames));
+      } finally {
+        fs.closeSync(file);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'save external games failed');
+    }
+  }
+
+  /**
+   * 扫描手机目录（Download + Documents）里的游戏镜像。
+   *
+   * 【为什么是这两个目录】HarmonyOS 只对普通应用开放这两个公开目录；
+   * Desktop 需要 system_basic，且不存在"全盘"API。见 ScanDirs 的说明。
+   *
+   * 【为什么扫到后还要探测】目录里可能有非 PS2 文件、或损坏镜像。
+   * 交给 native 的 probeGameFiles 读 ELF 头，才能拿到标题/序列号/兼容性，
+   * 也让用户看出"这个文件没被识别"。
+   */
+  /**
+   * 判断一个探测结果是否为**可玩的 PS2 镜像**。
+   *
+   * 【为什么不能只看 invalid —— 真机实测】
+   *   用户的 PS3 游戏「真高达无双」(11.7GB .iso) 被扫进来：它与 PS2 镜像
+   *   **扩展名完全相同**，且 PopulateEntryFromPath 对它返回 **invalid=false**
+   *   （打开成功、只是读不出 PS2 的 ELF 头），因此 invalid 不能作为判据。
+   *
+   *   实测对比（同一台设备）：
+   *     PS3 ISO : serial=''  title=''  crc=0
+   *     PS2 CHD : serial='SCAJ-20146'  title='PS2汪达与巨像(中文版)'  crc=2273000757
+   *
+   *   因此判据是 **serial 与 title 是否为空** —— PS2 镜像必然能读出这两项，
+   *   这是"内容识别"而非"扩展名猜测"。
+   */
+  private static isPlayablePs2Image(e: GameEntry): boolean {
+    if (e === null || e === undefined) {
+      return false;
+    }
+    if (e.invalid) {
+      return false;
+    }
+    const hasSerial = e.serial !== undefined && e.serial !== null && e.serial.length > 0;
+    const hasTitle = (e.title !== undefined && e.title !== null && e.title.length > 0) ||
+      (e.titleEn !== undefined && e.titleEn !== null && e.titleEn.length > 0);
+    return hasSerial && hasTitle;
+  }
+
+  private async scanPhoneDirs(): Promise<void> {
+    if (this.statusRunning) {
+      this.statusError = '游戏运行中无法扫描，请先返回首页。';
+      return;
+    }
+    this.scanning = true;
+    this.scanMessage = '';
+    this.scannedGames = [];
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const res: ScanResult = await ScanDirs.scan(ctx);
+      this.scanMessage = res.message;
+      if (res.games.length === 0) {
+        this.scanning = false;
+        this.showScanPanel = true;
+        return;
+      }
+      // 交给 native 探测元数据（取标题/serial/CRC/兼容性）。
+      // 分批：单次传太多路径会让一次探测非常久且无反馈。
+      const BATCH = 24;
+      const probed: Array<GameEntry> = [];
+      for (let i = 0; i < res.games.length; i += BATCH) {
+        const chunk = res.games.slice(i, i + BATCH);
+        const paths: Array<string> = [];
+        for (let j = 0; j < chunk.length; j++) {
+          paths.push(chunk[j].path);
+        }
+        try {
+          const raw: string = hps2core.probeGameFiles(JSON.stringify(paths));
+          const entries = JSON.parse(raw) as Array<GameEntry>;
+          for (let j = 0; j < entries.length; j++) {
+            probed.push(entries[j]);
+          }
+        } catch (e) {
+          hilog.error(DOMAIN, TAG, 'probeGameFiles batch failed');
+        }
+      }
+      // ---------------------------------------------------------------------
+      // 按**内容**过滤，而不是只靠扩展名。
+      //
+      // 【为什么必须这样 —— 真机实测】
+      //   PS3 与 PS2 的游戏镜像**扩展名完全相同**（都是 .iso）。
+      //   仅按扩展名过滤会把 PS3 游戏（如「真高达无双」11.7GB）也列进来，
+      //   用户选中后根本无法运行。
+      //   native 的 probeGameFiles 会读 PS2 的 ELF 头：**读不出即非 PS2 镜像**，
+      //   因此这里以 invalid 作为判据，把非 PS2 的候选剔除。
+      // ---------------------------------------------------------------------
+      const out: Array<ScannedGame> = [];
+      const accepted: Array<GameEntry> = [];
+      let rejected = 0;
+      for (let i = 0; i < probed.length; i++) {
+        const e = probed[i];
+        if (!Index.isPlayablePs2Image(e)) {
+          // 不是 PS2 镜像（PS3/损坏/非游戏）：不列入，避免误导用户
+          rejected++;
+          hilog.info(DOMAIN, TAG, 'scan rejected non-PS2 image');
+          continue;
+        }
+        out.push({
+          path: e.path,
+          name: e.name,
+          size: e.size,
+          rootLabel: e.path.indexOf('Download') >= 0 ? 'Download' : 'Documents',
+        });
+        accepted.push(e);
+      }
+      this.scannedGames = out;
+      this.probedEntries = accepted;
+      if (rejected > 0) {
+        this.scanMessage = '已忽略 ' + rejected + ' 个非 PS2 镜像' +
+          '（扩展名相同但内容不是 PS2 游戏，例如 PS3 的 ISO）。';
+      }
+      hilog.info(DOMAIN, TAG, 'scan done: %{public}d PS2 candidate(s), %{public}d rejected',
+        out.length, rejected);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'scanPhoneDirs failed');
+      this.scanMessage = '扫描失败，请重试。';
+    } finally {
+      this.scanning = false;
+      this.showScanPanel = true;
+    }
+  }
+
+  /** 扫描结果对应的完整条目（与 scannedGames 一一对应，供加入按钮使用） */
+  private probedEntries: Array<GameEntry> = [];
+
+  /**
+   * 把扫描到的某个游戏加入库（**原地读取**：只记路径，不复制文件）。
+   *
+   * 【为什么不再复制】用户明确要求直接读取文件加载。复制的代价很实在：
+   * 2GB 镜像要占双份空间、且导入要等很久。现在只保存路径，
+   * 启动时把该路径交给 native 打开。
+   *
+   * 【风险与兜底】手机目录在应用沙箱外，若系统策略不允许 native 打开，
+   * 启动会失败并明确报错（不做静默回退复制 —— 那会在用户不知情时
+   * 消耗大量空间）。失败原因直接展示给用户。
+   */
+  private addScannedGame(g: GameEntry): void {
+    // 已存在则只提示，不重复添加
+    for (let i = 0; i < this.externalGames.length; i++) {
+      if (this.externalGames[i].path === g.path) {
+        this.scanMessage = '该游戏已在库中。';
+        return;
+      }
+    }
+    this.externalGames = this.externalGames.concat([g]);
+    this.saveExternalGames();
+    this.refreshGames();
+    // 立即选中刚加入的这款，符合"加进来就是要玩"的预期
+    this.selectGameFromLibrary(g);
+    this.scanMessage = '已加入：' + g.name;
+    hilog.info(DOMAIN, TAG, 'external game added (in-place, no copy)');
+  }
+
+  /** 该条目是否来自手机目录（外部、原地读取）*/
+  private isExternalGame(g: GameEntry): boolean {
+    for (let i = 0; i < this.externalGames.length; i++) {
+      if (this.externalGames[i].path === g.path) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 弹层里「加入」按钮的入口：按路径找回探测到的完整条目。
+   *
+   * 【为什么按路径找】弹层列表渲染的是 ScannedGame（轻量、给 UI 用），
+   * 而入库需要完整 GameEntry（含 serial/title/CRC）。probedEntries
+   * 与 scannedGames 同序同长，但按路径查找更稳妥（避免索引错位）。
+   */
+  private addScannedByName(sg: ScannedGame): void {
+    for (let i = 0; i < this.probedEntries.length; i++) {
+      if (this.probedEntries[i].path === sg.path) {
+        this.addScannedGame(this.probedEntries[i]);
+        return;
+      }
+    }
+    // 兜底：探测结果缺失时用最小条目（至少能选中并显示）
+    this.addScannedGame({
+      name: sg.name, path: sg.path, size: sg.size, invalid: true,
+      serial: '', title: '', titleEn: '', region: 0, type: 0,
+      crc: 0, compatibility: 0, lastPlayed: 0,
+    });
+  }
+
+  /** 从库中移除某个外部游戏（只从列表移除，**不删除用户的文件**） */
+  private removeExternalGame(g: GameEntry): void {
+    const kept: Array<GameEntry> = [];
+    for (let i = 0; i < this.externalGames.length; i++) {
+      if (this.externalGames[i].path !== g.path) {
+        kept.push(this.externalGames[i]);
+      }
+    }
+    this.externalGames = kept;
+    this.saveExternalGames();
+    // 若移除的正是当前选中项，清掉选择避免指向不存在的条目
+    if (this.gamePath === g.path) {
+      this.gamePath = '';
+      this.gameName = '';
+    }
+    this.refreshGames();
+    hilog.info(DOMAIN, TAG, 'external game removed (file kept on disk)');
   }
 
   // ===================== 逐游戏设置 =====================
@@ -2660,9 +3116,19 @@ struct Index {
     this.clearError();
     this.busy = true;
     try {
+      // ---------------------------------------------------------------------
+      // 启动前解析游戏路径：原地读取优先，不可读时回退复制。
+      //
+      // 【为什么要在启动前判定】游戏可能放在手机公开目录（Download/Documents）
+      // 里原地读取 —— 那在应用沙箱之外，系统策略是否允许 native 打开必须实测。
+      // 若不可读而在启动后才失败，会留下一次半初始化的 VM。
+      // 因此这里先用 canOpenGameFile 预检，不行就复制进沙箱再启动。
+      // ---------------------------------------------------------------------
+      const effectiveGamePath = await this.resolveGamePathForBoot();
+
       // 先锁定窗口方向，再启动 GS，避免 VM 已开始渲染后才发生旋转。
       await this.setGameOrientation(true);
-      const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), this.gamePath);
+      const ok: number = hps2core.startBios(this.dataRoot(), this.biosDir(), effectiveGamePath);
       hilog.info(DOMAIN, TAG, 'startBios returned %{public}d', ok);
       if (ok !== 1) {
         this.setError('核心启动被拒绝，详见日志（tag=HPS2_CORE）');
@@ -3135,6 +3601,7 @@ struct Index {
             picking: this.picking,
             statusStage: this.statusStage,
             statusError: this.statusError,
+            fallbackNotice: this.fallbackNotice,
             errorKindLabel: ErrorHint.kindLabel(this.errorKind as FailKind),
             errorAdvice: this.errorAdvice,
             biosCheckChecked: this.biosCheckChecked,
@@ -3185,7 +3652,11 @@ struct Index {
               this.memoryCardGroupFilter = '全部';
               this.showMemoryCardManager = true;
               this.refreshMemoryCards();
-            }
+            },
+            // 扫描手机目录添加游戏（原地读取，不复制）
+            onScanPhoneDirs: () => { this.scanPhoneDirs(); },
+            onRemoveExternalGame: (g: GameEntry) => { this.removeExternalGame(g); },
+            isExternal: (g: GameEntry) => { return this.isExternalGame(g); }
           })
         }
         .width('100%')
@@ -3927,6 +4398,114 @@ struct Index {
 
       // ---- 封面源管理弹层 ----
       // 内置源可启停、自定义源可增删；当前源决定"下载封面"走哪个库。
+      // ---- 手机目录扫描结果弹层 ----
+      // 「扫描手机目录添加游戏」：列出 Download / Documents 里的镜像，
+      // 用户勾选后**原地读取**加入库（不复制文件）。
+      if (this.showScanPanel) {
+        Column() {
+          Column({ space: Theme.gap }) {
+            Row() {
+              Column({ space: 2 }) {
+                Text('扫描手机目录').fontSize(17)
+                  .fontColor(Theme.textPri()).fontWeight(FontWeight.Medium)
+                Text('Download 与 Documents 中的游戏镜像；加入后直接读取原文件，不复制')
+                  .fontSize(10).fontColor(Theme.textDim())
+                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .layoutWeight(1).alignItems(HorizontalAlign.Start)
+              Button('关闭')
+                .height(30).fontSize(13)
+                .backgroundColor(Theme.bgCardHi())
+                .fontColor(Theme.textPri())
+                .borderRadius(15)
+                .onClick(() => { this.showScanPanel = false; })
+            }
+            .width('100%')
+
+            if (this.scanning) {
+              Row({ space: 8 }) {
+                Text('正在扫描…').fontSize(12).fontColor(Theme.textSec())
+              }
+              .width('100%')
+              .padding({ top: 20, bottom: 20 })
+              .justifyContent(FlexAlign.Center)
+            } else {
+              if (this.scanMessage.length > 0) {
+                Text(this.scanMessage)
+                  .fontSize(11).fontColor(Theme.textSec()).width('100%')
+                  .padding(10)
+                  .backgroundColor(Theme.bgCardHi())
+                  .borderRadius(Theme.radiusSm)
+              }
+
+              if (this.scannedGames.length === 0) {
+                Column({ space: 6 }) {
+                  Text('没有扫描到游戏镜像').fontSize(13).fontColor(Theme.textPri())
+                  Text('请确认游戏已下载完成并放在 Download 或 Documents 目录下' +
+                       '（支持子目录），文件扩展名为 .iso/.chd/.bin/.img/.cso/.gz。')
+                    .fontSize(11).fontColor(Theme.textDim())
+                }
+                .width('100%')
+                .padding({ top: 16, bottom: 16 })
+                .alignItems(HorizontalAlign.Start)
+              } else {
+                Scroll() {
+                  Column({ space: 8 }) {
+                    ForEach(this.scannedGames, (sg: ScannedGame) => {
+                      Row({ space: 10 }) {
+                        Column({ space: 3 }) {
+                          Text(sg.name)
+                            .fontSize(12).fontColor(Theme.textPri())
+                            .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .width('100%').textAlign(TextAlign.Start)
+                          Row({ space: 8 }) {
+                            Text(sg.rootLabel)
+                              .fontSize(9).fontColor(Theme.accentHi())
+                              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                              .backgroundColor(Theme.withAlpha(Theme.accentHi(), 0.14))
+                              .borderRadius(8)
+                            Text(sg.size > 0 ? libHumanSize(sg.size) : '大小未知')
+                              .fontSize(10).fontColor(Theme.textDim())
+                          }
+                          .width('100%')
+                        }
+                        .layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                        Button('加入')
+                          .height(30).fontSize(12)
+                          .backgroundColor(Theme.accent())
+                          .fontColor('#FFFFFF')
+                          .borderRadius(15)
+                          .onClick(() => { this.addScannedByName(sg); })
+                      }
+                      .width('100%')
+                      .padding(10)
+                      .backgroundColor(Theme.bgCard())
+                      .borderRadius(Theme.radiusSm)
+                      .border({ width: 1, color: Theme.border() })
+                    }, (sg: ScannedGame) => sg.path)
+                  }
+                  .width('100%')
+                }
+                .layoutWeight(1)
+                .scrollBar(BarState.Auto)
+              }
+            }
+          }
+          .width('88%')
+          .height('80%')
+          .padding(Theme.pad)
+          .backgroundColor(Theme.bgBase())
+          .borderRadius(Theme.radius)
+          .border({ width: 1, color: Theme.borderHi() })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Theme.overlayScrim())
+        .onClick(() => { this.showScanPanel = false; })
+      }
+
       if (this.showCoverSources) {
         Column() {
           Column({ space: Theme.gap }) {
