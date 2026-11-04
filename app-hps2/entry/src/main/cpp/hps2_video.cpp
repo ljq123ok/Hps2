@@ -32,9 +32,10 @@ namespace Hps2Video
 		std::atomic<bool> s_landscape{false};
 		std::atomic<float> s_upscale_multiplier{1.0f};
 
-		// MTVU 状态。默认 false 以保持与我们初始化设置一致
-		// （初始化里显式写了 vuThread=false）。
-		std::atomic<bool> s_vu_thread{false};
+		// PCSX2 upstream 默认开启 MTVU。HarmonyOS 手机上的 EE 热点采样
+		// 显示 SOTC 的 VIF1/VU1 工作压满主线程，因此默认沿用上游开启值；
+		// 用户仍可在全局或逐游戏设置中关闭。
+		std::atomic<bool> s_vu_thread{true};
 		std::atomic<unsigned int> s_pending_width{0};
 		std::atomic<unsigned int> s_pending_height{0};
 

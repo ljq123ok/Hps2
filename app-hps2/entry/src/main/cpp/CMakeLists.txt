@@ -13,6 +13,7 @@ project(hps2core)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(HPS2_STORE_BUILD "Build the no-JIT AppGallery-compatible runtime" OFF)
+option(HPS2_PERF_BREAKDOWN "Enable temporary Hps2 VIF/VU/EE wait timing counters" OFF)
 
 # ---------------------------------------------------------------------------
 # 路径定位
@@ -27,8 +28,8 @@ set(TP_PREFIX     "${HPS2_REPO}/thirdparty-ohos/prefix")
 # ARMSX2 的 OHOS 构建目录（含 libPCSX2core.a）。
 # 必须在计算 CORE_LIB 之前定义，否则变量为空。
 # 可由构建脚本用 -DARMSX2_BUILD_DIR=<path> 覆盖。
-if(NOT DEFINED ARMSX2_BUILD_DIR)
-    set(ARMSX2_BUILD_DIR "$ENV{HPS2_ARMSX2_BUILD_DIR}" CACHE PATH "ARMSX2 OHOS build dir")
+if(NOT "$ENV{HPS2_ARMSX2_BUILD_DIR}" STREQUAL "")
+    set(ARMSX2_BUILD_DIR "$ENV{HPS2_ARMSX2_BUILD_DIR}" CACHE PATH "ARMSX2 OHOS build dir" FORCE)
 endif()
 if(NOT ARMSX2_BUILD_DIR)
     # 默认路径从 /tmp 改到 ~/.cache —— 因为 /tmp 会被系统清理
@@ -97,6 +98,10 @@ add_compile_definitions(
     ST_NO_EXCEPTION_HANDLING
 )
 
+if(HPS2_PERF_BREAKDOWN)
+    add_compile_definitions(HPS2_PERF_BREAKDOWN=1)
+endif()
+
 # ---------------------------------------------------------------------------
 # 目标
 # ---------------------------------------------------------------------------
@@ -113,6 +118,22 @@ add_library(hps2core SHARED
     # 纯 POSIX 验证公共目录对 native 是否可用。
     hps2_dataprobe.cpp
 )
+
+# Read the chosen core's actual configuration, so the bridge cannot advertise
+# Vulkan while linking a GL-only archive (or accidentally reuse the other cache).
+file(STRINGS "${ARMSX2_BUILD_DIR}/CMakeCache.txt" HPS2_VULKAN_CONFIG
+    REGEX "^USE_VULKAN:BOOL=ON$")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARMSX2_BUILD_DIR}/CMakeCache.txt")
+if(HPS2_VULKAN_CONFIG)
+    file(STRINGS "${ARMSX2_BUILD_DIR}/CMakeCache.txt" HPS2_SHADERC_CONFIG
+        REGEX "^SHADERC_LIBRARY:FILEPATH=.*shaderc_combined[.]a$")
+    if(NOT HPS2_SHADERC_CONFIG)
+        message(FATAL_ERROR "OHOS Vulkan requires a core built with static shaderc_combined")
+    endif()
+    target_compile_definitions(hps2core PRIVATE HPS2_HAS_VULKAN=1)
+else()
+    target_compile_definitions(hps2core PRIVATE HPS2_HAS_VULKAN=0)
+endif()
 
 if(HPS2_STORE_BUILD)
     target_compile_definitions(hps2core PRIVATE HPS2_STORE_BUILD=1)
@@ -135,6 +156,10 @@ target_link_libraries(hps2core PUBLIC
     ${CORE_LIB}
     -Wl,--no-whole-archive
 )
+
+if(HPS2_VULKAN_CONFIG)
+    target_link_libraries(hps2core PRIVATE "${TP_PREFIX}/lib/libshaderc_combined.a")
+endif()
 
 # ARMSX2 的配套静态库（common 层 + 内建的 3rdparty）
 # 注意：这些是 ARMSX2 构建时自建的，与 thirdparty-ohos/prefix 下的交叉编译产物不同。

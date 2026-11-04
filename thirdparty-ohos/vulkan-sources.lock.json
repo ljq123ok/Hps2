@@ -1,0 +1,24 @@
+{
+  "sources": [
+    {
+      "name": "shaderc",
+      "repo": "https://github.com/google/shaderc.git",
+      "commit": "a8abeb0b8a9d4b11e3d59ca9f4550b8213e733ab"
+    },
+    {
+      "name": "glslang",
+      "repo": "https://github.com/KhronosGroup/glslang.git",
+      "commit": "e1b562a8bed273a02f30b59b66a5d499793cede5"
+    },
+    {
+      "name": "spirv-tools",
+      "repo": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+      "commit": "ef96ed763b43b59b33b31b362f09a02b729fa1c9"
+    },
+    {
+      "name": "spirv-headers",
+      "repo": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+      "commit": "04fd3caa1e8267e4d95c806cad901181728e1006"
+    }
+  ]
+}

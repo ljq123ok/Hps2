@@ -342,6 +342,11 @@ export struct HomeScreen {
         } else {
           Text('›').fontSize(16).fontColor(Theme.textDim())
         }
+        if (!g.invalid && g.serial && this.onOpenPerGameSettings) {
+          Button('本游戏设置')
+            .height(28).fontSize(11).fontColor(Theme.accentHi()).backgroundColor(Theme.bgCardHi())
+            .onClick(() => { if (this.onOpenPerGameSettings) this.onOpenPerGameSettings(g); })
+        }
         // 外部（手机目录）游戏可移出列表；**不会删除用户文件**
         if (this.isExternal && this.isExternal(g)) {
           Text('移出')

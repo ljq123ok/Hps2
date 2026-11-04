@@ -16,20 +16,21 @@
  * 为什么照搬移动端而不是 Qt：移动端（Android/iOS）与 HAP 同为沙箱环境，
  * 路径模型一致；Qt 桌面版的目录推导在沙箱下不成立。
  *
- * 图形后端：显式设为 GSRendererType::Null（见 InitializeConfig 内的注释）。
- * 默认的 Auto 会让 GS 去初始化真实图形后端，而 HAP 无可用窗口时会卡住。
- * 阶段 2 只验证 BIOS 启动，与图形解耦，故用 Null 渲染器，
- * 无需 OHNativeWindow / Vulkan。
+ * 图形后端：有 surface 时使用 OGL，无 surface 时使用无设备的 Null。
+ * 开发构建支持启动参数选择 OGL/SW/Null，供同场景性能对照。
  *
  * 线程模型：VM 运行在独立线程（与上游一致），N-API 只负责启停与状态查询。
  *
- * 范围限制：本阶段只启动 BIOS（CDVD_SourceType::NoDisc），不挂载游戏盘。
+ * 可启动 BIOS 或用户指定的游戏镜像。
  */
 
 #include <napi/native_api.h>
 #include <hilog/log.h>
 
 #include <atomic>
+#include <array>
+#include <dirent.h>
+#include <sched.h>
 #include <cmath>
 #include <cstdlib>   // getenv/setenv
 #include <chrono>
@@ -49,6 +50,7 @@
 #include <cerrno>
 #include <fcntl.h>   // O_RDONLY（canOpenGameFile 的可读性预检）
 #include <unistd.h>  // close()
+#include <sys/syscall.h>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -62,6 +64,7 @@
 #include "common/CrashHandler.h"
 #include "common/Error.h"
 #include "common/Console.h"
+#include "common/Perf.h"
 #include "common/FileSystem.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
@@ -76,6 +79,7 @@
 #include "hps2_bioscheck.h"
 #include "hps2_savestate.h"
 #include "hps2_dataprobe.h"
+#include "hps2_perf_diagnostics.h"
 
 // ---------------------------------------------------------------------------
 // CPU 线程任务队列的清理（实现在 hps2_host.cpp）
@@ -96,9 +100,11 @@ void Hps2Host_ClearPendingTasks();
 #include "ImGui/ImGuiManager.h"
 #include "Memory.h"
 #include "PerformanceMetrics.h"
+#include "Hps2PerfBreakdown.h"
 #include "cpuinfo.h"      // 芯片拓扑探测
 #include "R5900.h"   // cpuRegs（EE 程序计数器）+ Cpu/intCpu（判定是否被静默降级）
 #include "VMManager.h"
+#include "MTGS.h"
 #include "Input/InputManager.h"
 #include "GS/GS.h"
 #include "SIO/Memcard/MemoryCardFile.h"
@@ -156,6 +162,35 @@ const char* StageName(BootStage s) {
 
 std::atomic<int> g_stage{static_cast<int>(BootStage::kIdle)};
 std::atomic<bool> g_vm_running{false};
+// Diagnostic override has precedence over the persistent frontend preference.
+std::atomic<GSRendererType> g_diagnostic_renderer{GSRendererType::Auto};
+std::atomic<GSRendererType> g_user_renderer{GSRendererType::Auto};
+std::atomic<int> g_diagnostic_gs_tid{0};
+// -1 preserves the normal per-game/global GS setting; 0 disables the
+// experimental back thread; 3 enables the Vulkan-only pipelined path.
+std::atomic<int> g_diagnostic_gs_back_thread_mode{-1};
+// Process-local launch experiments. Sentinels preserve normal settings.
+std::atomic<bool> g_prefer_ee_underclock{false};
+std::atomic<bool> g_prefer_ee_skip{false};
+std::atomic<bool> g_prefer_instant_vu1{true};
+std::atomic<int> g_diagnostic_instant_vu1{-1};
+std::atomic<int> g_diagnostic_ee_rate{99};
+std::atomic<int> g_diagnostic_ee_skip{-1};
+// Device-specific development experiment; zero leaves scheduler policy intact.
+std::atomic<int> g_diagnostic_affinity_mode{0};
+std::atomic<int> g_applied_affinity_mode{0};
+
+const char* RendererName(GSRendererType renderer)
+{
+	switch (renderer)
+	{
+		case GSRendererType::OGL: return "OGL";
+		case GSRendererType::VK: return "Vulkan";
+		case GSRendererType::SW: return "SW";
+		case GSRendererType::Null: return "Null";
+		default: return "default";
+	}
+}
 
 enum class ExecutionMode : int {
 	kUnknown = 0,
@@ -507,55 +542,50 @@ bool InitializeConfig() {
 
 	VMManager::SetDefaultSettings(s_settings_interface, true, true, true, true, true);
 	LOGI("BOOT_SUB=3 SetDefaultSettings done");
+	if (!kStoreBuild)
+	{
+		const int instant = g_diagnostic_instant_vu1.load();
+		const int rate = g_diagnostic_ee_rate.load();
+		const int skip = g_diagnostic_ee_skip.load();
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vu1Instant", instant >= 0 ? instant != 0 : g_prefer_instant_vu1.load());
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleRate", rate != 99 ? rate : -static_cast<int>(g_prefer_ee_underclock.load()));
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleSkip", skip >= 0 ? skip : static_cast<int>(g_prefer_ee_skip.load()));
+	}
 
 	// 与 Android 一致：BIOS 目录经 settings 传入，而非只设 Folders 变量
 	if (!s_bios_dir.empty())
 		s_settings_interface.SetStringValue("Folders", "Bios", s_bios_dir.c_str());
 
-	// ---------------------------------------------------------------------
-	// 无头启动配置（照搬 pcsx2-eerunner/Main.cpp:1027-1055）
-	//
-	// 关键：GS 渲染器必须显式设为 Null。
-	// 默认的 Auto 会让 GS 去初始化真实的图形后端，而 HAP 此时没有可用窗口，
-	// GS 线程会卡在创建 device/context 上 —— 表现为进程存活、CPU 0%、
-	// 启动停在 starting-thread。这正是先前卡住的原因。
-	//
-	// 注意（上游注释原文）：Null 渲染器**并非自足** ——
-	//   GS's GetAPIForRenderer() has no Null case, so it falls through to
-	//   GetPreferredRenderer() for the HOST device API.
-	// 即设备 API 仍会被选择。若后续 GS 阶段仍卡，需在此进一步处理。
-	//
-	// 同时把 GS 设为同步执行（不建 MTGS 线程）、关闭 MTVU：
-	// 这两项都是 eerunner 在确定性/无头模式下的配置，可减少线程依赖。
-	// ---------------------------------------------------------------------
-	// 有渲染表面 => OpenGL 真正出画面；无表面 => Null（只验证核心逻辑）。
-	// 这样同一份代码既能做无头验证，也能真正显示游戏。
+	// Explicit startup choice: Null uses RenderAPI::None in our upstream patch.
+	// SW changes rasterization but still uses the preferred host API to present.
 	{
 		const Hps2Surface::Snapshot surf = Hps2Surface::Get();
-		if (surf.ready && surf.window != nullptr)
+		GSRendererType renderer = g_diagnostic_renderer.load();
+		if (renderer == GSRendererType::Auto)
+			renderer = g_user_renderer.load();
+		if (renderer == GSRendererType::Auto)
+			renderer = (surf.ready && surf.window) ? GSRendererType::OGL : GSRendererType::Null;
+		if (renderer != GSRendererType::Null && (!surf.ready || !surf.window))
 		{
-			s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
-				static_cast<int>(GSRendererType::OGL));
-			LOGI("renderer=OpenGL surface=%{public}dx%{public}d", surf.width, surf.height);
+			SetError("diagnostic renderer requires a ready surface; no renderer fallback performed");
+			return false;
 		}
-		else
-		{
-			s_settings_interface.SetIntValue("EmuCore/GS", "Renderer",
-				static_cast<int>(GSRendererType::Null));
-			LOGW("renderer=Null (frontend supplied no surface)");
-		}
+		s_settings_interface.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(renderer));
+		LOGW("RENDERER_DIAG: requested=%{public}s selected=%{public}s surface=%{public}dx%{public}d",
+			RendererName(g_diagnostic_renderer.load()), RendererName(renderer), surf.width, surf.height);
 	}
 
-	// GS 同步在 CPU 线程上执行。异步 MTGS 需要独立的呈现线程，
-	// 现阶段保持同步更可控；画面稳定后再评估打开异步的收益。
-	s_settings_interface.SetBoolValue("EmuCore/GS", "SynchronousMTGS", true);
+	// Keep the EE and GS workers asynchronous in development builds too.
+	// With IsDevBuild=true, forcing SynchronousMTGS makes SendDataPacket and
+	// SendSimplePacket wait for GS after every packet, serializing the threads
+	// and defeating MTVU. Default to the normal pipelined MTGS path instead.
+	s_settings_interface.SetBoolValue("EmuCore/GS", "SynchronousMTGS", false);
 
 	// MTVU（VU1 独立线程）—— 用 Hps2Video 中保存的状态，而非硬编码。
 	//
-	// 背景：上游 Config.h:1366 默认 vuThread=1（开启），我们早期为
-	// "减少线程依赖"显式关闭以保证能稳定启动 —— 那是阶段2 的权宜。
-	// 现已能稳定运行游戏，故开放给用户切换（默认仍为关闭以保持行为一致，
-	// 用户可在设置中开启）。
+	// 背景：上游默认开启 MTVU。早期为减少线程依赖曾强制关闭；现在
+	// 目标设备采样发现 EE 线程主要消耗在 VIF1/VU1 执行路径，恢复上游默认。
+	// 用户仍可在全局或逐游戏设置中关闭以排查兼容性。
 	//
 	// 注意：MTVU 只在**启动游戏时**生效（vu1Thread 在 VU1 重编译器
 	// 初始化时创建一次，运行期无法可靠切换），UI 已如此说明。
@@ -569,6 +599,16 @@ bool InitializeConfig() {
 	LOGI("BOOT_SUB=4 about to LoadStartupSettings");
 	VMManager::Internal::LoadStartupSettings();
 	LOGI("BOOT_SUB=5 LoadStartupSettings done");
+	const int gs_back_thread_mode = g_diagnostic_gs_back_thread_mode.load();
+	if (gs_back_thread_mode >= 0)
+	{
+		s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", gs_back_thread_mode);
+		LOGW("GS_BACKTHREAD_DIAG: override=%{public}d (0=off, 3=pipelined)", gs_back_thread_mode);
+	}
+	else
+	{
+		LOGI("GS_BACKTHREAD_DIAG: using core/game setting");
+	}
 	// Keep the selected multiplier in the same settings layer that the later
 	// VMManager::ApplySettings() reloads.  The CPU-thread injection below is
 	// still needed because this frontend has no persistent PCSX2 ini file.
@@ -577,7 +617,102 @@ bool InitializeConfig() {
 	return true;
 }
 
+static void ApplyDiagnosticAffinity(int ee_tid) {
+	const int mode = g_diagnostic_affinity_mode.load();
+	g_applied_affinity_mode.store(0);
+	if (kStoreBuild || mode == 0)
+		return;
+
+	// Explicit Kirin 8000 experiment: EE, GS, VU. Never a persistent default.
+	const std::array<std::array<u64, 3>, 6> masks{{
+		{{0, 0, 0}}, {{0xf0, 0xf0, 0xf0}}, {{0xf0, 0x70, 0x70}},
+		{{0x70, 0xf0, 0x70}}, {{0x70, 0x70, 0xf0}}, {{0x70, 0x70, 0x70}}
+	}};
+	if (mode < 1 || mode > 5 || sysconf(_SC_NPROCESSORS_CONF) != 8 || !EmuConfig.Speedhacks.vuThread)
+	{
+		g_applied_affinity_mode.store(-1);
+		LOGW("AFFINITY_DIAG: mode=%{public}d rejected unsupported topology/MTVU", mode);
+		return;
+	}
+	int vu_tid = 0;
+	if (DIR* tasks = opendir("/proc/self/task"))
+	{
+		while (dirent* task = readdir(tasks))
+		{
+			const int tid = std::atoi(task->d_name);
+			if (tid <= 0) continue;
+			const std::string path = "/proc/self/task/" + std::to_string(tid) + "/comm";
+			if (std::FILE* fp = std::fopen(path.c_str(), "r"))
+			{
+				char name[64]{};
+				if (std::fgets(name, sizeof(name), fp) && std::strcmp(name, "MTVU\n") == 0)
+					vu_tid = vu_tid == 0 ? tid : -1;
+				std::fclose(fp);
+			}
+		}
+		closedir(tasks);
+	}
+	const std::array<int, 3> threads{{ee_tid,
+		g_diagnostic_gs_tid.load(), vu_tid}};
+	auto read_affinity = [](int tid) -> u64 {
+		if (tid <= 0) return 0;
+		cpu_set_t set;
+		CPU_ZERO(&set);
+		if (sched_getaffinity(tid, sizeof(set), &set) != 0) return 0;
+		u64 mask = 0;
+		for (unsigned cpu = 0; cpu < 64; ++cpu)
+			if (CPU_ISSET(cpu, &set)) mask |= u64{1} << cpu;
+		return mask;
+	};
+	auto set_affinity = [](int tid, u64 mask) {
+		cpu_set_t set;
+		CPU_ZERO(&set);
+		for (unsigned cpu = 0; cpu < 64; ++cpu)
+			if (mask & (u64{1} << cpu)) CPU_SET(cpu, &set);
+		return tid > 0 && sched_setaffinity(tid, sizeof(set), &set) == 0;
+	};
+	const char* const names[] = {"EE", "GS", "VU"};
+	std::array<u64, 3> before{};
+	for (size_t i = 0; i < threads.size(); ++i)
+	{
+		before[i] = read_affinity(threads[i]);
+		if (before[i] == 0)
+		{
+			g_applied_affinity_mode.store(-1);
+			LOGW("AFFINITY_DIAG: mode=%{public}d thread=%{public}s tid=%{public}d query failed; unchanged",
+				mode, names[i], threads[i]);
+			return;
+		}
+	}
+	bool ok = true;
+	for (size_t i = 0; i < threads.size(); ++i)
+	{
+		const u64 requested = masks[mode][i];
+		errno = 0;
+		const bool set_ok = set_affinity(threads[i], requested);
+		const int set_errno = errno;
+		const u64 after = read_affinity(threads[i]);
+		ok = ok && set_ok && after == requested;
+		LOGW("AFFINITY_DIAG: mode=%{public}d thread=%{public}s before=0x%{public}llx "
+			"requested=0x%{public}llx set_ok=%{public}d errno=%{public}d after=0x%{public}llx",
+			mode, names[i], static_cast<unsigned long long>(before[i]),
+			static_cast<unsigned long long>(requested), set_ok ? 1 : 0, set_errno,
+			static_cast<unsigned long long>(after));
+	}
+	if (!ok)
+	{
+		for (size_t i = 0; i < threads.size(); ++i)
+		{
+			const bool restored = set_affinity(threads[i], before[i]);
+			LOGW("AFFINITY_DIAG: rollback thread=%{public}s set_ok=%{public}d after=0x%{public}llx",
+				names[i], restored ? 1 : 0, static_cast<unsigned long long>(read_affinity(threads[i])));
+		}
+	}
+	g_applied_affinity_mode.store(ok ? mode : -1);
+}
+
 void VMThreadMain() {
+	g_applied_affinity_mode.store(0);
 	// CPU 线程身份由上游的 CPUThreadInitialize() 自行登记
 	// （VMManager.cpp:441 写 s_cpu_thread_id），故此处不再单独登记。
 	if (!VMManager::Internal::CPUThreadInitialize()) {
@@ -621,6 +756,21 @@ void VMThreadMain() {
 	}
 	LOGI("GS initialized with upscale emu=%{public}f gs=%{public}f",
 		EmuConfig.GS.UpscaleMultiplier, GSConfig.UpscaleMultiplier);
+	const GSRendererType active_renderer = GSConfig.Renderer;
+	const bool diagnostic = g_diagnostic_renderer.load() != GSRendererType::Auto;
+	const int ee_tid = static_cast<int>(syscall(SYS_gettid));
+	g_diagnostic_gs_tid.store(0);
+	if (diagnostic)
+	{
+		MTGS::RunOnGSThread([]() {
+			g_diagnostic_gs_tid.store(static_cast<int>(syscall(SYS_gettid)));
+		});
+	}
+	LOGW("RENDERER_DIAG: active=%{public}s diagnostic=%{public}d upscale=%{public}.1f mtvu=%{public}d ee_tid=%{public}d",
+		RendererName(active_renderer), diagnostic ? 1 : 0, GSConfig.UpscaleMultiplier,
+		EmuConfig.Speedhacks.vuThread ? 1 : 0, ee_tid);
+	LOGI("MTVU_CYCLE_DIAG: instant=%{public}d skip=%{public}u",
+		INSTANT_VU1 ? 1 : 0, static_cast<unsigned>(EmuConfig.Speedhacks.EECycleSkip));
 
 	// 开发构建必须真正选中重编译器；商店构建则反过来必须确认
 	// 没有可执行代码内存且 EE 实际选中解释器。两条路径都不允许静默切换。
@@ -735,7 +885,19 @@ void VMThreadMain() {
 	// **无法区分"空转"与"真正执行 PS2 代码"**（本项目已因此在
 	// FrameAdvance 空转和 Paused 未恢复两种情况下误判过两次）。
 	// EE 的 PC 变化才是真在执行 PS2 指令的直接证据。
-	std::thread monitor([]() {
+	std::thread monitor([diagnostic, active_renderer, ee_tid]() {
+		if (diagnostic && !kStoreBuild)
+		{
+			for (int cpu = 4; cpu <= 7; ++cpu)
+			{
+				LOGW("FREQ_DIAG: cpu=%{public}d current_khz=%{public}ld min_khz=%{public}ld "
+					"max_khz=%{public}ld hardware_max_khz=%{public}ld",
+					cpu, Hps2PerfDiagnostics::ReadCpuFrequencyKhz(cpu),
+					Hps2PerfDiagnostics::ReadCpuFrequencyKhz(cpu, "scaling_min_freq"),
+					Hps2PerfDiagnostics::ReadCpuFrequencyKhz(cpu, "scaling_max_freq"),
+					Hps2PerfDiagnostics::ReadCpuFrequencyKhz(cpu, "cpuinfo_max_freq"));
+			}
+		}
 		// 一次性上报后端状态：这是判断 JIT 是否真正启用的权威依据。
 		// 字段含义（对应 VMManager.cpp:483 的 @@CPU_BACKEND@@ 自报）：
 		//   code_generation = JIT 代码内存是否分配成功（SysMemory::HasCodeMemory）
@@ -906,15 +1068,16 @@ void VMThreadMain() {
 		// 这比 UI 上那个被 500ms 轮询采样的数字可靠得多。
 		constexpr int kSampleIntervalMs = 1000;
 		constexpr int kStepMs = 100;
-		unsigned long long last_frame = 0;
-		HostSys::MemProtectStats previous_protect{};
-		int last_tick_ms = 0;
+		unsigned long long last_frame = PerformanceMetrics::GetFrameNumber();
+		HostSys::MemProtectStats previous_protect = HostSys::GetMemProtectStats();
 		int jit_watchdog_samples = 0;
-		auto now_ms = []() {
-			return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
-		};
-		last_tick_ms = now_ms();
+		int frequency_samples = 0;
+		int affinity_samples = 0;
+		const auto started = std::chrono::steady_clock::now();
+		auto last_tick = started;
+		const long ticks_per_second = sysconf(_SC_CLK_TCK);
+		auto previous_ee = diagnostic ? Hps2PerfDiagnostics::ReadThread(ee_tid) : Hps2PerfDiagnostics::ThreadSample{};
+		auto previous_gs = diagnostic ? Hps2PerfDiagnostics::ReadThread(g_diagnostic_gs_tid.load()) : Hps2PerfDiagnostics::ThreadSample{};
 
 		while (g_vm_running.load())
 		{
@@ -927,10 +1090,13 @@ void VMThreadMain() {
 			if (!g_vm_running.load())
 				break;
 
+			// Wait for backend workers to start before resolving their native TIDs.
+			if (++affinity_samples == 2) ApplyDiagnosticAffinity(ee_tid);
+
 			const unsigned long long frame =
 				static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber());
-			const int tick = now_ms();
-			const double dt = static_cast<double>(tick - last_tick_ms) / 1000.0;
+			const auto tick = std::chrono::steady_clock::now();
+			const double dt = std::chrono::duration<double>(tick - last_tick).count();
 			const double interval_fps = (dt > 0.0 && frame >= last_frame)
 				? static_cast<double>(frame - last_frame) / dt : 0.0;
 			const HostSys::MemProtectStats protect = HostSys::GetMemProtectStats();
@@ -944,16 +1110,17 @@ void VMThreadMain() {
 			const double mprotect_per_sec = dt > 0.0
 				? static_cast<double>(protect.calls - previous_protect.calls) / dt : 0.0;
 			last_frame = frame;
-			last_tick_ms = tick;
+			last_tick = tick;
 
 			// PERF 行是调优的主证据：fps=区间实测帧率，speed=相对满速的百分比。
-			// ee/gs/vu/gpu 是核心自己统计的线程占用率 —— 哪一项接近 100%
-			// 就说明瓶颈在该侧（ee 高 => CPU 解释执行是瓶颈）。
+			// ee/gs/vu/gpu 是核心自己的占用统计。接近 100% 只提示繁忙，
+			// 不能单独区分执行、内核开销和同步等待，更不能据此判定解释器。
 			// 注意：hilog 的格式化**要求每个转换说明符都带 {public}**，
 			// 否则整行的数值会被打成 <private>（真机实测踩过这个坑）。
 			LOGW("PERF: fps=%{public}.1f speed=%{public}.1f%% frame=%{public}llu | "
 			     "ee=%{public}.0f%% gs=%{public}.0f%% vu=%{public}.0f%% gpu=%{public}.0f%% | "
 			     "ee_ms=%{public}.2f gs_ms=%{public}.2f fr_avg=%{public}.2fms | "
+			     "ifps_valid=%{public}d ifps=%{public}.2f ifps_method=%{public}d instant=%{public}d rate=%{public}d skip=%{public}u affinity=%{public}d | "
 			     "code_write_begin=%{public}.1f/s end=%{public}.1f/s mprotect=%{public}.1f/s "
 			     "(total=%{public}llu failures=%{public}llu avg_us=%{public}.2f max_us=%{public}.2f)",
 				interval_fps,
@@ -966,6 +1133,12 @@ void VMThreadMain() {
 				PerformanceMetrics::GetCPUThreadAverageTime(),
 				static_cast<double>(PerformanceMetrics::GetGSThreadAverageTime()),
 				static_cast<double>(PerformanceMetrics::GetAverageFrameTime()),
+				PerformanceMetrics::IsInternalFPSValid() ? 1 : 0,
+				PerformanceMetrics::IsInternalFPSValid() ? static_cast<double>(PerformanceMetrics::GetInternalFPS()) : -1.0,
+				static_cast<int>(PerformanceMetrics::GetInternalFPSMethod()),
+				INSTANT_VU1 ? 1 : 0, static_cast<int>(EmuConfig.Speedhacks.EECycleRate),
+				static_cast<unsigned>(EmuConfig.Speedhacks.EECycleSkip),
+				g_applied_affinity_mode.load(),
 				code_write_begin_per_sec,
 				code_write_end_per_sec,
 				mprotect_per_sec,
@@ -974,6 +1147,53 @@ void VMThreadMain() {
 				protect_avg_us,
 				static_cast<double>(protect.max_nanoseconds) / 1000.0);
 			previous_protect = protect;
+#ifdef HPS2_PERF_BREAKDOWN
+			{
+				const auto breakdown = Hps2PerfBreakdown::TakeSnapshot();
+				const auto ms = [&breakdown](Hps2PerfBreakdown::Metric metric) {
+					return static_cast<double>(breakdown[static_cast<size_t>(metric)].nanoseconds) / 1000000.0;
+				};
+				const auto calls = [&breakdown](Hps2PerfBreakdown::Metric metric) {
+					return static_cast<unsigned long long>(breakdown[static_cast<size_t>(metric)].calls);
+				};
+				LOGW("PERF_BREAKDOWN: window_s=%{public}.2f vif1_queue_ms=%{public}.2f calls=%{public}llu "
+					"vif1_unpack_ms=%{public}.2f calls=%{public}llu vu1_exec_ms=%{public}.2f calls=%{public}llu "
+					"ee_wait_gs_ms=%{public}.2f calls=%{public}llu mtvu_wait_gs_ms=%{public}.2f calls=%{public}llu "
+					"ee_wait_vu_ms=%{public}.2f calls=%{public}llu ee_queue_wait_ms=%{public}.2f calls=%{public}llu",
+					dt,
+					ms(Hps2PerfBreakdown::Metric::Vif1Queue), calls(Hps2PerfBreakdown::Metric::Vif1Queue),
+					ms(Hps2PerfBreakdown::Metric::Vif1Unpack), calls(Hps2PerfBreakdown::Metric::Vif1Unpack),
+					ms(Hps2PerfBreakdown::Metric::Vu1Execute), calls(Hps2PerfBreakdown::Metric::Vu1Execute),
+					ms(Hps2PerfBreakdown::Metric::EeWaitGS), calls(Hps2PerfBreakdown::Metric::EeWaitGS),
+					ms(Hps2PerfBreakdown::Metric::MtvuWaitGS), calls(Hps2PerfBreakdown::Metric::MtvuWaitGS),
+					ms(Hps2PerfBreakdown::Metric::EeWaitVU), calls(Hps2PerfBreakdown::Metric::EeWaitVU),
+					ms(Hps2PerfBreakdown::Metric::EeQueueWait), calls(Hps2PerfBreakdown::Metric::EeQueueWait));
+			}
+#endif
+			if (diagnostic)
+			{
+				if (!kStoreBuild && ++frequency_samples % 5 == 0)
+				{
+					LOGW("FREQ_SAMPLE: cpu4_khz=%{public}ld cpu5_khz=%{public}ld cpu6_khz=%{public}ld cpu7_khz=%{public}ld",
+						Hps2PerfDiagnostics::ReadCpuFrequencyKhz(4), Hps2PerfDiagnostics::ReadCpuFrequencyKhz(5),
+						Hps2PerfDiagnostics::ReadCpuFrequencyKhz(6), Hps2PerfDiagnostics::ReadCpuFrequencyKhz(7));
+				}
+				const int gs_tid = g_diagnostic_gs_tid.load();
+				const auto ee = Hps2PerfDiagnostics::ReadThread(ee_tid);
+				const auto gs = Hps2PerfDiagnostics::ReadThread(gs_tid);
+				const auto ee_usage = Hps2PerfDiagnostics::Usage(previous_ee, ee, dt, ticks_per_second);
+				const auto gs_usage = Hps2PerfDiagnostics::Usage(previous_gs, gs, dt, ticks_per_second);
+				LOGW("PERF_DIAG: renderer=%{public}s elapsed_s=%{public}.1f window_s=%{public}.3f "
+					"ee_tid=%{public}d user_pct=%{public}.1f sys_pct=%{public}.1f cpu=%{public}d freq_khz=%{public}ld | "
+					"gs_tid=%{public}d user_pct=%{public}.1f sys_pct=%{public}.1f cpu=%{public}d freq_khz=%{public}ld",
+					RendererName(active_renderer), std::chrono::duration<double>(tick - started).count(), dt,
+					ee_tid, ee_usage.user_percent, ee_usage.system_percent, ee.cpu,
+					Hps2PerfDiagnostics::ReadCpuFrequencyKhz(ee.cpu),
+					gs_tid, gs_usage.user_percent, gs_usage.system_percent, gs.cpu,
+					Hps2PerfDiagnostics::ReadCpuFrequencyKhz(gs.cpu));
+				previous_ee = ee;
+				previous_gs = gs;
+			}
 
 			// 运行期 JIT 看门狗：复用 1 秒 PERF 采样节拍，每 30 秒才做一次
 			// 独立 scratch-page 复检。将检查放在同一个持续运行循环中，避免
@@ -1135,6 +1355,186 @@ void VMThreadMain() {
 }
 
 }  // namespace
+
+// Development-only, process-local choice. Refuse live backend changes.
+static napi_value NapiSetDiagnosticJitProfile(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	bool enabled = false;
+	const bool ok = !kStoreBuild && !g_vm_running.load() && argc == 1 &&
+		napi_get_value_bool(env, argv[0], &enabled) == napi_ok;
+	if (ok) Perf::SetJitMapLogEnabled(enabled);
+	LOGW("JIT_PROFILE: accepted=%{public}d enabled=%{public}d", ok ? 1 : 0, enabled ? 1 : 0);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+static napi_value NapiSetDiagnosticRenderer(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	char name[16] = {};
+	size_t length = 0;
+	bool ok = !kStoreBuild && !g_vm_running.load() && argc == 1 &&
+		napi_get_value_string_utf8(env, argv[0], name, sizeof(name), &length) == napi_ok;
+	GSRendererType renderer = GSRendererType::Auto;
+	if (ok) {
+		const std::string value(name, length);
+		if (value == "ogl") renderer = GSRendererType::OGL;
+#if HPS2_HAS_VULKAN
+		else if (value == "vk") renderer = GSRendererType::VK;
+#endif
+		else if (value == "sw") renderer = GSRendererType::SW;
+		else if (value == "null") renderer = GSRendererType::Null;
+		else if (value != "default") ok = false;
+	}
+	if (ok) g_diagnostic_renderer.store(renderer);
+	LOGW("RENDERER_DIAG: override accepted=%{public}d requested=%{public}s (VM must be stopped)",
+		ok ? 1 : 0, name);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+// User-facing backend preference. Applied at the next VM startup and separate
+// from the diagnostic Want override.
+static napi_value NapiSetRendererPreference(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	char name[16] = {};
+	size_t length = 0;
+	bool ok = !g_vm_running.load() && argc == 1 &&
+		napi_get_value_string_utf8(env, argv[0], name, sizeof(name), &length) == napi_ok;
+	GSRendererType renderer = GSRendererType::Auto;
+	if (ok) {
+		const std::string value(name, length);
+		if (value == "ogl") renderer = GSRendererType::OGL;
+#if HPS2_HAS_VULKAN
+		else if (value == "vk") renderer = GSRendererType::VK;
+#endif
+		else ok = false;
+	}
+	if (ok) g_user_renderer.store(renderer);
+	LOGI("renderer preference accepted=%{public}d requested=%{public}s (applies at next VM start)",
+		ok ? 1 : 0, name);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+static napi_value NapiSetDiagnosticThreadQoS(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	bool enabled = false;
+	const bool ok = !kStoreBuild && !g_vm_running.load() && argc == 1 &&
+		napi_get_value_bool(env, argv[0], &enabled) == napi_ok;
+	if (ok) PerformanceMetrics::SetThreadQoSDiagnostic(enabled);
+	LOGW("QOS_DIAG: accepted=%{public}d enabled=%{public}d", ok ? 1 : 0, ok && enabled ? 1 : 0);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+static napi_value NapiSetDiagnosticAffinity(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	int32_t mode = 0;
+	const bool ok = !kStoreBuild && !g_vm_running.load() && argc == 1 &&
+		napi_get_value_int32(env, argv[0], &mode) == napi_ok && mode >= 0 && mode <= 5;
+	if (ok) g_diagnostic_affinity_mode.store(mode);
+	LOGW("AFFINITY_DIAG: configured accepted=%{public}d mode=%{public}d", ok ? 1 : 0, mode);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+static napi_value NapiSetTimingPreferences(napi_env env, napi_callback_info info) {
+	size_t argc = 3;
+	napi_value argv[3];
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	bool underclock, skip, instant;
+	const bool ok = !kStoreBuild && argc == 3 &&
+		napi_get_value_bool(env, argv[0], &underclock) == napi_ok &&
+		napi_get_value_bool(env, argv[1], &skip) == napi_ok &&
+		napi_get_value_bool(env, argv[2], &instant) == napi_ok;
+	if (ok)
+	{
+		g_prefer_ee_underclock.store(underclock);
+		g_prefer_ee_skip.store(skip);
+		g_prefer_instant_vu1.store(instant);
+	}
+	napi_value result;
+	napi_get_boolean(env, ok, &result);
+	return result;
+}
+
+static napi_value NapiSetDiagnosticTiming(napi_env env, napi_callback_info info) {
+	size_t argc = 3;
+	napi_value argv[3] = {nullptr, nullptr, nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	int32_t instant = -1, rate = 99, skip = -1;
+	const bool ok = !kStoreBuild && !g_vm_running.load() && argc == 3 &&
+		napi_get_value_int32(env, argv[0], &instant) == napi_ok &&
+		napi_get_value_int32(env, argv[1], &rate) == napi_ok &&
+		napi_get_value_int32(env, argv[2], &skip) == napi_ok &&
+		instant >= -1 && instant <= 1 && (rate == 99 || (rate >= -3 && rate <= 3)) &&
+		skip >= -1 && skip <= 3;
+	if (ok)
+	{
+		g_diagnostic_instant_vu1.store(instant);
+		g_diagnostic_ee_rate.store(rate);
+		g_diagnostic_ee_skip.store(skip);
+	}
+	LOGW("TIMING_DIAG: accepted=%{public}d instant=%{public}d rate=%{public}d skip=%{public}d",
+		ok ? 1 : 0, instant, rate, skip);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
+
+static napi_value NapiIsVulkanAvailable(napi_env env, napi_callback_info info) {
+	(void)info;
+	napi_value result;
+	napi_get_boolean(env, HPS2_HAS_VULKAN != 0, &result);
+	return result;
+}
+
+static napi_value NapiIsDevelopmentBuild(napi_env env, napi_callback_info info) {
+	(void)info;
+	napi_value result;
+	napi_get_boolean(env, !kStoreBuild, &result);
+	return result;
+}
+
+// Development-only experiment. Mode is process-local and only applied before
+// VM startup so renderer objects are never reconfigured while running.
+static napi_value NapiSetDiagnosticGSBackThreadMode(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value argv[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+	char name[24] = {};
+	size_t length = 0;
+	bool ok = !kStoreBuild && !g_vm_running.load() && argc == 1 &&
+		napi_get_value_string_utf8(env, argv[0], name, sizeof(name), &length) == napi_ok;
+	int mode = -1;
+	if (ok) {
+		const std::string value(name, length);
+		if (value == "off") mode = 0;
+		else if (value == "pipelined") mode = 3;
+		else if (value != "default") ok = false;
+	}
+	if (ok) g_diagnostic_gs_back_thread_mode.store(mode);
+	LOGW("GS_BACKTHREAD_DIAG: preference accepted=%{public}d requested=%{public}s",
+		ok ? 1 : 0, name);
+	napi_value result;
+	napi_create_int32(env, ok ? 1 : 0, &result);
+	return result;
+}
 
 static napi_value NapiStartBios(napi_env env, napi_callback_info info) {
 	size_t argc = 3;
@@ -2911,6 +3311,9 @@ static napi_value NapiReadGameSettings(napi_env env, napi_callback_info info)
 	bool aspect_set = false;
 	bool upscale_set = false;
 	bool vu_set = false;
+	int rate = 0, skip = 0;
+	bool instant = true;
+	bool rate_set = false, skip_set = false, instant_set = false;
 
 	if (!path.empty() && FileSystem::FileExists(path.c_str()))
 	{
@@ -2921,6 +3324,9 @@ static napi_value NapiReadGameSettings(napi_env env, napi_callback_info info)
 			// 三个键都可能不存在 —— Get* 返回 false 即"未设置"
 			aspect_set = si.GetIntValue("EmuCore/GS", "AspectRatio", &aspect);
 			upscale_set = si.GetFloatValue("EmuCore/GS", "upscale_multiplier", &upscale);
+			rate_set = si.GetIntValue("EmuCore/Speedhacks", "EECycleRate", &rate);
+			skip_set = si.GetIntValue("EmuCore/Speedhacks", "EECycleSkip", &skip);
+			instant_set = si.GetBoolValue("EmuCore/Speedhacks", "vu1Instant", &instant);
 			vu_set = si.GetBoolValue("EmuCore/Speedhacks", "vuThread", &vu_thread);
 		}
 		else
@@ -2935,6 +3341,9 @@ static napi_value NapiReadGameSettings(napi_env env, napi_callback_info info)
 	json += ",\"vuThread\":" + std::string(vu_thread ? "true" : "false");
 	json += ",\"aspectSet\":" + std::string(aspect_set ? "true" : "false");
 	json += ",\"upscaleSet\":" + std::string(upscale_set ? "true" : "false");
+	if (rate_set) json += ",\"eeRate\":" + std::to_string(rate);
+	if (skip_set) json += ",\"eeSkip\":" + std::to_string(skip);
+	if (instant_set) json += ",\"instantVu1\":" + std::string(instant ? "true" : "false");
 	json += ",\"vuThreadSet\":" + std::string(vu_set ? "true" : "false");
 	json += "}";
 
@@ -3063,6 +3472,12 @@ static napi_value NapiWriteGameSettings(napi_env env, napi_callback_info info)
 	// 浮点按整数写法存（倍率都是 1/2/3），上游 GetFloatValue 能解析 "3"
 	want_value("aspect", "EmuCore/GS", "AspectRatio");
 	want_value("upscale", "EmuCore/GS", "upscale_multiplier");
+	if (!kStoreBuild)
+	{
+		want_value("eeRate", "EmuCore/Speedhacks", "EECycleRate");
+		want_value("eeSkip", "EmuCore/Speedhacks", "EECycleSkip");
+		want_value("instantVu1", "EmuCore/Speedhacks", "vu1Instant");
+	}
 	want_value("vuThread", "EmuCore/Speedhacks", "vuThread");
 
 	// 逐行处理：按节跟踪当前 section，命中的键就地替换或删除
@@ -3430,6 +3845,16 @@ EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
 	napi_property_descriptor desc[] = {
 		{"startBios", nullptr, NapiStartBios, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticRenderer", nullptr, NapiSetDiagnosticRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticJitProfile", nullptr, NapiSetDiagnosticJitProfile, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticThreadQoS", nullptr, NapiSetDiagnosticThreadQoS, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticAffinity", nullptr, NapiSetDiagnosticAffinity, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setTimingPreferences", nullptr, NapiSetTimingPreferences, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticTiming", nullptr, NapiSetDiagnosticTiming, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setRendererPreference", nullptr, NapiSetRendererPreference, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"isVulkanAvailable", nullptr, NapiIsVulkanAvailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"isDevelopmentBuild", nullptr, NapiIsDevelopmentBuild, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"setDiagnosticGsBackThreadMode", nullptr, NapiSetDiagnosticGSBackThreadMode, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurface", nullptr, NapiSetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"initVirtualPad", nullptr, NapiInitVirtualPad, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"hasOfficialGamepad", nullptr, NapiHasOfficialGamepad, nullptr, nullptr, nullptr, napi_default, nullptr},

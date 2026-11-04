@@ -57,6 +57,9 @@
     //   这是 HarmonyOS 的安全模型决定的，不是本应用的取舍。
     "requestPermissions": [
       {
+        "name": "ohos.permission.FILE_ACCESS_PERSIST"
+      },
+      {
         "name": "ohos.permission.INTERNET",
         "reason": "$string:reason_internet",
         "usedScene": {

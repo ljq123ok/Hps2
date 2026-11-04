@@ -26,6 +26,9 @@ import { ErrorHint, FailKind } from '../common/ErrorHint';
 import { LogExport } from '../common/LogExport';
 import { GameEntry, humanSize as libHumanSize, gameDisplayTitle as libGameTitle, gameDisplaySubtitle as libGameSub } from '../common/GameLibrary';
 import { ScannedGame, ScanResult, ScanDirs } from '../common/ScanDirs';
+import environment from '@ohos.file.environment';
+import { GameStorage, GameStorageConfig, PrivateGameFile, resolveBootImage } from '../common/GameStorage';
+import { GameStoragePanel } from '../components/GameStoragePanel';
 import { MemoryCardInfo, MemoryCardPanel } from '../components/MemoryCardPanel';
 import {
   CoverSource, SharedCoverSources, BUILTIN_COVER_SOURCES, buildCoverUrl, isValidCoverTemplate
@@ -167,6 +170,9 @@ interface PerGameSettings {
   aspect: number;
   upscale: number;
   vuThread: boolean;
+  eeRate?: number;
+  eeSkip?: number;
+  instantVu1?: boolean;
   aspectSet: boolean;
   upscaleSet: boolean;
   vuThreadSet: boolean;
@@ -207,6 +213,15 @@ interface VideoSettingsSelection {
   upscaleMultiplier: number;
   /** MTVU（VU1 独立线程）；可选以兼容旧版配置文件 */
   vuThread?: boolean;
+  /** 仅用户主动操作 MTVU 开关后为 true；用于升级默认值时区分旧默认与用户选择 */
+  vuThreadSet?: boolean;
+  /** 图形后端偏好；旧配置默认为 OpenGL */
+  renderer?: string;
+  /** Vulkan GS 前后端线程实验；default 沿用游戏/核心配置 */
+  gsBackThreadMode?: string;
+  eeUnderclock?: boolean;
+  eeSkipOne?: boolean;
+  instantVu1?: boolean;
 }
 
 interface ControllerInfo {
@@ -263,6 +278,15 @@ struct Index {
    * 不能静默发生。
    */
   @State fallbackNotice: string = '';
+  @State showGameStorage: boolean = false;
+  @State gameStoragePath: string = '';
+  @State gameStorageMessage: string = '';
+  @State gameStorageBusy: boolean = false;
+  @State privateGameFiles: Array<PrivateGameFile> = [];
+  private gameStorageConfig: GameStorageConfig = {
+    introSeen: false, directoryPath: '', directoryUri: '', sources: []
+  };
+  private selectedGameUriPersisted: boolean = false;
   /**
    * 封面：path -> 本地封面文件路径（无封面则不在表里）。
    *
@@ -457,11 +481,15 @@ struct Index {
   @State aspectMode: number = 0;
   /**
    * MTVU（VU1 独立线程）。
-   * 上游默认为开启；我们早期为"减少线程依赖"显式关闭，
-   * 该理由已过时，故开放给用户切换。
+   * 上游默认为开启；当前默认开启以把 VU1 工作从 EE 主线程移出，
+   * 个别游戏若有兼容性问题可在全局或逐游戏设置中关闭。
    * **下次启动游戏生效** —— 运行期无法可靠切换，UI 已说明。
    */
-  @State vuThread: boolean = false;
+  @State vuThread: boolean = true;
+  @State eeUnderclock: boolean = false;
+  @State eeSkipOne: boolean = false;
+  @State instantVu1: boolean = true;
+  @State vuThreadSet: boolean = false;
 
   /**
    * 正在停止模拟器。用于在停止期间禁用"启动游戏"，
@@ -470,6 +498,10 @@ struct Index {
   @State stopping: boolean = false;
   /** 内部渲染倍率：1.0 为原生分辨率 */
   @State upscaleMultiplier: number = 1.0;
+  @State rendererPreference: string = 'ogl';
+  @State vulkanAvailable: boolean = false;
+  @State developmentBuild: boolean = false;
+  @State gsBackThreadMode: string = 'default';
 
   private timerId: number = -1;
 
@@ -712,6 +744,17 @@ struct Index {
     .width('100%')
   }
 
+  @Builder
+  timingSwitch(title: string, hint: string, enabled: boolean, change: (value: boolean) => void) {
+    Row({ space: 8 }) {
+      Column({ space: 3 }) {
+        Text(title).fontSize(13).fontColor(Theme.textPri())
+        Text(hint).fontSize(11).fontColor(Theme.textDim())
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: enabled }).onChange(change)
+    }.width('100%')
+  }
+
   /** 编辑器右侧/底部设置面板 */
   @Builder
   padEditorPanel() {
@@ -853,21 +896,13 @@ struct Index {
         fs.mkdirSync(gdir);
       }
       hilog.info(DOMAIN, TAG, 'game storage directory prepared');
-      // 目录就绪后恢复上次选中的游戏（此前只写不读）
-      this.restoreGameSelection();
       // 【必须在读写逐游戏设置/封面之前】native 侧的 GameSettings/Covers
       // 原本只在"启动游戏"时才赋值，未启动游戏时为空字符串，会让路径
       // 退化成从根目录拼（实测写成 /SCPS-15062_1C4E2A9F.ini → errno 13）。
       hps2core.initGameFolders(this.dataRoot());
       // 封面源配置（决定后续下载走哪个库）
       SharedCoverSources.store.load(this.dataRoot());
-      // 恢复「扫描手机目录」加入的游戏（原地读取，路径失效的会被剔除）
-      this.loadExternalGames();
-      // 再扫描整个 games/ 目录填充游戏库列表。
-      // 放在 restore 之后：即使列表为空，上次选中的游戏也已恢复。
-      this.refreshGames();
-      // 扫描完列表后解析本地已有封面（纯查文件，无网络）
-      this.refreshLocalCovers();
+      // 外部文件先恢复 URI 授权，再检查是否存在，避免误删仍然有效的游戏条目。
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'mkdir games directory failed');
     }
@@ -886,7 +921,176 @@ struct Index {
     // 启动前先查 JIT 能力：让用户在选 BIOS 之前就知道能不能跑，
     // 而不是点了启动才发现失败。
     this.checkJit();
+    this.initializeGameStorage();
 
+  }
+
+  private async activateGameUri(sourceUri: string): Promise<void> {
+    if (!sourceUri.startsWith('file://')) return;
+    try {
+      await fileshare.activatePermission([{
+        uri: sourceUri, operationMode: fileshare.OperationMode.READ_MODE
+      }]);
+    } catch (_e) {
+      // 部分手机不支持持久授权；启动前仍以 native 的实际打开结果为准。
+      hilog.warn(DOMAIN, TAG, 'GAME_STORAGE: saved URI authorization unavailable');
+    }
+  }
+
+  private async initializeGameStorage(): Promise<void> {
+    this.gameStorageBusy = true;
+    try {
+      this.gameStorageConfig = GameStorage.load(this.dataRoot());
+      this.gameStoragePath = this.gameStorageConfig.directoryPath;
+      this.showGameStorage = !this.gameStorageConfig.introSeen;
+      await this.activateGameUri(this.gameStorageConfig.directoryUri);
+      for (const source of this.gameStorageConfig.sources) {
+        await this.activateGameUri(source.uri);
+      }
+      this.restoreGameSelection();
+      this.loadExternalGames();
+      this.refreshGames();
+      this.refreshLocalCovers();
+      this.refreshPrivateGameFiles();
+    } finally {
+      this.gameStorageBusy = false;
+    }
+  }
+
+  private saveGameStorage(): boolean {
+    try {
+      GameStorage.save(this.dataRoot(), this.gameStorageConfig);
+      return true;
+    } catch (_e) {
+      this.gameStorageMessage = '无法保存游戏目录设置，下次打开时可能需要重新选择。';
+      return false;
+    }
+  }
+
+  private openGameStorage(): void {
+    if (this.busy || this.gameStorageBusy || this.scanning || this.statusRunning || this.stopping) return;
+    this.showSettings = false;
+    this.showGameStorage = true;
+    this.refreshPrivateGameFiles();
+  }
+
+  private closeGameStorage(): void {
+    if (this.gameStorageBusy) return;
+    this.gameStorageConfig.introSeen = true;
+    this.saveGameStorage();
+    this.showGameStorage = false;
+  }
+
+  private refreshPrivateGameFiles(): void {
+    try {
+      this.privateGameFiles = GameStorage.privateFiles(this.dataRoot());
+    } catch (_e) {
+      this.gameStorageMessage = '无法读取应用内游戏文件列表，请稍后重试。';
+    }
+  }
+
+  private async prepareDownloadGameDirectory(): Promise<void> {
+    if (this.gameStorageBusy || this.busy || this.statusRunning || this.stopping || this.scanning) return;
+    if (!canIUse('SystemCapability.FileManagement.File.Environment.FolderObtain')) {
+      this.gameStorageMessage = '请在系统目录选择器中点 Download，再用右上角的新建文件夹按钮建立 PS2，最后确认选择。';
+      if (canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+        await this.chooseGameDirectory();
+      } else {
+        this.gameStorageMessage = '本机不支持自动创建或选择整个目录。请在文件管理器的本机“下载”中新建 PS2，再点“选择游戏并验证直读”。';
+      }
+      return;
+    }
+    this.gameStorageBusy = true;
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const granted = await ScanDirs.requestPermissions(ctx,
+        ['ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY']);
+      if (!granted.has('ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY')) {
+        this.gameStorageMessage = '未取得下载目录权限。可以在文件管理器中创建 PS2，再通过选择游戏添加。';
+        return;
+      }
+      const path = environment.getUserDownloadDir().replace(/\/+$/, '') + '/PS2';
+      if (!fs.accessSync(path)) await fs.mkdir(path);
+      if (!fs.statSync(path).isDirectory()) throw new Error('PS2 已存在但不是文件夹');
+      this.gameStorageConfig.directoryPath = path;
+      this.gameStorageConfig.directoryUri = '';
+      this.gameStoragePath = path;
+      this.gameStorageMessage = 'PS2 文件夹已就绪。请放入游戏，再选择其中一个游戏验证直读。';
+      this.saveGameStorage();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.gameStorageMessage = '无法自动创建（' + err.code + '）。请在文件管理器中创建 Download/PS2，再选择其中的游戏。';
+    } finally {
+      this.gameStorageBusy = false;
+    }
+  }
+
+  private async chooseGameDirectory(): Promise<void> {
+    if (this.gameStorageBusy || this.busy || this.statusRunning || this.stopping || this.scanning) return;
+    if (!canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+      this.gameStorageMessage = '本机不支持选择整个目录。请在文件管理器中建立 Download/PS2，再点“选择游戏并验证直读”。';
+      return;
+    }
+    this.gameStorageBusy = true;
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.selectMode = picker.DocumentSelectMode.FOLDER;
+      options.maxSelectNumber = 1;
+      if (this.gameStorageConfig.directoryUri) {
+        options.defaultFilePathUri = this.gameStorageConfig.directoryUri;
+      }
+      const uris = await new picker.DocumentViewPicker(getContext(this)).select(options);
+      if (!uris || uris.length === 0) return;
+      const sourceUri = uris[0];
+      const path = this.uriToPath(sourceUri);
+      let persisted = true;
+      try {
+        await fileshare.persistPermission([{
+          uri: sourceUri, operationMode: fileshare.OperationMode.READ_MODE
+        }]);
+        await this.activateGameUri(sourceUri);
+      } catch (_e) {
+        persisted = false;
+      }
+      this.gameStorageConfig.directoryPath = path;
+      this.gameStorageConfig.directoryUri = sourceUri;
+      this.gameStoragePath = path;
+      this.gameStorageMessage = persisted
+        ? '已记录目录。请扫描或选择其中一个游戏验证直读；空目录尚不能证明游戏可读取。'
+        : '已选择目录，但系统未允许记住授权；重启后可能需要重新选择。请再选择游戏验证直读。';
+      this.saveGameStorage();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.gameStorageMessage = '选择目录失败（' + err.code + '）。可以改为选择单个游戏验证直读。';
+    } finally {
+      this.gameStorageBusy = false;
+    }
+  }
+
+  private confirmPrivateGameDeletion(file: PrivateGameFile): void {
+    if (this.gameStorageBusy || this.busy || this.statusRunning || this.stopping || this.scanning) return;
+    AlertDialog.show({
+      title: '清理应用内游戏文件',
+      message: file.name + '\n将释放 ' + libHumanSize(file.size) +
+        '。只删除应用目录内的这一份；存档与外部原文件保留。',
+      primaryButton: { value: '取消', action: () => {} },
+      secondaryButton: { value: '清理此文件', action: () => {
+        if (this.busy || this.statusRunning || this.stopping || this.gameStorageBusy || this.scanning) return;
+        try {
+          GameStorage.deletePrivateFile(this.dataRoot(), file.name);
+          const path = this.gameDir() + '/' + file.name;
+          if (this.gamePath === path) this.clearGame();
+          this.externalGames = this.externalGames.filter((g: GameEntry) => g.path !== path);
+          this.saveExternalGames();
+          this.refreshPrivateGameFiles();
+          this.refreshGames();
+          this.gameStorageMessage = '已清理 ' + file.name;
+          this.fallbackNotice = '';
+        } catch (_e) {
+          this.gameStorageMessage = '清理失败，文件可能已改变；请刷新后重试。';
+        }
+      } }
+    });
   }
 
   /**
@@ -1167,6 +1371,7 @@ struct Index {
   }
 
   private async chooseBios(): Promise<void> {
+    if (this.busy || this.gameStorageBusy || this.scanning || this.statusRunning || this.stopping) return;
     // BIOS 仅 4MB，复制很快，但用户选择后到显示结果之间仍有间隔，
     // 给一个轻量提示避免"点了没反应"的观感。
     this.beginLoading('正在载入 BIOS…');
@@ -1287,11 +1492,15 @@ struct Index {
    */
   private async pickInPlace(kind: string, suffixes: Array<string>): Promise<string> {
     this.picking = kind;
+    this.selectedGameUriPersisted = false;
     this.statusError = '';
     try {
       const ctx = getContext(this);
       const options = new picker.DocumentSelectOptions();
       options.fileSuffixFilters = suffixes;
+      if (this.gameStorageConfig.directoryUri) {
+        options.defaultFilePathUri = this.gameStorageConfig.directoryUri;
+      }
 
       const docPicker = new picker.DocumentViewPicker(ctx);
       const uris: Array<string> = await docPicker.select(options);
@@ -1312,6 +1521,7 @@ struct Index {
           operationMode: fileshare.OperationMode.READ_MODE
         };
         await fileshare.persistPermission([policy]);
+        this.selectedGameUriPersisted = true;
         hilog.info(DOMAIN, TAG, 'persistPermission ok for %{public}s', kind);
       } catch (_e) {
         hilog.error(DOMAIN, TAG, 'persistPermission failed for %{public}s', kind);
@@ -1339,8 +1549,7 @@ struct Index {
       // picker **已授权的那个 URI**；裸路径没有对应授权，反而打不开。
       // 旧实现 fs.openSync(srcUri) 传 URI 是对的，不应改动这一点。
       //
-      // 因此：ArkTS 侧一律用 URI 做 IO；native 侧才需要真实路径，
-      // 由 copyToSandboxAsync 复制到沙箱后统一用沙箱路径。
+      // 保留原始 URI：native 用路径预检，明确同意复制时 ArkTS 用 URI 读取。
       return srcUri + '|' + fileName + '|' + sizeText;
     } catch (e) {
       const err = e as BusinessError;
@@ -1351,56 +1560,16 @@ struct Index {
     }
   }
 
-  /**
-   * 异步复制到沙箱。
-   *
-   * 【为什么用 fd 方式而不是 fs.copyFile(uri, path)】
-   * 1) ArkTS 的 fs 需要 picker **已授权的 URI**；把 URI 转成裸路径
-   *    （/storage/...）会报 13900002 No such file or directory
-   *    —— 这是我上一版改错的地方（本次真机实测踩到）。
-   * 2) 直接 copyFileSync(uri, path) 在本平台会报 ENOENT，
-   *    故沿用旧实现验证过的做法：先 openSync 成 fd，再按 fd 复制。
-   *
-   * 【与旧实现的唯一区别】用 **Promise 版** copyFile 而非 copyFileSync：
-   * 复制 2-4GB 的 ISO 时不再阻塞 UI 线程（外部反馈的"卡 8 秒"）。
-   *
-   * 【为什么仍需复制】native 的 CDVD 只接受 POSIX 路径，不能收授权 URI。
-   * 若将来 native 支持接收 fd 或 URI 映射，即可省掉这一步
-   * （那也是"数据目录外置"的最终形态）。
-   */
+  /** 仅在明确确认后调用；用授权 URI 打开 fd，异步复制并校验后再发布镜像。 */
   private async copyToSandboxAsync(srcUri: string, destDir: string,
                                    fileName: string): Promise<string> {
-    const destPath = destDir + '/' + fileName;
-    // 用户可见的加载提示。
-    // 复制 2-4GB 的 ISO 需要数十秒，期间必须让用户知道应用在工作
-    // （此前只在按钮上写"处理中…"，且 picking 在复制开始前就被清掉，
-    //   按钮已还原成"选择游戏镜像" —— 用户看不到任何提示）。
-    this.beginLoading('正在载入游戏镜像…\n' + fileName);
-
+    if (destDir !== this.gameDir()) throw new Error('游戏只能复制到应用游戏目录');
+    this.beginLoading('正在复制游戏到应用目录…\n' + fileName + '\n这会额外占用一份游戏空间。');
     try {
-      if (fs.accessSync(destPath)) {
-        fs.unlinkSync(destPath);   // 覆盖旧文件，避免复制到自己
-      }
-    } catch (e) {
-      // accessSync 失败即不存在，无需处理
-    }
-
-    let srcFile: fs.File | null = null;
-    let dstFile: fs.File | null = null;
-    try {
-      srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
-      dstFile = fs.openSync(destPath,
-        fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-      await fs.copyFile(srcFile.fd, dstFile.fd);
+      return await GameStorage.copyImage(srcUri, this.dataRoot(), fileName);
     } finally {
-      if (srcFile !== null) {
-        fs.closeSync(srcFile);
-      }
-      if (dstFile !== null) {
-        fs.closeSync(dstFile);
-      }
+      this.endLoading();
     }
-    return destPath;
   }
 
   /**
@@ -1644,12 +1813,30 @@ struct Index {
    * 创建一次，运行期改这个标志会让已编译的 VU1 代码与新取值不一致，
    * 故不做"立即生效"的承诺。
    */
+  private applyTiming(underclock: boolean, skip: boolean, instant: boolean): boolean {
+    if (!hps2core.setTimingPreferences(underclock, skip, instant)) {
+      this.statusError = '无法设置模拟时序。';
+      return false;
+    }
+    this.eeUnderclock = underclock;
+    this.eeSkipOne = skip;
+    this.instantVu1 = instant;
+    return true;
+  }
+
+  private saveTiming(underclock: boolean, skip: boolean, instant: boolean): void {
+    if (this.applyTiming(underclock, skip, instant)) {
+      this.saveVideoSettings(this.upscaleMultiplier);
+    }
+  }
+
   private setVuThread(enabled: boolean): void {
     if (this.storeBuild) {
       this.vuThread = false;
       return;
     }
     this.vuThread = enabled;
+    this.vuThreadSet = true;
     try {
       const ok: number = hps2core.setVuThread(enabled);
       hilog.info(DOMAIN, TAG, 'setVuThread(%{public}d) -> %{public}d',
@@ -2118,13 +2305,16 @@ struct Index {
     this.loadingText = '';
   }
 
-  private async chooseGame(): Promise<void> {
+  private async chooseGame(fromStorageGuide: boolean = false): Promise<void> {
+    if (this.busy || this.statusRunning || this.stopping || this.gameStorageBusy || this.scanning) return;
+    this.gameStorageBusy = true;
     // PS2 游戏镜像常见格式。
     // 【原地读取】不再复制进沙箱 —— 复制 2-4GB 的 ISO 既占双份空间又很久。
     const r = await this.pickInPlace('game',
       ['.iso', '.ISO', '.chd', '.CHD', '.bin', '.BIN', '.img', '.IMG', '.gz']);
     if (r.length === 0) {
       this.statusStage = '';
+      this.gameStorageBusy = false;
       return;
     }
 
@@ -2132,13 +2322,6 @@ struct Index {
     const srcPath = parts[0];
     const fileName = parts[1];
     const sizeText = parts[2];
-    // 记下大小：回退复制时要用它拼显示名（那时已拿不到 sizeText 之外的信息）
-    try {
-      this.lastFileSize = fs.statSync(srcPath).size;
-    } catch (e) {
-      this.lastFileSize = 0;
-    }
-
     try {
       // 【原地读取】只登记路径与显示名，**不复制文件**。
       //
@@ -2147,12 +2330,31 @@ struct Index {
       // uri.URI.path 给出其路径部分；转换失败则保留原样并让启动阶段
       // 如实报错（不做静默复制 —— 那会在用户不知情时消耗数 GB 空间）。
       const realPath = this.uriToPath(srcPath);
+      GameStorage.rememberSource(this.gameStorageConfig, realPath, srcPath);
+      if (fromStorageGuide && !this.gameStorageConfig.directoryPath) {
+        const slash = realPath.lastIndexOf('/');
+        // 选中文件不等于获得父目录授权；仅记录位置，仍须逐次实测。
+        this.gameStorageConfig.directoryPath = realPath.substring(0, slash);
+        this.gameStorageConfig.directoryUri = '';
+        this.gameStoragePath = this.gameStorageConfig.directoryPath;
+      }
+      this.saveGameStorage();
+      const direct = hps2core.canOpenGameFile(realPath) === '1';
+      this.gameStorageMessage = direct
+        ? '此游戏当前可直接读取，无需复制。启动前会再次检查；其他文件分别检查。'
+        : '此游戏不能直接读取。启动时可取消或明确同意复制；尚未复制任何游戏数据。';
+      if (!this.selectedGameUriPersisted) {
+        this.gameStorageMessage += '\n本机未能记住文件授权，下次打开时可能需要重新选择。';
+      }
+      this.fallbackNotice = this.gameStorageMessage;
       this.gamePath = realPath;
       this.gameName = fileName + ' (' + sizeText + ')';
       this.saveGameSelection(realPath, fileName);
 
       // 同时登记进游戏库（原地读取，重启后仍在）
-      this.addExternalGameEntry(realPath, fileName);
+      // native 无法打开时不能把权限失败误报成“不是 PS2 镜像”。
+      // 用户确认复制成功后，由私有目录扫描识别镜像内容。
+      if (direct) this.addExternalGameEntry(realPath, fileName);
       this.refreshGames();
       // 选择 ISO 后立即用其真实序列号重扫记忆卡，命中的存档会自动归类。
       this.refreshMemoryCards();
@@ -2168,6 +2370,7 @@ struct Index {
       this.endLoading();
       this.statusStage = '';
       this.picking = '';
+      this.gameStorageBusy = false;
     }
   }
 
@@ -2220,64 +2423,81 @@ struct Index {
   /**
    * 启动前解析出**最终可用的游戏路径**。
    *
-   * 策略（按用户选择：原地读优先，失败自动回退复制）：
+   * 原地读优先；打不开时必须先确认额外空间，再允许复制。
    *   1. 未选游戏 → 原样返回（只启动 BIOS）
    *   2. 路径已在应用沙箱内 → 直接用（无需任何检查）
    *   3. 沙箱外路径 → 先问 native 能否打开
    *        - 能 → 原地读取，直接用
-   *        - 不能 → 复制进沙箱，用沙箱副本启动，并把这次回退告知用户
+   *        - 不能 → 询问；取消返回 null，确认后才复制到应用目录
    *
    * 【为什么回退要告知】用户明确希望"直接读取文件加载"。回退复制会额外
    * 占用一份空间（数 GB），静默发生对用户不公平 —— 必须说明原因。
    */
-  private async resolveGamePathForBoot(): Promise<string> {
+  private async resolveGamePathForBoot(): Promise<string | null> {
     const p = this.gamePath;
-    if (!p || p.length === 0) {
-      return p;
-    }
-    // 已在沙箱内（应用的私有目录）：native 一定能读，省掉一次预检
-    const sandbox = this.dataRoot();
-    if (p.indexOf(sandbox) === 0) {
-      return p;
-    }
-    // 沙箱外：预检可读性
-    let canOpen = false;
+    await this.activateGameUri(this.gameStorageConfig.directoryUri);
+    await this.activateGameUri(GameStorage.sourceUri(this.gameStorageConfig, p));
     try {
-      canOpen = hps2core.canOpenGameFile(p) === '1';
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'canOpenGameFile threw, assume not readable');
-      canOpen = false;
-    }
-    if (canOpen) {
-      hilog.info(DOMAIN, TAG, 'booting in place (no copy)');
-      return p;
-    }
-
-    // ---- 回退：复制进沙箱 ----
-    hilog.warn(DOMAIN, TAG, 'in-place open unavailable, falling back to copy');
-    this.statusStage = 'copying-fallback';
-    const name = p.substring(p.lastIndexOf('/') + 1);
-    try {
-      const dest = await this.copyToSandboxAsync(p, this.gameDir(), name);
-      this.gamePath = dest;
-      this.gameName = name + ' (' + libHumanSize(this.lastFileSize) + ')';
-      this.saveGameSelection(dest, name);
-      // 告知用户发生了回退，避免"空间怎么少了"的困惑
-      this.statusError = '';
-      this.fallbackNotice = '该位置无法直接读取，已复制到应用目录后启动' +
-        '（占用额外空间，可在设置中清理）。';
-      return dest;
+      return await resolveBootImage(p, () => {
+        try {
+          const direct = hps2core.canOpenGameFile(p) === '1';
+          hilog.info(DOMAIN, TAG, 'GAME_STORAGE: boot direct=%{public}d', direct ? 1 : 0);
+          return direct;
+        } catch (_e) {
+          return false;
+        }
+      }, () => {
+        if (p.startsWith(this.gameDir() + '/')) {
+          this.statusError = '应用内游戏文件无法读取，请重新选择原文件；没有再复制一份。';
+          return Promise.resolve(false);
+        }
+        return this.confirmGameCopy(p);
+      }, async () => {
+        this.statusStage = 'copying-fallback';
+        const name = p.substring(p.lastIndexOf('/') + 1);
+        const source = GameStorage.sourceUri(this.gameStorageConfig, p);
+        const dest = await this.copyToSandboxAsync(source, this.gameDir(), name);
+        this.gamePath = dest;
+        const size = fs.statSync(dest).size;
+        this.gameName = name + ' (' + libHumanSize(size) + ')';
+        this.saveGameSelection(dest, name);
+        this.fallbackNotice = '经你确认，已复制到应用目录（额外占用 ' + libHumanSize(size) +
+          '）。可在设置 → 游戏目录与空间中清理。';
+        this.refreshPrivateGameFiles();
+        this.refreshGames();
+        hilog.info(DOMAIN, TAG, 'GAME_STORAGE: confirmed copy completed');
+        return dest;
+      });
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(DOMAIN, TAG, 'fallback copy failed code=%{public}d', err.code);
-      this.statusError = '无法直接读取该文件，复制也失败了：' +
-        (err.message ? err.message : JSON.stringify(err));
-      return '';
+      this.statusError = '游戏未启动，复制失败：' + (err.message || '请重新选择原游戏文件后重试');
+      this.refreshPrivateGameFiles();
+      return null;
+    } finally {
+      this.statusStage = '';
     }
   }
 
-  /** 最近一次选择文件的大小，用于回退复制后拼显示名 */
-  private lastFileSize: number = 0;
+  private confirmGameCopy(path: string): Promise<boolean> {
+    const source = GameStorage.sourceUri(this.gameStorageConfig, path);
+    let sizeText = '与游戏文件相同大小的空间';
+    try {
+      sizeText = libHumanSize(fs.statSync(source).size);
+    } catch (_e) {
+      // 大小未知时不显示 0 B，也不允许用户误以为不占空间。
+    }
+    return new Promise<boolean>((resolve) => {
+      AlertDialog.show({
+        title: '无法直接读取游戏',
+        message: path.substring(path.lastIndexOf('/') + 1) + '\n复制到应用目录将额外占用 ' +
+          sizeText + '，退出游戏后仍保留。也可以取消，将游戏放入本机 Download/PS2 后重新选择。',
+        autoCancel: false,
+        primaryButton: { value: '取消启动', action: () => { resolve(false); } },
+        secondaryButton: { value: '同意复制并启动', action: () => { resolve(true); } },
+        cancel: () => { resolve(false); }
+      });
+    });
+  }
 
   /**
    * 把 picker 返回的 URI 转成真实文件路径。
@@ -2353,10 +2573,9 @@ struct Index {
       if (!path || path.length === 0) {
         return;
       }
-      // 镜像可能已被删除或移走 —— 静默忽略，不打断启动。
+      // 路径不可见也可能是权限失效；保留选择，让用户明确重选或取消启动。
       if (!fs.accessSync(path)) {
-        hilog.info(DOMAIN, TAG, 'saved game image is gone, ignoring selection');
-        return;
+        this.fallbackNotice = '上次游戏的位置暂时无法访问。请重新选择文件；不会自动复制游戏。';
       }
       let displayName = selection.name || '';
       if (displayName.length === 0) {
@@ -2374,8 +2593,10 @@ struct Index {
   }
 
   private clearGame(): void {
+    if (this.busy || this.statusRunning || this.stopping) return;
     this.gamePath = '';
     this.gameName = '';
+    this.fallbackNotice = '';
     // 【必须同时删掉持久化记录】否则下次启动 restoreGameSelection()
     // 会把用户刚清掉的游戏又恢复回来。
     try {
@@ -2462,13 +2683,9 @@ struct Index {
           hilog.info(DOMAIN, TAG, 'dropping non-PS2 entry on load');
           continue;
         }
-        try {
-          if (fs.accessSync(g.path)) {
-            alive.push(g);
-          }
-        } catch (e) {
-          // 文件已不在：跳过
-        }
+        // 读取失败不足以证明文件被删除（可能只是授权未恢复）。
+        // 保留已识别的条目，启动时再次预检，不因一次权限失败清空用户游戏库。
+        alive.push(g);
       }
       this.externalGames = alive;
       hilog.info(DOMAIN, TAG, 'external games restored: %{public}d alive / %{public}d saved',
@@ -2536,17 +2753,21 @@ struct Index {
     return hasSerial && hasTitle;
   }
 
-  private async scanPhoneDirs(): Promise<void> {
-    if (this.statusRunning) {
+  private async scanPhoneDirs(selectedDirectory: boolean = false): Promise<void> {
+    if (this.statusRunning || this.busy || this.stopping || this.gameStorageBusy) {
       this.statusError = '游戏运行中无法扫描，请先返回首页。';
       return;
     }
+    if (selectedDirectory && !this.gameStoragePath) return;
     this.scanning = true;
     this.scanMessage = '';
     this.scannedGames = [];
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
-      const res: ScanResult = await ScanDirs.scan(ctx);
+      if (selectedDirectory) await this.activateGameUri(this.gameStorageConfig.directoryUri);
+      const res: ScanResult = selectedDirectory
+        ? await ScanDirs.scanDirectory(this.gameStoragePath) : await ScanDirs.scan(ctx);
+      if (selectedDirectory) this.showGameStorage = false;
       this.scanMessage = res.message;
       if (res.games.length === 0) {
         this.scanning = false;
@@ -2684,6 +2905,7 @@ struct Index {
 
   /** 从库中移除某个外部游戏（只从列表移除，**不删除用户的文件**） */
   private removeExternalGame(g: GameEntry): void {
+    if (this.busy || this.gameStorageBusy || this.scanning || this.statusRunning || this.stopping) return;
     const kept: Array<GameEntry> = [];
     for (let i = 0; i < this.externalGames.length; i++) {
       if (this.externalGames[i].path !== g.path) {
@@ -3062,11 +3284,13 @@ struct Index {
 
   /** 从游戏库选中一项作为当前游戏（不复制 —— 它已经在沙箱里了）。*/
   private selectGameFromLibrary(g: GameEntry): void {
-    if (this.statusRunning) {
+    if (this.statusRunning || this.busy || this.gameStorageBusy || this.scanning || this.stopping) {
       this.statusError = '游戏运行中无法更换，请先返回。';
       return;
     }
     this.gamePath = g.path;
+    this.fallbackNotice = g.path.startsWith(this.gameDir() + '/')
+      ? '当前使用应用内游戏文件，可在设置 → 游戏目录与空间中查看占用。' : '';
     // 显示名与"从选择器导入"保持同一形态：文件名 (大小)
     this.gameName = g.name + ' (' + libHumanSize(g.size) + ')';
     this.saveGameSelection(g.path, this.gameName);
@@ -3081,6 +3305,10 @@ struct Index {
 
 
   private async startBoot(): Promise<void> {
+    if (this.gameStorageBusy || this.scanning || this.picking.length > 0) {
+      this.statusError = '正在准备游戏文件，请稍候再启动。';
+      return;
+    }
     // 停止过程中不允许启动 —— 否则会出现"刚启动就被停掉"的竞态
     if (this.stopping) {
       this.statusError = '正在停止上一次运行，请稍候再启动。';
@@ -3117,14 +3345,13 @@ struct Index {
     this.busy = true;
     try {
       // ---------------------------------------------------------------------
-      // 启动前解析游戏路径：原地读取优先，不可读时回退复制。
-      //
-      // 【为什么要在启动前判定】游戏可能放在手机公开目录（Download/Documents）
-      // 里原地读取 —— 那在应用沙箱之外，系统策略是否允许 native 打开必须实测。
-      // 若不可读而在启动后才失败，会留下一次半初始化的 VM。
-      // 因此这里先用 canOpenGameFile 预检，不行就复制进沙箱再启动。
+      // 先预检；打不开时经用户确认才复制。取消/失败返回 null，不能空路径启动 BIOS。
       // ---------------------------------------------------------------------
       const effectiveGamePath = await this.resolveGamePathForBoot();
+      if (effectiveGamePath === null) {
+        if (!this.statusError) this.statusError = '已取消启动，没有复制游戏。';
+        return;
+      }
 
       // 先锁定窗口方向，再启动 GS，避免 VM 已开始渲染后才发生旋转。
       await this.setGameOrientation(true);
@@ -3362,6 +3589,56 @@ struct Index {
     }
   }
 
+  /** 图形后端在下次启动游戏时生效。 */
+  private setRendererPreference(renderer: string): void {
+    if (renderer !== 'ogl' && renderer !== 'vk') {
+      return;
+    }
+    if (renderer === 'vk' && !this.vulkanAvailable) {
+      this.statusError = '当前安装包未包含 Vulkan 支持。';
+      return;
+    }
+    try {
+      const ok: number = hps2core.setRendererPreference(renderer);
+      if (ok === 1) {
+        this.rendererPreference = renderer;
+        this.saveVideoSettings(this.upscaleMultiplier);
+      } else {
+        this.statusError = '图形后端设置失败，请先退出游戏后重试。';
+      }
+      hilog.info(DOMAIN, TAG, 'set renderer preference=%{public}s -> %{public}d', renderer, ok);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'set renderer preference failed: %{public}s', err.message);
+      this.statusError = '图形后端设置失败。';
+    }
+  }
+
+  /** 开发包 Vulkan GS流水线实验；VM 停止后设置，下次启动游戏生效。 */
+  private setGsBackThreadMode(mode: string): void {
+    if (mode !== 'default' && mode !== 'off' && mode !== 'pipelined') {
+      return;
+    }
+    if (mode === 'pipelined' && this.rendererPreference !== 'vk') {
+      this.statusError = 'GS Pipelined 模式需要先选择 Vulkan。';
+      return;
+    }
+    try {
+      const ok: number = hps2core.setDiagnosticGsBackThreadMode(mode);
+      if (ok === 1) {
+        this.gsBackThreadMode = mode;
+        this.saveVideoSettings(this.upscaleMultiplier);
+      } else {
+        this.statusError = 'GS 流水线程设置失败，请确认游戏已停止。';
+      }
+      hilog.info(DOMAIN, TAG, 'set GS back-thread mode=%{public}s -> %{public}d', mode, ok);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'set GS back-thread mode failed: %{public}s', err.message);
+      this.statusError = 'GS 流水线程设置失败。';
+    }
+  }
+
   /** 保存视频设置；倍率在应用重启后仍应保持。 */
   private saveVideoSettings(multiplier: number): void {
     try {
@@ -3370,7 +3647,13 @@ struct Index {
       try {
         const settings: VideoSettingsSelection = {
           upscaleMultiplier: multiplier,
-          vuThread: this.vuThread
+          vuThread: this.vuThread,
+          vuThreadSet: this.vuThreadSet,
+          eeUnderclock: this.eeUnderclock,
+          eeSkipOne: this.eeSkipOne,
+          instantVu1: this.instantVu1,
+          renderer: this.rendererPreference,
+          gsBackThreadMode: this.gsBackThreadMode
         };
         fs.writeSync(file.fd, JSON.stringify(settings));
       } finally {
@@ -3386,35 +3669,61 @@ struct Index {
   /** 应用启动时恢复视频设置，并同步到 native 的启动配置。 */
   private restoreVideoSettings(): void {
     try {
+      this.vulkanAvailable = hps2core.isVulkanAvailable();
+      this.developmentBuild = hps2core.isDevelopmentBuild();
       const marker = this.videoSettingsFile();
-      if (!fs.accessSync(marker)) {
-        return;
+      let settings: VideoSettingsSelection = { upscaleMultiplier: 1 };
+      if (fs.accessSync(marker)) {
+        settings = JSON.parse(fs.readTextSync(marker)) as VideoSettingsSelection;
       }
 
-      const raw = fs.readTextSync(marker);
-      const settings = JSON.parse(raw) as VideoSettingsSelection;
-      const multiplier = settings.upscaleMultiplier;
-      // 当前 UI 提供 1x/2x/3x；拒绝损坏文件或未来写入的越界值。
-      if (multiplier !== 1 && multiplier !== 2 && multiplier !== 3) {
-        hilog.error(DOMAIN, TAG, 'ignored invalid saved upscale=%{public}f', multiplier);
-        return;
+      if (this.developmentBuild) {
+        this.applyTiming(settings.eeUnderclock === true, settings.eeSkipOne === true, settings.instantVu1 !== false);
+      }
+      const selectedRenderer = settings.renderer === 'vk' && this.vulkanAvailable ? 'vk' : 'ogl';
+      const rendererOk: number = hps2core.setRendererPreference(selectedRenderer);
+      if (rendererOk === 1) {
+        this.rendererPreference = selectedRenderer;
+      } else {
+        hilog.error(DOMAIN, TAG, 'restore renderer preference rejected: %{public}s', selectedRenderer);
       }
 
-      // 恢复 MTVU（旧配置文件可能没有该字段 -> 保持默认 false）
-      if (settings.vuThread === true) {
-        const vuOk: number = hps2core.setVuThread(true);
-        if (vuOk === 1) {
-          this.vuThread = true;
-          hilog.info(DOMAIN, TAG, 'restored MTVU=enabled');
+      const savedBackThreadMode = settings.gsBackThreadMode === 'off' ||
+        settings.gsBackThreadMode === 'pipelined' ? settings.gsBackThreadMode : 'default';
+      const selectedBackThreadMode = savedBackThreadMode === 'pipelined' && selectedRenderer !== 'vk'
+        ? 'default' : savedBackThreadMode;
+      if (this.developmentBuild) {
+        const backThreadOk: number = hps2core.setDiagnosticGsBackThreadMode(selectedBackThreadMode);
+        if (backThreadOk === 1) {
+          this.gsBackThreadMode = selectedBackThreadMode;
+          hilog.info(DOMAIN, TAG, 'restored GS back-thread mode=%{public}s', selectedBackThreadMode);
         }
       }
 
-      const ok: number = hps2core.setUpscaleMultiplier(multiplier);
-      if (ok === 1) {
-        this.upscaleMultiplier = multiplier;
-        hilog.info(DOMAIN, TAG, 'restored video settings upscale=%{public}f', multiplier);
+      const multiplier = settings.upscaleMultiplier;
+      // 当前 UI 提供 1x/2x/3x；损坏值只回退倍率，不影响恢复其他设置。
+      if (multiplier !== 1 && multiplier !== 2 && multiplier !== 3) {
+        hilog.error(DOMAIN, TAG, 'ignored invalid saved upscale=%{public}f', multiplier);
       } else {
-        hilog.error(DOMAIN, TAG, 'restore video settings rejected upscale=%{public}f', multiplier);
+
+        // 旧版每次保存画面选项都会写 vuThread=false，即使用户没碰过开关。
+        // 只有新标记表示用户主动选过；否则迁移到上游默认开启。
+        this.vuThreadSet = settings.vuThreadSet === true;
+        if (this.vuThreadSet && (settings.vuThread === true || settings.vuThread === false)) {
+          const vuOk: number = hps2core.setVuThread(settings.vuThread);
+          if (vuOk === 1) {
+            this.vuThread = settings.vuThread;
+            hilog.info(DOMAIN, TAG, 'restored MTVU=%{public}d', settings.vuThread ? 1 : 0);
+          }
+        }
+
+        const ok: number = hps2core.setUpscaleMultiplier(multiplier);
+        if (ok === 1) {
+          this.upscaleMultiplier = multiplier;
+          hilog.info(DOMAIN, TAG, 'restored video settings upscale=%{public}f', multiplier);
+        } else {
+          hilog.error(DOMAIN, TAG, 'restore video settings rejected upscale=%{public}f', multiplier);
+        }
       }
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'restore video settings failed: %{public}s', JSON.stringify(e));
@@ -4036,6 +4345,18 @@ struct Index {
 
           Scroll() {
             Column({ space: Theme.gap }) {
+              Column({ space: 8 }) {
+                Text('游戏目录与空间').fontSize(14).fontColor(Theme.textPri()).width('100%')
+                Text('设置本机游戏位置、验证直读、查看和清理应用内游戏副本')
+                  .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                Button('管理游戏目录与空间').width('100%').height(38).fontSize(13)
+                  .enabled(!this.statusRunning && !this.busy && !this.stopping && !this.gameStorageBusy)
+                  .onClick(() => { this.openGameStorage(); })
+                if (this.statusRunning) {
+                  Text('请先退出游戏，再管理文件。').fontSize(11).fontColor(Theme.textDim())
+                }
+              }.width('100%').padding(Theme.pad).backgroundColor(Theme.bgCard())
+                .borderRadius(Theme.radius)
               // ---- 存档管理入口 ----
               Column({ space: 8 }) {
                 Row() {
@@ -4132,6 +4453,39 @@ struct Index {
               .borderRadius(Theme.radius)
               .border({ width: 1, color: Theme.border() })
 
+              // ---- 图形后端 ----
+              Column({ space: 8 }) {
+                Text('图形后端').fontSize(14).fontColor(Theme.textPri()).width('100%')
+                Text('切换后端会在下次启动游戏时生效；Vulkan 仍属实验功能。')
+                  .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                Row({ space: 8 }) {
+                  ForEach(this.vulkanAvailable ? ['ogl', 'vk'] : ['ogl'], (backend: string) => {
+                    Button(backend === 'vk' ? 'Vulkan（实验）' : 'OpenGL')
+                      .layoutWeight(1)
+                      .height(38)
+                      .fontSize(13)
+                      .backgroundColor(this.rendererPreference === backend ? Theme.accent() : Theme.bgCardHi())
+                      .fontColor(this.rendererPreference === backend ? '#FFFFFF' : Theme.textPri())
+                      .borderRadius(Theme.radiusSm)
+                      .enabled(!this.statusRunning && !this.busy && !this.stopping)
+                      .onClick(() => { this.setRendererPreference(backend); })
+                  }, (backend: string) => backend)
+                }
+                .width('100%')
+                if (this.statusRunning) {
+                  Text('请先退出游戏，再更改图形后端。')
+                    .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                } else if (!this.vulkanAvailable) {
+                  Text('当前安装包未包含 Vulkan 支持。')
+                    .fontSize(11).fontColor(Theme.textDim()).width('100%')
+                }
+              }
+              .width('100%')
+              .padding(Theme.pad)
+              .backgroundColor(Theme.bgCard())
+              .borderRadius(Theme.radius)
+              .border({ width: 1, color: Theme.border() })
+
               // ---- 画面比例 ----
               Column({ space: 8 }) {
               Text('画面比例').fontSize(14).fontColor(Theme.textPri()).width('100%')
@@ -4208,6 +4562,16 @@ struct Index {
                   .onChange((on: boolean) => { this.setVuThread(on); })
               }
               .width('100%')
+              if (this.developmentBuild) {
+                Text('模拟时序 · 全局默认').fontSize(13).fontColor(Theme.textPri()).width('100%')
+                Text('下次启动游戏生效。建议先在游戏库的「本游戏设置」里试，每次只改一项。').fontSize(11).fontColor(Theme.textDim())
+                this.timingSwitch('EE 降频一档', '降低模拟 PS2 主处理器的频率（Rate −1）。模拟速度偏低时可先试，部分游戏的画面帧率会下降。', this.eeUnderclock,
+                  (on: boolean) => { this.saveTiming(on, this.eeSkipOne, this.instantVu1); })
+                this.timingSwitch('EE 周期跳过', '启用轻度周期跳过（Skip 1）。降频后仍慢时可单独试；若动作不连贯或声音异常，请关闭。', this.eeSkipOne,
+                  (on: boolean) => { this.saveTiming(this.eeUnderclock, on, this.instantVu1); })
+                this.timingSwitch('即时 VU1', '默认开启，简化向量处理器的完成时序。出现画面或动作异常时，可单独关闭对照。', this.instantVu1,
+                  (on: boolean) => { this.saveTiming(this.eeUnderclock, this.eeSkipOne, on); })
+              }
             }
             .width('100%')
             .padding(Theme.pad)
@@ -4290,6 +4654,22 @@ struct Index {
         .onClick(() => { this.showSettings = false; this.showMemoryCardManager = false; })
       }
 
+      if (this.showGameStorage) {
+        GameStoragePanel({
+          location: this.gameStoragePath,
+          message: this.gameStorageMessage,
+          busy: this.gameStorageBusy || this.busy || this.statusRunning || this.stopping || this.scanning,
+          files: this.privateGameFiles,
+          onPrepare: () => { this.prepareDownloadGameDirectory(); },
+          onChooseDirectory: () => { this.chooseGameDirectory(); },
+          onChooseGame: () => { this.chooseGame(true); },
+          onScan: () => { this.scanPhoneDirs(true); },
+          onRefresh: () => { this.refreshPrivateGameFiles(); },
+          onDelete: (file: PrivateGameFile) => { this.confirmPrivateGameDeletion(file); },
+          onClose: () => { this.closeGameStorage(); }
+        })
+      }
+
       // ---- 逐游戏设置弹层 ----
       // 每个游戏可独立覆盖画面比例/渲染倍率/MTVU；未覆盖的项继承全局。
       // 值写入上游自己的 gamesettings/<serial>_<CRC>.ini。
@@ -4370,11 +4750,30 @@ struct Index {
                 }
                 .width('100%')
 
+                if (this.developmentBuild) {
+                  ForEach([this.perGame], (pg: PerGameSettings) => {
+                    this.perGameSection('EE 降频一档', pg.eeRate === undefined ? '跟随全局' : '本游戏覆盖 · ' + pg.eeRate,
+                      pg.eeRate !== undefined, () => { this.writePerGameSetting('eeRate', null); })
+                    this.timingSwitch('启用降频', '降低模拟 PS2 主处理器的频率（Rate −1）。模拟速度偏低时可先试，部分游戏的画面帧率会下降。',
+                      pg.eeRate === undefined ? this.eeUnderclock : pg.eeRate < 0,
+                      (on: boolean) => { this.writePerGameSetting('eeRate', on ? -1 : 0); })
+                    this.perGameSection('EE 周期跳过', pg.eeSkip === undefined ? '跟随全局' : '本游戏覆盖 · ' + pg.eeSkip,
+                      pg.eeSkip !== undefined, () => { this.writePerGameSetting('eeSkip', null); })
+                    this.timingSwitch('启用轻度跳过', '启用轻度周期跳过（Skip 1）。降频后仍慢时可单独试；若动作不连贯或声音异常，请关闭。',
+                      pg.eeSkip === undefined ? this.eeSkipOne : pg.eeSkip > 0,
+                      (on: boolean) => { this.writePerGameSetting('eeSkip', on ? 1 : 0); })
+                    this.perGameSection('即时 VU1', pg.instantVu1 === undefined ? '跟随全局' : '本游戏覆盖 · ' + pg.instantVu1,
+                      pg.instantVu1 !== undefined, () => { this.writePerGameSetting('instantVu1', null); })
+                    this.timingSwitch('启用即时处理', '默认开启，简化向量处理器的完成时序。出现画面或动作异常时，可单独关闭对照。',
+                      pg.instantVu1 === undefined ? this.instantVu1 : pg.instantVu1,
+                      (on: boolean) => { this.writePerGameSetting('instantVu1', on); })
+                  }, (pg: PerGameSettings) => JSON.stringify(pg))
+                }
                 if (this.perGameMessage.length > 0) {
                   Text(this.perGameMessage)
                     .fontSize(11).fontColor(Theme.ok()).width('100%')
                 }
-                Text('这些值在启动游戏时读取，因此改动对**下次启动**生效。')
+                Text('下次启动这款游戏时生效。点「跟随全局」可撤销单项覆盖。')
                   .fontSize(10).fontColor(Theme.textDim()).width('100%')
               }
               .width('100%')

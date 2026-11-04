@@ -6,24 +6,14 @@
  *   应用完全发现不了 —— 「重新扫描」只重扫应用私有 games/ 目录，
  *   用户的体感就是"扫不出来"。
  *
- * 【能扫哪里 —— 这是 HarmonyOS 的安全模型，不是本模块的取舍】
- *   系统只对普通应用开放这两个公开目录（均为 user_grant + normal 级）：
- *     - Download
- *     - Documents
- *   Desktop 需要 system_basic（普通应用拿不到）；此外**没有全盘 API**。
- *   本模块据此只扫上述两个根，绝不假装能扫全盘。
- *
- * 【权限语义】
- *   两个权限都是 user_grant：首次调用 requestPermissionsFromUser 会弹窗，
- *   用户拒绝则返回空结果并把原因带回 UI（不静默失败）。
- *   权限是**目录级**的：拿到后 fs 可直接按真实路径读写该目录树，
- *   无需再走 picker 授权 —— 这正是"原地读取"能成立的前提。
+ * 按设备能力与实际授权尝试 Download / Documents，或用户指定的游戏目录。
+ * FolderObtain 在手机上可能不支持；权限成功也不等于核心可按路径打开。
+ * 因此扫描/启动都以实际 IO 为准，失败时提供逐文件选择入口，不承诺全盘扫描。
  */
 import fs from '@ohos.file.fs';
 import environment from '@ohos.file.environment';
 import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import type { PermissionRequestResult } from '@ohos.abilityAccessCtrl';
-import bundleManager from '@ohos.bundle.bundleManager';
 import common from '@ohos.app.ability.common';
 import hilog from '@ohos.hilog';
 
@@ -37,7 +27,7 @@ const GAME_EXTS: Array<string> = [
 
 /** 扫描结果的一项 */
 export interface ScannedGame {
-  /** 真实文件路径（可直接交给 native 打开 —— 原地读取的关键） */
+  /** 候选文件路径；能否原地使用仍须 native 实际打开检查。 */
   path: string;
   /** 文件名 */
   name: string;
@@ -86,17 +76,14 @@ export class ScanDirs {
    * 返回**实际被授予**的权限名集合。调用方据它决定能扫哪些根，
    * 而不是假设"申请了就一定有"。
    */
-  static async requestPermissions(ctx: common.UIAbilityContext): Promise<Set<string>> {
-    const granted: Set<string> = new Set<string>();
-    const perms: Array<Permissions> = [
+  static async requestPermissions(ctx: common.UIAbilityContext,
+    perms: Array<Permissions> = [
       'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY',
-      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY',
-    ];
+      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY'
+    ]): Promise<Set<string>> {
+    const granted: Set<string> = new Set<string>();
     try {
       const atManager = abilityAccessCtrl.createAtManager();
-      // bundleName 必须与签名 profile 一致，从系统读取避免硬编码漂移
-      const info = bundleManager.getBundleInfoForSelfSync(
-        bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
       const res: PermissionRequestResult =
         await atManager.requestPermissionsFromUser(ctx, perms);
       const codes: Array<number> = res.authResults;
@@ -112,6 +99,24 @@ export class ScanDirs {
       hilog.error(DOMAIN, TAG, 'requestPermissionsFromUser failed');
     }
     return granted;
+  }
+
+  /** A user-selected location is still subject to actual list/open checks on this device. */
+  static async scanDirectory(path: string): Promise<ScanResult> {
+    const games: Array<ScannedGame> = [];
+    try {
+      for (const rel of await fs.listFile(path, { recursion: true })) {
+        if (!isGameFile(rel.toLowerCase())) continue;
+        const full = path.replace(/\/+$/, '') + '/' + rel;
+        const stat = fs.statSync(full);
+        if (stat.isFile()) {
+          games.push({ path: full, name: rel, size: stat.size, rootLabel: '游戏目录' });
+        }
+      }
+      return { games: games, message: games.length ? '' : '此目录中没有找到游戏镜像。', ok: true };
+    } catch (_e) {
+      return { games: [], message: '本机无法直接扫描该目录，请选择单个游戏验证直读。', ok: false };
+    }
   }
 
   /**

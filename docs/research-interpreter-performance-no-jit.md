@@ -266,7 +266,7 @@ I inspected the ARMSX2 tree directly. The commit is:
 
 ```
 commit 45368481be56989c642ae6540dae709aa22526aa
-Author: Brandon <henyckma@gmail.com>
+Author: Brandon <redacted>
 Date:   Fri Jul 31 04:00:14 2026 -0600
 Title:  iOS Hybrid JIT Safety, No-JIT Fallback, and Interpreter Performance
 ```

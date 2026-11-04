@@ -3,9 +3,9 @@
 基于 [ARMSX2](https://github.com/ARMSX2/ARMSX2)（PCSX2 的原生 ARM64 JIT fork）
 移植到 HarmonyOS / OpenHarmony。
 
-> **当前测试版：v0.17**
+> **当前测试版：v0.18**
 >
-> 本次测试设备：**HUAWEI Pura X View**。欢迎在 GitHub Issues 反馈测试结果。
+> 本轮性能与设置验证设备：**HUAWEI nova 14（麒麟 8000）**。欢迎在 GitHub Issues 反馈测试结果。
 > 本版本是开发测试包，不代表已经适配所有 HarmonyOS 设备。
 
 > **本版本（GitHub 分发版）需要你自己签名。**
@@ -54,7 +54,7 @@ SELinux domain。不同设备、HarmonyOS 版本和签名环境可能得到不�
 ```bash
 # 一条命令固定并恢复上游、第三方源码，交叉编译依赖与核心并构建 HAP。
 # 可用 DEVECO_HOME 指向 DevEco-Studio.app/Contents。
-bash scripts/build-debug-hap.sh
+HPS2_USE_VULKAN=ON bash scripts/build-debug-hap.sh
 
 # 单独检查上游补丁归档
 bash tools/check-upstream-archive.sh
@@ -108,6 +108,14 @@ bundleName 与 Profile 不匹配而失败。
 ---
 
 ## 项目状态
+
+### v0.18 游戏性能设置与 Vulkan
+
+- 游戏库新增「本游戏设置」。EE 降频、EE 周期跳过、即时 VU1 均可独立覆盖全局默认，支持恢复「跟随全局」。
+- Vulkan 开发包保留 OpenGL，启用核心 ThinLTO，优化 VU1 重编译与线程间数据传递。
+- 游戏目录支持系统选择、授权保留、直读检查、复制前确认及应用内副本清理。
+
+[完整更新说明](docs/RELEASE-NOTES-v0.18.md) · [下载 v0.18 测试包](https://github.com/ljq123ok/Hps2/releases/tag/v0.18)
 
 ### v0.17 扫描游戏修复与测试说明
 

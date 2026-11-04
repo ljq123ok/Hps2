@@ -49,6 +49,7 @@ fi
 
 # --- 2. Configure + build + install SDL3 (library only) ----------------------
 bash "$ROOT/scripts/build-lib.sh" sdl3 "$ROOT/src/sdl3" \
+  -DSDL_HIDAPI_LIBUSB=OFF \
   -DSDL_UNIX_CONSOLE_BUILD=ON \
   -DSDL_TESTS=OFF \
   -DSDL_EXAMPLES=OFF \

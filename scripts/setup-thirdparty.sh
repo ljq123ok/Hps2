@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCK="$ROOT/thirdparty-ohos/sources.lock.json"
+LOCK="${HPS2_THIRDPARTY_LOCK:-$ROOT/thirdparty-ohos/sources.lock.json}"
 DEST_ROOT="$ROOT/thirdparty-ohos/src"
 
 python3 - "$LOCK" "$DEST_ROOT" <<'PY'

@@ -1,5 +1,5 @@
 diff --git a/3rdparty/cpuinfo/CMakeLists.txt b/3rdparty/cpuinfo/CMakeLists.txt
-index 6bb4687cde..d4d4da30ff 100644
+index 6bb4687cd..d4d4da30f 100644
 --- a/3rdparty/cpuinfo/CMakeLists.txt
 +++ b/3rdparty/cpuinfo/CMakeLists.txt
 @@ -108,7 +108,7 @@ IF(NOT CMAKE_SYSTEM_NAME)
@@ -84,7 +84,7 @@ index 6bb4687cde..d4d4da30ff 100644
      CPUINFO_TARGET_ENABLE_CXX11(get-current-test)
      CPUINFO_TARGET_RUNTIME_LIBRARY(get-current-test)
 diff --git a/3rdparty/glad/include/EGL/eglplatform.h b/3rdparty/glad/include/EGL/eglplatform.h
-index 6786afd90b..1ff1f3b3e4 100644
+index 6786afd90..1ff1f3b3e 100644
 --- a/3rdparty/glad/include/EGL/eglplatform.h
 +++ b/3rdparty/glad/include/EGL/eglplatform.h
 @@ -103,6 +103,23 @@ typedef void*                           EGLNativeDisplayType;
@@ -111,8 +111,37 @@ index 6786afd90b..1ff1f3b3e4 100644
  #elif defined(USE_OZONE)
  
  typedef intptr_t EGLNativeDisplayType;
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0b29dcfa1..5adc3934f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,6 +13,11 @@ endif()
+ # Project Name
+ project(Pcsx2 C CXX)
+ 
++option(HPS2_PERF_BREAKDOWN "Enable temporary Hps2 VIF/VU/EE wait timing counters" OFF)
++if(HPS2_PERF_BREAKDOWN)
++	add_compile_definitions(HPS2_PERF_BREAKDOWN=1)
++endif()
++
+ # Variable to check that people use the good file
+ set(TOP_CMAKE_WAS_SOURCED TRUE)
+ 
+diff --git a/cmake/FindShaderc.cmake b/cmake/FindShaderc.cmake
+index bf1c0e132..fb1a315b5 100644
+--- a/cmake/FindShaderc.cmake
++++ b/cmake/FindShaderc.cmake
+@@ -16,7 +16,7 @@ find_path(
+ # A libretro core is a file someone drops into a frontend on a machine we know
+ # nothing about, so there the archive is what we want and it goes first; every
+ # other build prefers the system's shared library, as before.
+-if(ENABLE_LIBRETRO)
++if(ENABLE_LIBRETRO OR OHOS)
+     set(SHADERC_LIBRARY_NAMES shaderc_combined shaderc_shared.1 shaderc_shared)
+ else()
+     set(SHADERC_LIBRARY_NAMES shaderc_shared.1 shaderc_shared shaderc_combined)
 diff --git a/cmake/Pcsx2Utils.cmake b/cmake/Pcsx2Utils.cmake
-index 813722edd1..abd9160d0d 100644
+index 813722edd..abd9160d0 100644
 --- a/cmake/Pcsx2Utils.cmake
 +++ b/cmake/Pcsx2Utils.cmake
 @@ -21,6 +21,15 @@ function(detect_operating_system)
@@ -132,7 +161,7 @@ index 813722edd1..abd9160d0d 100644
  		message(STATUS "Building for Linux.")
  	elseif(BSD)
 diff --git a/cmake/SearchForStuff.cmake b/cmake/SearchForStuff.cmake
-index e1d43e031d..3d92d45fa1 100644
+index e1d43e031..3d92d45fa 100644
 --- a/cmake/SearchForStuff.cmake
 +++ b/cmake/SearchForStuff.cmake
 @@ -38,6 +38,13 @@ if (WIN32)
@@ -151,7 +180,7 @@ index e1d43e031d..3d92d45fa1 100644
  	if(NOT IOS)
 diff --git a/cmake/ohos.toolchain.cmake b/cmake/ohos.toolchain.cmake
 new file mode 100644
-index 0000000000..d4338835d0
+index 000000000..d4338835d
 --- /dev/null
 +++ b/cmake/ohos.toolchain.cmake
 @@ -0,0 +1,126 @@
@@ -282,7 +311,7 @@ index 0000000000..d4338835d0
 +
 +message(STATUS "Hps2: host page size = ${HPS2_OHOS_PAGE_SIZE}, cache line = ${HPS2_OHOS_CACHE_LINE_SIZE}")
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 6e49c6b640..e3aed7dd71 100644
+index 6e49c6b64..e3aed7dd7 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -229,7 +229,7 @@ if (USE_GCC AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
@@ -316,7 +345,7 @@ index 6e49c6b640..e3aed7dd71 100644
  	JPEG::JPEG
 diff --git a/common/HTTPDownloaderOHOS.cpp b/common/HTTPDownloaderOHOS.cpp
 new file mode 100644
-index 0000000000..478d544917
+index 000000000..478d54491
 --- /dev/null
 +++ b/common/HTTPDownloaderOHOS.cpp
 @@ -0,0 +1,220 @@
@@ -542,7 +571,7 @@ index 0000000000..478d544917
 +}
 diff --git a/common/HarmonyOS/ohos_libcxx_compat.h b/common/HarmonyOS/ohos_libcxx_compat.h
 new file mode 100644
-index 0000000000..4f3bac42fe
+index 000000000..4f3bac42f
 --- /dev/null
 +++ b/common/HarmonyOS/ohos_libcxx_compat.h
 @@ -0,0 +1,242 @@
@@ -789,7 +818,7 @@ index 0000000000..4f3bac42fe
 +
 +#endif // __OHOS__
 diff --git a/common/HeapArray.h b/common/HeapArray.h
-index 367256ddf6..48913b83df 100644
+index 367256ddf..48913b83d 100644
 --- a/common/HeapArray.h
 +++ b/common/HeapArray.h
 @@ -5,6 +5,12 @@
@@ -806,7 +835,7 @@ index 367256ddf6..48913b83df 100644
  #include <cassert>
  #include <cstdlib>
 diff --git a/common/HostSys.h b/common/HostSys.h
-index 5635b060f1..95bf608c74 100644
+index 5635b060f..95bf608c7 100644
 --- a/common/HostSys.h
 +++ b/common/HostSys.h
 @@ -93,12 +93,29 @@ namespace HostSys
@@ -841,7 +870,7 @@ index 5635b060f1..95bf608c74 100644
  	[[maybe_unused]] __fi static void BeginCodeWrite() {}
  	[[maybe_unused]] __fi static void EndCodeWrite() {}
 diff --git a/common/Linux/LnxHostSys.cpp b/common/Linux/LnxHostSys.cpp
-index 6e3e240c34..b974eb6859 100644
+index 6e3e240c3..b974eb685 100644
 --- a/common/Linux/LnxHostSys.cpp
 +++ b/common/Linux/LnxHostSys.cpp
 @@ -16,6 +16,8 @@
@@ -991,7 +1020,7 @@ index 6e3e240c34..b974eb6859 100644
  	}
  
 diff --git a/common/Linux/LnxMisc.cpp b/common/Linux/LnxMisc.cpp
-index 3cd74865d2..a3bdbd69eb 100644
+index 3cd74865d..a3bdbd69e 100644
 --- a/common/Linux/LnxMisc.cpp
 +++ b/common/Linux/LnxMisc.cpp
 @@ -13,7 +13,7 @@
@@ -1055,8 +1084,100 @@ index 3cd74865d2..a3bdbd69eb 100644
  
  void Threading::Sleep(int ms)
  {
+diff --git a/common/Perf.cpp b/common/Perf.cpp
+index 1116929b5..3ffabad40 100644
+--- a/common/Perf.cpp
++++ b/common/Perf.cpp
+@@ -14,6 +14,12 @@
+ #include <cstdlib>
+ #include <cstring>
+ 
++#ifdef __OHOS__
++#include <atomic>
++#include <chrono>
++#include <hilog/log.h>
++#endif
++
+ #ifdef __linux__
+ #include <atomic>
+ #include <ctime>
+@@ -40,6 +46,28 @@
+ 
+ namespace Perf
+ {
++#ifdef __OHOS__
++	static std::atomic<bool> s_jit_map_log_enabled{false};
++#endif
++
++	void SetJitMapLogEnabled(bool enabled)
++	{
++#ifdef __OHOS__
++		s_jit_map_log_enabled.store(enabled, std::memory_order_relaxed);
++#else
++		(void)enabled;
++#endif
++	}
++
++	bool IsJitMapLogEnabled()
++	{
++#ifdef __OHOS__
++		return s_jit_map_log_enabled.load(std::memory_order_relaxed);
++#else
++		return false;
++#endif
++	}
++
+ 	Group any("");
+ 	Group ee("EE");
+ 	Group iop("IOP");
+@@ -48,7 +76,19 @@ namespace Perf
+ 	Group vif("VIF");
+ 
+ // Perf is only supported on linux
+-#if defined(__linux__) && defined(ProfileWithPerf)
++#if defined(__OHOS__)
++	static void RegisterMethod(const void* ptr, size_t size, const char* symbol)
++	{
++		if (!IsJitMapLogEnabled() || !ptr || size == 0)
++			return;
++		const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++			std::chrono::steady_clock::now().time_since_epoch()).count();
++		OH_LOG_Print(LOG_APP, LOG_WARN, 0x3202, "HPS2_JIT",
++			"MAP ns=%{public}llu addr=%{public}llx size=%{public}zu name=%{public}s",
++			static_cast<unsigned long long>(ns),
++			static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ptr)), size, symbol);
++	}
++#elif defined(__linux__) && defined(ProfileWithPerf)
+ 	static std::FILE* s_map_file = nullptr;
+ 	static bool s_map_file_opened = false;
+ 	static std::mutex s_mutex;
+@@ -206,7 +246,7 @@ namespace Perf
+ 	}
+ #endif
+ 
+-#if (defined(__linux__) && (defined(ProfileWithPerf) || defined(ProfileWithPerfJitDump))) || defined(ENABLE_VTUNE)
++#if defined(__OHOS__) || (defined(__linux__) && (defined(ProfileWithPerf) || defined(ProfileWithPerfJitDump))) || defined(ENABLE_VTUNE)
+ 	void Group::Register(const void* ptr, size_t size, const char* symbol)
+ 	{
+ 		char full_symbol[128];
+diff --git a/common/Perf.h b/common/Perf.h
+index bce97822a..17a951740 100644
+--- a/common/Perf.h
++++ b/common/Perf.h
+@@ -35,6 +35,11 @@ namespace Perf
+ 	// on a file that's already been opened in this process.
+ 	void SetJitDumpEnabled(bool enabled);
+ 
++	// OHOS development diagnostics: emit timestamped code ranges to hilog.
++	// Off by default; does no file I/O or logging on the execution path.
++	void SetJitMapLogEnabled(bool enabled);
++	bool IsJitMapLogEnabled();
++
+ 	extern Group any;
+ 	extern Group ee;
+ 	extern Group iop;
 diff --git a/common/WindowInfo.h b/common/WindowInfo.h
-index e4ba615294..f2a953e68f 100644
+index e4ba61529..f2a953e68 100644
 --- a/common/WindowInfo.h
 +++ b/common/WindowInfo.h
 @@ -18,6 +18,10 @@ struct WindowInfo
@@ -1072,7 +1193,7 @@ index e4ba615294..f2a953e68f 100644
  		// renderer enumerates displays itself. surface_width/surface_height
 diff --git a/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp b/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp
 new file mode 100644
-index 0000000000..b0d616ff66
+index 000000000..b0d616ff6
 --- /dev/null
 +++ b/pcsx2/CDVD/HarmonyOS/IOCtlSrcOHOS.cpp
 @@ -0,0 +1,105 @@
@@ -1182,7 +1303,7 @@ index 0000000000..b0d616ff66
 +
 +#endif // __OHOS__
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 5ccf72c2e9..371728df03 100644
+index 5ccf72c2e..654b7761c 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
 @@ -344,7 +344,7 @@ set(pcsx2DEV9Sources
@@ -1194,6 +1315,15 @@ index 5ccf72c2e9..371728df03 100644
  	list(APPEND pcsx2DEV9Sources DEV9/pcap_io.cpp)
  endif()
  
+@@ -808,7 +808,7 @@ if(USE_VULKAN)
+ 	# then the core carries its own. A shared library is deliberately not linked
+ 	# here, since a hard dependency would stop the core loading at all for
+ 	# someone who is happily using the OpenGL renderer.
+-	if(ENABLE_LIBRETRO AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
++	if((ENABLE_LIBRETRO OR OHOS) AND NOT ANDROID AND TARGET Shaderc::shaderc_shared
+ 			AND SHADERC_LIBRARY MATCHES "shaderc_combined")
+ 		target_link_libraries(PCSX2_FLAGS INTERFACE Shaderc::shaderc_shared)
+ 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_LINK_SHADERC)
 @@ -995,6 +995,10 @@ set(pcsx2HostSources
  	Host/CubebAudioStream.cpp
  	Host/SDLAudioStream.cpp)
@@ -1240,7 +1370,20 @@ index 5ccf72c2e9..371728df03 100644
  # These ones benefit a lot from LTO
  set(pcsx2LTOSources
  	${pcsx2Sources}
-@@ -1492,7 +1517,17 @@ target_sources(PCSX2 PRIVATE
+@@ -1352,7 +1377,11 @@ elseif(ARCH_ARM64)
+ endif()
+ 
+ if(LTO_PCSX2_CORE)
+-	add_library(PCSX2_LTO ${pcsx2LTOSources})
++	if(OHOS)
++		add_library(PCSX2_LTO OBJECT ${pcsx2LTOSources})
++	else()
++		add_library(PCSX2_LTO ${pcsx2LTOSources})
++	endif()
+ 	if (DISABLE_ADVANCE_SIMD)
+ 		target_compile_definitions(PCSX2_LTO PRIVATE MULTI_ISA_SHARED_COMPILATION)
+ 	endif()
+@@ -1492,7 +1521,17 @@ target_sources(PCSX2 PRIVATE
  )
  
  # platform sources
@@ -1259,7 +1402,7 @@ index 5ccf72c2e9..371728df03 100644
  	target_sources(PCSX2 PRIVATE
  		${pcsx2LinuxSources}
  		${pcsx2LinuxHeaders}
-@@ -1577,7 +1612,7 @@ if(WIN32)
+@@ -1577,7 +1616,7 @@ if(WIN32)
  		dwmapi.lib
  		OneCore.lib
  	)
@@ -1268,7 +1411,7 @@ index 5ccf72c2e9..371728df03 100644
  	# Android and iOS have no system libpcap; DEV9 uses Android/AndroidPcapStubs.cpp
  	# instead, so they must NOT link PCAP::PCAP. iOS additionally skips
  	# find_package(PCAP) (SearchForStuff.cmake), so the PCAP::PCAP target doesn't
-@@ -1921,3 +1956,28 @@ source_group(Resources/GUI FILES ${pcsx2GuiResources})
+@@ -1921,3 +1960,31 @@ source_group(Resources/GUI FILES ${pcsx2GuiResources})
  source_group(Resources/PAD FILES ${pcsx2PADResources})
  source_group(Resources/Recording FILES ${pcsx2RecordingVirtualPadResources})
  source_group(Resources REGULAR_EXPRESSION ${CMAKE_CURRENT_BINARY_DIR}/*)
@@ -1290,6 +1433,9 @@ index 5ccf72c2e9..371728df03 100644
 +# ---------------------------------------------------------------------------
 +if(OHOS)
 +	add_library(PCSX2_CORE_STATIC STATIC $<TARGET_OBJECTS:PCSX2>)
++	if(LTO_PCSX2_CORE)
++		target_sources(PCSX2_CORE_STATIC PRIVATE $<TARGET_OBJECTS:PCSX2_LTO>)
++	endif()
 +	target_link_libraries(PCSX2_CORE_STATIC PUBLIC PCSX2_FLAGS)
 +	set_target_properties(PCSX2_CORE_STATIC PROPERTIES
 +		OUTPUT_NAME "PCSX2core"
@@ -1298,7 +1444,7 @@ index 5ccf72c2e9..371728df03 100644
 +	message(STATUS "Hps2: PCSX2_CORE_STATIC -> ${CMAKE_BINARY_DIR}/lib/libPCSX2core.a")
 +endif()
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index e0ea5bcb27..3bd6ae28b4 100644
+index e0ea5bcb2..3bd6ae28b 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -1183,6 +1183,8 @@ struct Pcsx2Config
@@ -1311,7 +1457,7 @@ index e0ea5bcb27..3bd6ae28b4 100644
  		static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Cubeb;
  #endif
 diff --git a/pcsx2/EeFpuModel.h b/pcsx2/EeFpuModel.h
-index 4866055af5..1ec153dbe2 100644
+index 4866055af..1ec153dbe 100644
 --- a/pcsx2/EeFpuModel.h
 +++ b/pcsx2/EeFpuModel.h
 @@ -19,7 +19,22 @@
@@ -1338,8 +1484,30 @@ index 4866055af5..1ec153dbe2 100644
  #define EEFPU_MODEL_CALL __attribute__((preserve_all))
  #define EEFPU_MODEL_CALL_SPARES_MOST 1
  #else
+diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
+index b1a3f8d79..4d87f6f86 100644
+--- a/pcsx2/GS/GSUtil.cpp
++++ b/pcsx2/GS/GSUtil.cpp
+@@ -399,6 +399,10 @@ GSRendererType GSUtil::GetPreferredRenderer()
+ #else
+ 		preferred_renderer = GSRendererType::SW;
+ #endif
++#elif defined(__OHOS__)
++		// Keep SW presentation and Auto on the established GL path while Vulkan
++		// is opt-in during the OHOS bring-up. Explicit VK still selects Vulkan.
++		preferred_renderer = GSRendererType::OGL;
+ #else
+ 		// Linux: Prefer Vulkan if the driver isn't buggy.
+ #if defined(ENABLE_VULKAN)
+@@ -473,4 +477,4 @@ bool GSUtil::IsValidPSM(int psm)
+ 		default:
+ 			return false;
+ 	}
+-}
+\ No newline at end of file
++}
 diff --git a/pcsx2/GS/Renderers/OpenGL/GLContext.cpp b/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
-index 0df49981f4..e722d31147 100644
+index 0df49981f..e722d3114 100644
 --- a/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
 +++ b/pcsx2/GS/Renderers/OpenGL/GLContext.cpp
 @@ -2,9 +2,12 @@
@@ -1384,7 +1552,7 @@ index 0df49981f4..e722d31147 100644
  	if (!context)
  		context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
 diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp b/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
-index 775328a7ee..a5d07f3a90 100644
+index 775328a7e..a5d07f3a9 100644
 --- a/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
 +++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGL.cpp
 @@ -162,11 +162,17 @@ EGLNativeWindowType GLContextEGL::GetNativeWindow(EGLConfig config)
@@ -1427,7 +1595,7 @@ index 775328a7ee..a5d07f3a90 100644
  
 diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
 new file mode 100644
-index 0000000000..430cf311c6
+index 000000000..430cf311c
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.cpp
 @@ -0,0 +1,116 @@
@@ -1549,7 +1717,7 @@ index 0000000000..430cf311c6
 +}
 diff --git a/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h
 new file mode 100644
-index 0000000000..c5f76a32f9
+index 000000000..c5f76a32f
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/OpenGL/GLContextEGLOHOS.h
 @@ -0,0 +1,26 @@
@@ -1580,7 +1748,7 @@ index 0000000000..c5f76a32f9
 +	EGLNativeWindowType GetNativeWindow(EGLConfig config) override;
 +};
 diff --git a/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp b/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
-index 3f1893d317..9f4ec496c7 100644
+index 3f1893d31..9f4ec496c 100644
 --- a/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
 +++ b/pcsx2/GS/Renderers/OpenGL/GSDeviceOGL.cpp
 @@ -1609,7 +1609,7 @@ void GSDeviceOGL::PopTimestampQuery()
@@ -1638,8 +1806,298 @@ index 3f1893d317..9f4ec496c7 100644
  	if (m_pipeline_statistics_queries[0][0] == 0)
  		return;
  
+diff --git a/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp b/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp
+index 7adc35a23..767680c4e 100644
+--- a/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp
++++ b/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp
+@@ -256,6 +256,10 @@ bool GSDeviceVK::SelectInstanceExtensions(ExtensionList* extension_list, const W
+ 	if (wi.type == WindowInfo::Type::Android && !SupportsExtension(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, true))
+ 		return false;
+ #endif
++#if defined(VK_USE_PLATFORM_OHOS)
++	if (wi.type == WindowInfo::Type::OHOS && !SupportsExtension(VK_OHOS_SURFACE_EXTENSION_NAME, true))
++		return false;
++#endif
+ 
+ 	// VK_KHR_display direct-to-monitor surface (kmsdrm handhelds).
+ 	// VK_KHR_get_display_properties2 is optional but lets us read HDR / extended
+@@ -1632,6 +1636,7 @@ std::vector<std::string> GSDeviceVK::GetExtendedStats() const
+ 			case WindowInfo::Type::X11:         wsi_name = "X11"; break;
+ 			case WindowInfo::Type::Wayland:     wsi_name = "Wayland"; break;
+ 			case WindowInfo::Type::MacOS:       wsi_name = "MacOS"; break;
++			case WindowInfo::Type::OHOS:        wsi_name = "OHOS"; break;
+ 			case WindowInfo::Type::VulkanDirect: wsi_name = "VulkanDirect"; break;
+ 		}
+ 		const char* present_name = "?";
+@@ -2036,6 +2041,7 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
+ 		if (res != VK_SUCCESS)
+ 			LOG_VULKAN_ERROR(res, "vkResetDescriptorPool failed: ");
+ 	}
++	resources.tfx_texture_descriptor_sets.clear();
+ 	resources.descriptor_pool_cursor = 0;
+ 	resources.descriptor_pool_cursor_sets = 0;
+ 
+@@ -8218,15 +8224,36 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
+ 	if (flags & DIRTY_FLAG_TFX_TEXTURES)
+ 	{
+ 		VkDescriptorSet ds = VK_NULL_HANDLE;
++		FrameResources* frame_resources = nullptr;
++		TFXTextureDescriptorKey descriptor_key{};
++		bool descriptor_cached = false;
+ 		// Non-push path allocates a fresh (empty) descriptor set, so every binding the
+ 		// shader may read must be written — not just the dirty ones (push descriptors
+ 		// persist the rest in command-buffer state; allocated sets do not). Force all
+ 		// texture sub-flags on; all m_tfx_textures[] slots are always valid (null slots
+-		// hold m_null_texture), so this is safe.
++		// hold m_null_texture), so this is safe. Reuse matching sets within this frame
++		// to avoid repeated driver allocations and descriptor updates.
+ 		if (!m_use_push_descriptors)
+ 		{
+ 			flags |= DIRTY_FLAG_TFX_TEXTURES;
+-			ds = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
++			frame_resources = &m_frame_resources[m_current_frame];
++			descriptor_key.sampler = m_tfx_sampler;
++			for (u32 i = 0; i < NUM_TFX_TEXTURES; i++)
++			{
++				descriptor_key.views[i] = m_tfx_textures[i]->GetView();
++				descriptor_key.layouts[i] = m_tfx_textures[i]->GetVkLayout();
++			}
++
++			const auto cached_set = frame_resources->tfx_texture_descriptor_sets.find(descriptor_key);
++			if (cached_set != frame_resources->tfx_texture_descriptor_sets.end())
++			{
++				ds = cached_set->second;
++				descriptor_cached = true;
++			}
++			else
++			{
++				ds = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
++			}
+ 			if (ds == VK_NULL_HANDLE) [[unlikely]]
+ 			{
+ 				if (already_execed)
+@@ -8242,18 +8269,18 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
+ 			}
+ 		}
+ 
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_TEX)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_TEX))
+ 		{
+ 			dsub.AddCombinedImageSamplerDescriptorWrite(ds, TFX_TEXTURE_TEXTURE,
+ 				m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetView(), m_tfx_sampler,
+ 				m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetVkLayout());
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_PALETTE)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_PALETTE))
+ 		{
+ 			dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_PALETTE,
+ 				m_tfx_textures[TFX_TEXTURE_PALETTE]->GetView(), m_tfx_textures[TFX_TEXTURE_PALETTE]->GetVkLayout());
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_RT)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_RT))
+ 		{
+ 			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+ 			{
+@@ -8266,12 +8293,12 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
+ 					m_tfx_textures[TFX_TEXTURE_RT]->GetVkLayout());
+ 			}
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_PRIMID)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_PRIMID))
+ 		{
+ 			dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_PRIMID,
+ 				m_tfx_textures[TFX_TEXTURE_PRIMID]->GetView(), m_tfx_textures[TFX_TEXTURE_PRIMID]->GetVkLayout());
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH))
+ 		{
+ 			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+ 			{
+@@ -8284,12 +8311,12 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
+ 					m_tfx_textures[TFX_TEXTURE_DEPTH]->GetVkLayout());
+ 			}
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_RT_ROV)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_RT_ROV))
+ 		{
+ 			dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_RT_ROV, m_tfx_textures[TFX_TEXTURE_RT_ROV]->GetView(),
+ 				m_tfx_textures[TFX_TEXTURE_RT_ROV]->GetVkLayout(), true);
+ 		}
+-		if (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH_ROV)
++		if (!descriptor_cached && (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH_ROV))
+ 		{
+ 			dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_DEPTH_ROV, m_tfx_textures[TFX_TEXTURE_DEPTH_ROV]->GetView(),
+ 				m_tfx_textures[TFX_TEXTURE_DEPTH_ROV]->GetVkLayout(), true);
+@@ -8301,7 +8328,11 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
+ 		}
+ 		else
+ 		{
+-			dsub.Update(m_device);
++			if (!descriptor_cached)
++			{
++				dsub.Update(m_device);
++				frame_resources->tfx_texture_descriptor_sets.emplace(descriptor_key, ds);
++			}
+ 			vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout,
+ 				TFX_DESCRIPTOR_SET_TEXTURES, 1, &ds, 0, nullptr);
+ 		}
+diff --git a/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h b/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h
+index 37c72a942..c3fa8e3d4 100644
+--- a/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h
++++ b/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h
+@@ -22,6 +22,7 @@
+ #include <mutex>
+ #include <string>
+ #include <thread>
++#include <unordered_map>
+ #include <vector>
+ 
+ class VKSwapChain;
+@@ -285,6 +286,40 @@ private:
+ 		Ready,
+ 	};
+ 
++	enum TFX_TEXTURES : u32
++	{
++		TFX_TEXTURE_TEXTURE = 0,
++		TFX_TEXTURE_PALETTE,
++		TFX_TEXTURE_RT,
++		TFX_TEXTURE_PRIMID,
++		TFX_TEXTURE_DEPTH,
++		TFX_TEXTURE_RT_ROV,
++		TFX_TEXTURE_DEPTH_ROV,
++
++		NUM_TFX_TEXTURES
++	};
++
++	struct TFXTextureDescriptorKey
++	{
++		std::array<VkImageView, NUM_TFX_TEXTURES> views{};
++		std::array<VkImageLayout, NUM_TFX_TEXTURES> layouts{};
++		VkSampler sampler = VK_NULL_HANDLE;
++
++		bool operator==(const TFXTextureDescriptorKey&) const = default;
++	};
++
++	struct TFXTextureDescriptorKeyHash
++	{
++		std::size_t operator()(const TFXTextureDescriptorKey& key) const
++		{
++			std::size_t hash = 0;
++			for (u32 i = 0; i < NUM_TFX_TEXTURES; i++)
++				HashCombine(hash, key.views[i], key.layouts[i]);
++			HashCombine(hash, key.sampler);
++			return hash;
++		}
++	};
++
+ 	struct FrameResources
+ 	{
+ 		// [0] - Init (upload) command buffer, [1] - draw command buffer
+@@ -297,6 +332,10 @@ private:
+ 		// from it -- every device on the push-descriptor path, i.e. everything but Mali -- never
+ 		// has one.
+ 		std::vector<VkDescriptorPool> descriptor_pools;
++		// Reuse identical non-push texture bindings within this frame. This cache is
++		// cleared whenever the pools are reset, so no descriptor outlives its pool.
++		std::unordered_map<TFXTextureDescriptorKey, VkDescriptorSet, TFXTextureDescriptorKeyHash>
++			tfx_texture_descriptor_sets;
+ 		// Which link allocations are coming from, and how many sets it has served since it was
+ 		// reset. The count decides when the link is full -- drivers are not reliable about saying
+ 		// so -- and it also separates "full" from "no link of this shape can ever serve that
+@@ -494,19 +533,6 @@ public:
+ 
+ 		NUM_TFX_DESCRIPTOR_SETS,
+ 	};
+-	enum TFX_TEXTURES : u32
+-	{
+-		TFX_TEXTURE_TEXTURE = 0,
+-		TFX_TEXTURE_PALETTE,
+-		TFX_TEXTURE_RT,
+-		TFX_TEXTURE_PRIMID,
+-		TFX_TEXTURE_DEPTH,
+-		TFX_TEXTURE_RT_ROV,
+-		TFX_TEXTURE_DEPTH_ROV,
+-
+-		NUM_TFX_TEXTURES
+-	};
+-
+ private:
+ 	std::unique_ptr<VKSwapChain> m_swap_chain;
+ 	bool m_resize_requested = false;
+diff --git a/pcsx2/GS/Renderers/Vulkan/VKEntryPoints.inl b/pcsx2/GS/Renderers/Vulkan/VKEntryPoints.inl
+index 831a56132..80a6272e6 100644
+--- a/pcsx2/GS/Renderers/Vulkan/VKEntryPoints.inl
++++ b/pcsx2/GS/Renderers/Vulkan/VKEntryPoints.inl
+@@ -60,6 +60,10 @@ VULKAN_INSTANCE_ENTRY_POINT(vkCreateMetalSurfaceEXT, false)
+ VULKAN_INSTANCE_ENTRY_POINT(vkCreateAndroidSurfaceKHR, false)
+ #endif
+ 
++#if defined(VK_USE_PLATFORM_OHOS)
++VULKAN_INSTANCE_ENTRY_POINT(vkCreateSurfaceOHOS, false)
++#endif
++
+ // VK_EXT_debug_utils
+ VULKAN_INSTANCE_ENTRY_POINT(vkCmdBeginDebugUtilsLabelEXT, false)
+ VULKAN_INSTANCE_ENTRY_POINT(vkCmdEndDebugUtilsLabelEXT, false)
+diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.h b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
+index 05af661b8..00fcc74cd 100644
+--- a/pcsx2/GS/Renderers/Vulkan/VKLoader.h
++++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
+@@ -30,6 +30,10 @@ class Error;
+ #define VK_USE_PLATFORM_ANDROID_KHR
+ #endif
+ 
++#if defined(__OHOS__)
++#define VK_USE_PLATFORM_OHOS
++#endif
++
+ #include "vulkan/vulkan.h"
+ 
+ #if defined(X11_API)
+diff --git a/pcsx2/GS/Renderers/Vulkan/VKSwapChain.cpp b/pcsx2/GS/Renderers/Vulkan/VKSwapChain.cpp
+index 3f9328295..7403a7d69 100644
+--- a/pcsx2/GS/Renderers/Vulkan/VKSwapChain.cpp
++++ b/pcsx2/GS/Renderers/Vulkan/VKSwapChain.cpp
+@@ -77,6 +77,28 @@ VKSwapChain::~VKSwapChain()
+ 
+ VkSurfaceKHR VKSwapChain::CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi)
+ {
++#if defined(VK_USE_PLATFORM_OHOS)
++	if (wi->type == WindowInfo::Type::OHOS)
++	{
++		if (!wi->window_handle || !vkCreateSurfaceOHOS)
++		{
++			Console.Error("Vulkan OHOS: missing native window or vkCreateSurfaceOHOS entry point.");
++			return VK_NULL_HANDLE;
++		}
++		const VkSurfaceCreateInfoOHOS info = {VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS,
++			nullptr, 0, static_cast<OHNativeWindow*>(wi->window_handle)};
++		VkSurfaceKHR surface = VK_NULL_HANDLE;
++		const VkResult result = vkCreateSurfaceOHOS(instance, &info, nullptr, &surface);
++		if (result != VK_SUCCESS)
++		{
++			LOG_VULKAN_ERROR(result, "vkCreateSurfaceOHOS failed: ");
++			return VK_NULL_HANDLE;
++		}
++		Console.WriteLn("Vulkan OHOS: surface created successfully.");
++		return surface;
++	}
++#endif
++
+ #if defined(VK_USE_PLATFORM_WIN32_KHR)
+ 	if (wi->type == WindowInfo::Type::Win32)
+ 	{
+@@ -698,6 +720,7 @@ bool VKSwapChain::CreateSwapChain()
+ 			case WindowInfo::Type::X11:         wsi_name = "X11"; break;
+ 			case WindowInfo::Type::Wayland:     wsi_name = "Wayland"; break;
+ 			case WindowInfo::Type::MacOS:       wsi_name = "MacOS"; break;
++			case WindowInfo::Type::OHOS:        wsi_name = "OHOS"; break;
+ 			case WindowInfo::Type::VulkanDirect: wsi_name = "VulkanDirect"; break;
+ 		}
+ 		Console.WriteLnFmt(
 diff --git a/pcsx2/Host/AudioStream.cpp b/pcsx2/Host/AudioStream.cpp
-index b87755926b..7f3a182eea 100644
+index b87755926..7f3a182ee 100644
 --- a/pcsx2/Host/AudioStream.cpp
 +++ b/pcsx2/Host/AudioStream.cpp
 @@ -124,6 +124,9 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
@@ -1668,7 +2126,7 @@ index b87755926b..7f3a182eea 100644
  
  std::optional<AudioBackend> AudioStream::ParseBackendName(const char* str)
 diff --git a/pcsx2/Host/AudioStream.h b/pcsx2/Host/AudioStream.h
-index d81e4dca62..e917a9a8fe 100644
+index d81e4dca6..e917a9a8f 100644
 --- a/pcsx2/Host/AudioStream.h
 +++ b/pcsx2/Host/AudioStream.h
 @@ -156,6 +156,10 @@ private:
@@ -1683,7 +2141,7 @@ index d81e4dca62..e917a9a8fe 100644
  	void DestroyBuffer();
  
 diff --git a/pcsx2/Host/AudioStreamTypes.h b/pcsx2/Host/AudioStreamTypes.h
-index 9cd1bcf818..ebedae92ea 100644
+index 9cd1bcf81..ebedae92e 100644
 --- a/pcsx2/Host/AudioStreamTypes.h
 +++ b/pcsx2/Host/AudioStreamTypes.h
 @@ -15,6 +15,7 @@ enum class AudioBackend : u8
@@ -1696,7 +2154,7 @@ index 9cd1bcf818..ebedae92ea 100644
  
 diff --git a/pcsx2/Host/OHAudioStream.cpp b/pcsx2/Host/OHAudioStream.cpp
 new file mode 100644
-index 0000000000..2bb26fc57a
+index 000000000..2bb26fc57
 --- /dev/null
 +++ b/pcsx2/Host/OHAudioStream.cpp
 @@ -0,0 +1,309 @@
@@ -2009,8 +2467,90 @@ index 0000000000..2bb26fc57a
 +		return nullptr;
 +	return stream;
 +}
+diff --git a/pcsx2/Hps2PerfBreakdown.h b/pcsx2/Hps2PerfBreakdown.h
+new file mode 100644
+index 000000000..d48fdd610
+--- /dev/null
++++ b/pcsx2/Hps2PerfBreakdown.h
+@@ -0,0 +1,76 @@
++// Temporary Kirin 8000 profiling counters. Compile only for a diagnostic build.
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <cstdint>
++
++namespace Hps2PerfBreakdown
++{
++enum class Metric : size_t
++{
++	Vif1Queue,
++	Vif1Unpack,
++	Vu1Execute,
++	EeWaitGS,
++	MtvuWaitGS,
++	EeWaitVU,
++	EeQueueWait,
++	Count
++};
++
++struct Value { uint64_t calls = 0; uint64_t nanoseconds = 0; };
++struct Counter { std::atomic<uint64_t> calls{0}; std::atomic<uint64_t> nanoseconds{0}; };
++
++inline std::array<Counter, static_cast<size_t>(Metric::Count)> s_counters{};
++inline thread_local std::array<uint64_t, static_cast<size_t>(Metric::Count)> s_sample_sequence{};
++inline constexpr uint64_t kSampleEvery = 4096;
++
++inline void Record(Metric metric, uint64_t elapsed_ns, uint64_t weight)
++{
++	Counter& counter = s_counters[static_cast<size_t>(metric)];
++	counter.calls.fetch_add(weight, std::memory_order_relaxed);
++	counter.nanoseconds.fetch_add(elapsed_ns * weight, std::memory_order_relaxed);
++}
++
++class ScopedTimer
++{
++public:
++#ifdef HPS2_PERF_BREAKDOWN
++	explicit ScopedTimer(Metric metric) : m_metric(metric)
++	{
++		const size_t index = static_cast<size_t>(metric);
++		m_sampled = (++s_sample_sequence[index] % kSampleEvery) == 0;
++		if (m_sampled)
++			m_start = std::chrono::steady_clock::now();
++	}
++	~ScopedTimer()
++	{
++		if (!m_sampled)
++			return;
++		const auto elapsed = std::chrono::steady_clock::now() - m_start;
++		Record(m_metric, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()), kSampleEvery);
++	}
++
++private:
++	Metric m_metric;
++	bool m_sampled = false;
++	std::chrono::steady_clock::time_point m_start{};
++#else
++	explicit ScopedTimer(Metric) {}
++#endif
++};
++
++inline std::array<Value, static_cast<size_t>(Metric::Count)> TakeSnapshot()
++{
++	std::array<Value, static_cast<size_t>(Metric::Count)> result{};
++	for (size_t i = 0; i < result.size(); ++i)
++	{
++		result[i].calls = s_counters[i].calls.exchange(0, std::memory_order_relaxed);
++		result[i].nanoseconds = s_counters[i].nanoseconds.exchange(0, std::memory_order_relaxed);
++	}
++	return result;
++}
++} // namespace Hps2PerfBreakdown
 diff --git a/pcsx2/ImGui/ImGuiOverlays.cpp b/pcsx2/ImGui/ImGuiOverlays.cpp
-index 12d22f48c7..75a17498ab 100644
+index 12d22f48c..75a17498a 100644
 --- a/pcsx2/ImGui/ImGuiOverlays.cpp
 +++ b/pcsx2/ImGui/ImGuiOverlays.cpp
 @@ -864,8 +864,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
@@ -2065,8 +2605,626 @@ index 12d22f48c7..75a17498ab 100644
  
  			static float s_ft_min = DEFAULT_FT_MIN;
  			static float s_ft_max = DEFAULT_FT_MAX;
+diff --git a/pcsx2/MTGS.cpp b/pcsx2/MTGS.cpp
+index 805a657db..571bbd7b1 100644
+--- a/pcsx2/MTGS.cpp
++++ b/pcsx2/MTGS.cpp
+@@ -4,6 +4,7 @@
+ #include "GS.h"
+ #include "Gif_Unit.h"
+ #include "MTGS.h"
++#include "Hps2PerfBreakdown.h"
+ #include "MTVU.h"
+ #include "Host.h"
+ #include "IconsFontAwesome.h"
+@@ -647,6 +648,7 @@ void MTGS::WaitGS(bool syncRegs, bool weakWait, bool isMTVU)
+ 	pxAssertMsg(IsOpen(), "MTGS Warning!  WaitGS issued on a closed thread.");
+ 	if (!IsOpen()) [[unlikely]]
+ 		return;
++	Hps2PerfBreakdown::ScopedTimer wait_timer(isMTVU ? Hps2PerfBreakdown::Metric::MtvuWaitGS : Hps2PerfBreakdown::Metric::EeWaitGS);
+ 
+ 	Gif_Path& path = gifUnit.gifPath[GIF_PATH_1];
+ 
+diff --git a/pcsx2/MTVU.cpp b/pcsx2/MTVU.cpp
+index c38d19ecf..cf3385478 100644
+--- a/pcsx2/MTVU.cpp
++++ b/pcsx2/MTVU.cpp
+@@ -5,6 +5,7 @@
+ #include "Gif_Unit.h"
+ #include "MTVU.h"
+ #include "PerformanceMetrics.h"
++#include "Hps2PerfBreakdown.h"
+ #include "VMManager.h"
+ #include "Vif_Dynarec.h"
+ 
+@@ -35,6 +36,7 @@ enum MTVU_EVENT
+ // Calls the vif unpack functions from the MTVU thread
+ static void MTVU_Unpack(void* data, VIFregisters& vifRegs)
+ {
++	Hps2PerfBreakdown::ScopedTimer timer(Hps2PerfBreakdown::Metric::Vif1Unpack);
+ 	u16 wl = vifRegs.cycle.wl > 0 ? vifRegs.cycle.wl : 256;
+ 	bool isFill = vifRegs.cycle.cl < wl;
+ 	if (CanUseVifDynarec())
+@@ -114,11 +116,14 @@ void VU_Thread::Close()
+ 
+ void VU_Thread::Reset()
+ {
++	m_notification_batch.OnNotify();
+ 	vuCycleIdx = 0;
+ 	m_ato_write_pos = 0;
+ 	m_write_pos = 0;
+-	m_ato_read_pos = 0;
++	m_queue_credit.Reset();
++	m_ato_read_sequence = 0;
+ 	m_read_pos = 0;
++	m_read_sequence = 0;
+ 	std::memset(&vif, 0, sizeof(vif));
+ 	std::memset(&vifRegs, 0, sizeof(vifRegs));
+ 	for (size_t i = 0; i < 4; ++i)
+@@ -137,21 +142,28 @@ void VU_Thread::ExecuteRingBuffer()
+ 		if (m_shutdown_flag.load(std::memory_order_acquire))
+ 			break;
+ 
+-		while (m_ato_read_pos.load(std::memory_order_relaxed) != GetWritePos())
++		// Keep the private cursor in a local across field reads; publish once per packet.
++		s32 read_pos = m_read_pos;
++		u64 published_read_sequence = m_read_sequence;
++		// An acquired producer position publishes every complete packet before it.
++		// Drain that prefix without reloading the producer's cache line per packet.
++		s32 write_pos = GetWritePos();
++		while (read_pos != write_pos)
+ 		{
+-			u32 tag = Read();
++			u32 tag = Read(read_pos);
+ 			switch (tag)
+ 			{
+ 				case MTVU_VU_EXECUTE:
+ 				{
+ 					VU1.cycle = 0;
+-					s32 addr = Read();
+-					vifRegs.top = Read();
+-					vifRegs.itop = Read();
+-					vuFBRST = Read();
++					s32 addr = Read(read_pos);
++					vifRegs.top = Read(read_pos);
++					vifRegs.itop = Read(read_pos);
++					vuFBRST = Read(read_pos);
+ 					if (addr != -1)
+ 						VU1.VI[REG_TPC].UL = addr & 0x7FF;
+ 					CpuVU1->SetStartPC(VU1.VI[REG_TPC].UL << 3);
++					Hps2PerfBreakdown::ScopedTimer timer(Hps2PerfBreakdown::Metric::Vu1Execute);
+ 					CpuVU1->Execute(vu1RunCycles);
+ 					gifUnit.gifPath[GIF_PATH_1].FinishGSPacketMTVU();
+ 					semaXGkick.Post(); // Tell MTGS a path1 packet is complete
+@@ -161,49 +173,59 @@ void VU_Thread::ExecuteRingBuffer()
+ 				}
+ 				case MTVU_VU_WRITE_MICRO:
+ 				{
+-					u32 vu_micro_addr = Read();
+-					u32 size = Read();
++					u32 vu_micro_addr = Read(read_pos);
++					u32 size = Read(read_pos);
+ 					CpuVU1->Clear(vu_micro_addr, size);
+-					Read(&VU1.Micro[vu_micro_addr], size);
++					Read(read_pos, &VU1.Micro[vu_micro_addr], size);
+ 					break;
+ 				}
+ 				case MTVU_VU_WRITE_DATA:
+ 				{
+-					u32 vu_data_addr = Read();
+-					u32 size = Read();
+-					Read(&VU1.Mem[vu_data_addr], size);
++					u32 vu_data_addr = Read(read_pos);
++					u32 size = Read(read_pos);
++					Read(read_pos, &VU1.Mem[vu_data_addr], size);
+ 					break;
+ 				}
+ 				case MTVU_VU_WRITE_VIREGS:
+-					Read(&VU1.VI, size_u32(32));
++					Read(read_pos, &VU1.VI, size_u32(32));
+ 					break;
+ 				case MTVU_VU_WRITE_VFREGS:
+-					Read(&VU1.VF, size_u32(4*32));
++					Read(read_pos, &VU1.VF, size_u32(4*32));
+ 					break;
+ 				case MTVU_VIF_WRITE_COL:
+-					Read(&vif.MaskCol, sizeof(vif.MaskCol));
++					Read(read_pos, &vif.MaskCol, sizeof(vif.MaskCol));
+ 					break;
+ 				case MTVU_VIF_WRITE_ROW:
+-					Read(&vif.MaskRow, sizeof(vif.MaskRow));
++					Read(read_pos, &vif.MaskRow, sizeof(vif.MaskRow));
+ 					break;
+ 				case MTVU_VIF_UNPACK:
+ 				{
+ 					u32 vif_copy_size = static_cast<u32>((uptr)&vif.StructEnd - (uptr)&vif.tag);
+-					Read(&vif.tag, vif_copy_size);
+-					ReadRegs(&vifRegs);
+-					u32 size = Read();
+-					MTVU_Unpack(&buffer[m_read_pos], vifRegs);
+-					m_read_pos += size_u32(size);
++					Read(read_pos, &vif.tag, vif_copy_size);
++					ReadRegs(read_pos, &vifRegs);
++					u32 size = Read(read_pos);
++					MTVU_Unpack(&buffer[read_pos], vifRegs);
++					read_pos += size_u32(size);
+ 					break;
+ 				}
+ 				case MTVU_NULL_PACKET:
+-					m_read_pos = 0;
++					read_pos = 0;
+ 					break;
+ 					jNO_DEFAULT;
+ 			}
+ 
+-			CommitReadPos();
++			m_read_sequence = MTVURingCredit<buffer_size, _4kb>::Advance(m_read_sequence, read_pos);
++			m_read_pos = read_pos;
++			if (m_read_sequence - published_read_sequence >= _16kb / sizeof(u32))
++			{
++				CommitReadPos();
++				published_read_sequence = m_read_sequence;
++			}
++			if (read_pos == write_pos)
++				write_pos = GetWritePos();
+ 		}
++		// Publish the short tail before WorkSema can declare the worker empty.
++		CommitReadPos();
+ 	}
+ 
+ 	semaEvent.Kill();
+@@ -213,26 +235,16 @@ void VU_Thread::ExecuteRingBuffer()
+ // Should only be called by ReserveSpace()
+ __ri void VU_Thread::WaitOnSize(s32 size)
+ {
+-	for (;;)
++	Hps2PerfBreakdown::ScopedTimer timer(Hps2PerfBreakdown::Metric::EeQueueWait);
++	pxAssert((size > 0 && static_cast<u32>(size) <= MTVURingCredit<buffer_size, _4kb>::Usable));
++	if (m_queue_credit.HasSpace(size))
++		return;
++	m_queue_credit.Refresh(m_ato_read_sequence.load(std::memory_order_acquire));
++	while (!m_queue_credit.HasSpace(size))
+ 	{
+-		s32 readPos = GetReadPos();
+-		if (readPos <= m_write_pos)
+-			break; // MTVU is reading in back of write_pos
+-		// FIXME greg: there is a bug somewhere in the queue pointer
+-		// management. It creates a deadlock/corruption in SotC intro (before
+-		// the first menu). I added a 4KB safety net which seem to avoid to
+-		// trigger the bug.
+-		// Note: a wait lock instead of a yield also helps to avoid the bug.
+-		if (readPos > m_write_pos + size + _4kb)
+-			break; // Enough free front space
+-		{          // Let MTVU run to free up buffer space
+-			KickStart();
+-			// Locking might trigger a full flush of the ring buffer. Yield
+-			// will be more aggressive, and only flush the minimal size.
+-			// Performance will be smoother but it will consume extra CPU cycle
+-			// on the EE thread (not an issue on 4 cores).
+-			std::this_thread::yield();
+-		}
++		KickStart();
++		std::this_thread::yield();
++		m_queue_credit.Refresh(m_ato_read_sequence.load(std::memory_order_acquire));
+ 	}
+ }
+ 
+@@ -246,8 +258,10 @@ void VU_Thread::ReserveSpace(s32 size)
+ 
+ 	if (m_write_pos + size > (buffer_size - 1))
+ 	{
+-		WaitOnSize(1); // Size of MTVU_NULL_PACKET
+-		Write(MTVU_NULL_PACKET);
++		// The NULL packet skips the remainder of this lap. Reserve that entire
++		// padding span too, so a wrap cannot make unread data appear empty.
++		WaitOnSize(buffer_size - m_write_pos);
++		buffer[m_write_pos] = MTVU_NULL_PACKET;
+ 		// Reset local write pointer/position
+ 		m_write_pos = 0;
+ 		CommitWritePos();
+@@ -259,7 +273,7 @@ void VU_Thread::ReserveSpace(s32 size)
+ // Use this when reading read_pos from ee thread
+ __fi s32 VU_Thread::GetReadPos()
+ {
+-	return m_ato_read_pos.load(std::memory_order_acquire);
++	return static_cast<s32>(m_ato_read_sequence.load(std::memory_order_acquire) & (buffer_size - 1));
+ }
+ 
+ // Use this when reading write_pos from vu thread
+@@ -268,15 +282,9 @@ __fi s32 VU_Thread::GetWritePos()
+ 	return m_ato_write_pos.load(std::memory_order_acquire);
+ }
+ 
+-// Gets the effective write pointer after
+-__fi u32* VU_Thread::GetWritePtr()
+-{
+-	pxAssert(m_write_pos < buffer_size);
+-	return &buffer[m_write_pos];
+-}
+-
+ __fi void VU_Thread::CommitWritePos()
+ {
++	m_queue_credit.PublishTo(m_write_pos);
+ 	m_ato_write_pos.store(m_write_pos, std::memory_order_release);
+ 
+ 	if (MTVU_ALWAYS_KICK)
+@@ -287,56 +295,56 @@ __fi void VU_Thread::CommitWritePos()
+ 
+ __fi void VU_Thread::CommitReadPos()
+ {
+-	m_ato_read_pos.store(m_read_pos, std::memory_order_release);
++	m_ato_read_sequence.store(m_read_sequence, std::memory_order_release);
+ }
+ 
+-__fi u32 VU_Thread::Read()
++__fi u32 VU_Thread::Read(s32& pos)
+ {
+-	u32 ret = buffer[m_read_pos];
+-	m_read_pos++;
++	u32 ret = buffer[pos];
++	pos++;
+ 	return ret;
+ }
+ 
+-__fi void VU_Thread::Read(void* dest, u32 size)
++__fi void VU_Thread::Read(s32& pos, void* dest, u32 size)
+ {
+-	memcpy(dest, &buffer[m_read_pos], size);
+-	m_read_pos += size_u32(size);
++	memcpy(dest, &buffer[pos], size);
++	pos += size_u32(size);
+ }
+ 
+-__fi void VU_Thread::ReadRegs(VIFregisters* dest)
++__fi void VU_Thread::ReadRegs(s32& pos, VIFregisters* dest)
+ {
+-	VIFregistersMTVU* src = (VIFregistersMTVU*)&buffer[m_read_pos];
++	VIFregistersMTVU* src = (VIFregistersMTVU*)&buffer[pos];
+ 	dest->cycle = src->cycle;
+ 	dest->mode = src->mode;
+ 	dest->num = src->num;
+ 	dest->mask = src->mask;
+ 	dest->itop = src->itop;
+ 	dest->top = src->top;
+-	m_read_pos += size_u32(sizeof(VIFregistersMTVU));
++	pos += size_u32(sizeof(VIFregistersMTVU));
+ }
+ 
+-__fi void VU_Thread::Write(u32 val)
++__fi void VU_Thread::Write(s32& pos, u32 val)
+ {
+-	GetWritePtr()[0] = val;
+-	m_write_pos += 1;
++	buffer[pos] = val;
++	pos += 1;
+ }
+ 
+-__fi void VU_Thread::Write(const void* src, u32 size)
++__fi void VU_Thread::Write(s32& pos, const void* src, u32 size)
+ {
+-	memcpy(GetWritePtr(), src, size);
+-	m_write_pos += size_u32(size);
++	memcpy(&buffer[pos], src, size);
++	pos += size_u32(size);
+ }
+ 
+-__fi void VU_Thread::WriteRegs(VIFregisters* src)
++__fi void VU_Thread::WriteRegs(s32& pos, VIFregisters* src)
+ {
+-	VIFregistersMTVU* dest = (VIFregistersMTVU*)GetWritePtr();
++	VIFregistersMTVU* dest = (VIFregistersMTVU*)&buffer[pos];
+ 	dest->cycle = src->cycle;
+ 	dest->mode = src->mode;
+ 	dest->num = src->num;
+ 	dest->mask = src->mask;
+ 	dest->top = src->top;
+ 	dest->itop = src->itop;
+-	m_write_pos += size_u32(sizeof(VIFregistersMTVU));
++	pos += size_u32(sizeof(VIFregistersMTVU));
+ }
+ 
+ // Returns Average number of vu Cycles from last 4 runs
+@@ -426,6 +434,7 @@ void VU_Thread::Get_MTVUChanges()
+ 
+ void VU_Thread::KickStart()
+ {
++	m_notification_batch.OnNotify();
+ 	semaEvent.NotifyOfWork();
+ }
+ 
+@@ -436,7 +445,12 @@ bool VU_Thread::IsDone()
+ 
+ void VU_Thread::WaitVU()
+ {
++	Hps2PerfBreakdown::ScopedTimer timer(Hps2PerfBreakdown::Metric::EeWaitVU);
+ 	MTVU_LOG("MTVU - WaitVU!");
++	// A short UNPACK tail may not have reached the notification threshold.
++	// Publish its wake before waiting; WorkSema cannot know about deferred work.
++	if (m_notification_batch.HasPending())
++		KickStart();
+ 	semaEvent.WaitForEmpty();
+ }
+ 
+@@ -445,18 +459,30 @@ void VU_Thread::ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst)
+ 	MTVU_LOG("MTVU - ExecuteVU!");
+ 	Get_MTVUChanges(); // Clear any pending interrupts
+ 	ReserveSpace(5);
+-	Write(MTVU_VU_EXECUTE);
+-	Write(vu_addr);
+-	Write(vif_top);
+-	Write(vif_itop);
+-	Write(fbrst);
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VU_EXECUTE);
++	Write(write_pos, vu_addr);
++	Write(write_pos, vif_top);
++	Write(write_pos, vif_itop);
++	Write(write_pos, fbrst);
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	gifUnit.TransferGSPacketData(GIF_TRANS_MTVU, NULL, 0);
+ 	KickStart();
+-	u32 cycles = std::max(Get_vuCycles(), 4u);
+-	u32 skip_cycles = std::min(cycles, 3000u);
+-	cpuRegs.cycle += skip_cycles * EmuConfig.Speedhacks.EECycleSkip;
+-	VU0.cycle += skip_cycles * EmuConfig.Speedhacks.EECycleSkip;
++	// Instant VU1 with cycle stealing disabled does not use the cycle history.
++	// Avoid four shared acquire loads and writes adding zero on every launch.
++	const u32 cycle_skip = EmuConfig.Speedhacks.EECycleSkip;
++	u32 cycles = 0;
++	if (!INSTANT_VU1 || cycle_skip != 0)
++	{
++		cycles = std::max(Get_vuCycles(), 4u);
++		if (cycle_skip != 0)
++		{
++			const u32 skip_cycles = std::min(cycles, 3000u) * cycle_skip;
++			cpuRegs.cycle += skip_cycles;
++			VU0.cycle += skip_cycles;
++		}
++	}
+ 	Get_MTVUChanges();
+ 
+ 	if (!INSTANT_VU1)
+@@ -468,26 +494,37 @@ void VU_Thread::ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst)
+ 
+ void VU_Thread::VifUnpack(vifStruct& _vif, VIFregisters& _vifRegs, const u8* data, u32 size)
+ {
++	Hps2PerfBreakdown::ScopedTimer timer(Hps2PerfBreakdown::Metric::Vif1Queue);
+ 	MTVU_LOG("MTVU - VifUnpack!");
+ 	u32 vif_copy_size = (u32)((uptr)&_vif.StructEnd - (uptr)&_vif.tag);
+ 	ReserveSpace(1 + size_u32(vif_copy_size) + size_u32(sizeof(VIFregistersMTVU)) + 1 + size_u32(size));
+-	Write(MTVU_VIF_UNPACK);
+-	Write(&_vif.tag, vif_copy_size);
+-	WriteRegs(&_vifRegs);
+-	Write(size);
+-	Write(data, size);
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VIF_UNPACK);
++	Write(write_pos, &_vif.tag, vif_copy_size);
++	WriteRegs(write_pos, &_vifRegs);
++	Write(write_pos, size);
++	Write(write_pos, data, size);
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+-	KickStart();
++	// Every command is still published immediately. Only redundant UNPACK
++	// notifications are batched; ExecuteVU and all drain/backpressure paths
++	// retain their normal KickStart, including the final partial batch.
++	if (MTVU_ALWAYS_KICK || MTVU_SYNC_MODE)
++		KickStart();
++	else if (m_notification_batch.OnUnpack())
++		semaEvent.NotifyOfWork();
+ }
+ 
+ void VU_Thread::WriteMicroMem(u32 vu_micro_addr, const void* data, u32 size)
+ {
+ 	MTVU_LOG("MTVU - WriteMicroMem!");
+ 	ReserveSpace(3 + size_u32(size));
+-	Write(MTVU_VU_WRITE_MICRO);
+-	Write(vu_micro_addr);
+-	Write(size);
+-	Write(data, size);
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VU_WRITE_MICRO);
++	Write(write_pos, vu_micro_addr);
++	Write(write_pos, size);
++	Write(write_pos, data, size);
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+@@ -496,10 +533,12 @@ void VU_Thread::WriteDataMem(u32 vu_data_addr, const void* data, u32 size)
+ {
+ 	MTVU_LOG("MTVU - WriteDataMem!");
+ 	ReserveSpace(3 + size_u32(size));
+-	Write(MTVU_VU_WRITE_DATA);
+-	Write(vu_data_addr);
+-	Write(size);
+-	Write(data, size);
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VU_WRITE_DATA);
++	Write(write_pos, vu_data_addr);
++	Write(write_pos, size);
++	Write(write_pos, data, size);
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+@@ -508,8 +547,10 @@ void VU_Thread::WriteVIRegs(REG_VI* viRegs)
+ {
+ 	MTVU_LOG("MTVU - WriteRegs!");
+ 	ReserveSpace(1 + size_u32(32));
+-	Write(MTVU_VU_WRITE_VIREGS);
+-	Write(viRegs, size_u32(32));
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VU_WRITE_VIREGS);
++	Write(write_pos, viRegs, size_u32(32));
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+@@ -518,8 +559,10 @@ void VU_Thread::WriteVFRegs(VECTOR* vfRegs)
+ {
+ 	MTVU_LOG("MTVU - WriteRegs!");
+ 	ReserveSpace(1 + size_u32(32*4));
+-	Write(MTVU_VU_WRITE_VFREGS);
+-	Write(vfRegs, size_u32(32*4));
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VU_WRITE_VFREGS);
++	Write(write_pos, vfRegs, size_u32(32*4));
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+@@ -528,8 +571,10 @@ void VU_Thread::WriteCol(vifStruct& _vif)
+ {
+ 	MTVU_LOG("MTVU - WriteCol!");
+ 	ReserveSpace(1 + size_u32(sizeof(_vif.MaskCol)));
+-	Write(MTVU_VIF_WRITE_COL);
+-	Write(&_vif.MaskCol, sizeof(_vif.MaskCol));
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VIF_WRITE_COL);
++	Write(write_pos, &_vif.MaskCol, sizeof(_vif.MaskCol));
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+@@ -538,8 +583,10 @@ void VU_Thread::WriteRow(vifStruct& _vif)
+ {
+ 	MTVU_LOG("MTVU - WriteRow!");
+ 	ReserveSpace(1 + size_u32(sizeof(_vif.MaskRow)));
+-	Write(MTVU_VIF_WRITE_ROW);
+-	Write(&_vif.MaskRow, sizeof(_vif.MaskRow));
++	s32 write_pos = m_write_pos;
++	Write(write_pos, MTVU_VIF_WRITE_ROW);
++	Write(write_pos, &_vif.MaskRow, sizeof(_vif.MaskRow));
++	m_write_pos = write_pos;
+ 	CommitWritePos();
+ 	KickStart();
+ }
+diff --git a/pcsx2/MTVU.h b/pcsx2/MTVU.h
+index 5634601db..3d971f8bb 100644
+--- a/pcsx2/MTVU.h
++++ b/pcsx2/MTVU.h
+@@ -6,6 +6,8 @@
+ #include "Vif.h"
+ #include "Vif_Dma.h"
+ #include "VUmicro.h"
++#include "MTVUNotificationBatch.h"
++#include "MTVURingCredit.h"
+ 
+ #include <thread>
+ 
+@@ -21,10 +23,13 @@ class VU_Thread final {
+ 
+ 	u32 buffer[buffer_size];
+ 	// Note: keep atomic on separate cache line to avoid CPU conflict
+-	alignas(__cachelinesize) std::atomic<int> m_ato_read_pos; // Only modified by VU thread
++	alignas(__cachelinesize) std::atomic<u64> m_ato_read_sequence; // Only modified by VU thread
+ 	alignas(__cachelinesize) std::atomic<int> m_ato_write_pos;    // Only modified by EE thread
+ 	alignas(__cachelinesize) int  m_read_pos; // temporary read pos (local to the VU thread)
+-	int  m_write_pos; // temporary write pos (local to the EE thread)
++	u64 m_read_sequence;
++	alignas(__cachelinesize) int m_write_pos; // EE-owned; do not share the VU local cursor cache line
++	MTVURingCredit<buffer_size, _4kb> m_queue_credit;
++	MTVUNotificationBatch m_notification_batch; // EE-owned, like m_write_pos
+ 	Threading::WorkSema semaEvent;
+ 	std::atomic_bool m_shutdown_flag{false};
+ 
+@@ -104,18 +109,16 @@ private:
+ 	s32 GetReadPos();
+ 	s32 GetWritePos();
+ 
+-	u32* GetWritePtr();
+-
+ 	void CommitWritePos();
+ 	void CommitReadPos();
+ 
+-	u32 Read();
+-	void Read(void* dest, u32 size);
+-	void ReadRegs(VIFregisters* dest);
++	u32 Read(s32& pos);
++	void Read(s32& pos, void* dest, u32 size);
++	void ReadRegs(s32& pos, VIFregisters* dest);
+ 
+-	void Write(u32 val);
+-	void Write(const void* src, u32 size);
+-	void WriteRegs(VIFregisters* src);
++	void Write(s32& pos, u32 val);
++	void Write(s32& pos, const void* src, u32 size);
++	void WriteRegs(s32& pos, VIFregisters* src);
+ 
+ 	u32 Get_vuCycles();
+ };
+diff --git a/pcsx2/MTVUNotificationBatch.h b/pcsx2/MTVUNotificationBatch.h
+new file mode 100644
+index 000000000..fc22ad604
+--- /dev/null
++++ b/pcsx2/MTVUNotificationBatch.h
+@@ -0,0 +1,24 @@
++// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
++// SPDX-License-Identifier: GPL-3.0+
++#pragma once
++
++// Producer-owned policy only: it never reads or changes WorkSema's sleep state.
++// ExecuteVU, other commands, backpressure and WaitVU must flush deferred work.
++class MTVUNotificationBatch
++{
++	unsigned m_unpacks = 0;
++	bool m_pending = false;
++
++public:
++	static constexpr unsigned MaxDeferredUnpacks = 8;
++	bool OnUnpack()
++	{
++		// Wake for the first packet so unpack can overlap EE packet building.
++		// Then bound the deferred tail without inspecting the worker's state.
++		const bool notify = (m_unpacks++ % MaxDeferredUnpacks) == 0;
++		m_pending = !notify;
++		return notify;
++	}
++	bool HasPending() const { return m_pending; }
++	void OnNotify() { m_unpacks = 0; m_pending = false; }
++};
+diff --git a/pcsx2/MTVURingCredit.h b/pcsx2/MTVURingCredit.h
+new file mode 100644
+index 000000000..bb5624b57
+--- /dev/null
++++ b/pcsx2/MTVURingCredit.h
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: GPL-3.0+
++#pragma once
++
++#include <cstdint>
++
++// EE-owned conservative credit. Absolute progress disambiguates a wrapped
++// consumer from an older lap; cached progress can only underestimate space.
++template<std::uint32_t Capacity, std::uint32_t SafetyWords = 0>
++class MTVURingCredit
++{
++	static_assert(Capacity && !(Capacity & (Capacity - 1)));
++	static_assert(SafetyWords + 1 < Capacity);
++	std::uint64_t written = 0;
++	std::uint64_t consumed = 0;
++
++public:
++	static constexpr std::uint32_t Usable = Capacity - SafetyWords - 1;
++	static constexpr std::uint64_t Advance(std::uint64_t sequence, std::uint32_t next)
++	{
++		const std::uint32_t previous = static_cast<std::uint32_t>(sequence) & (Capacity - 1);
++		return sequence + ((next - previous) & (Capacity - 1));
++	}
++	void Reset() { written = consumed = 0; }
++	void PublishTo(std::uint32_t next) { written = Advance(written, next); }
++	void Refresh(std::uint64_t observed) { consumed = observed; }
++	bool HasSpace(std::uint32_t words) const
++	{
++		return words <= Usable && written - consumed <= Usable - words;
++	}
++	std::uint64_t Written() const { return written; }
++};
 diff --git a/pcsx2/Memory.cpp b/pcsx2/Memory.cpp
-index 575ed999a0..1dd37f9492 100644
+index 575ed999a..1dd37f949 100644
 --- a/pcsx2/Memory.cpp
 +++ b/pcsx2/Memory.cpp
 @@ -68,6 +68,7 @@ namespace SysMemory
@@ -2140,7 +3298,7 @@ index 575ed999a0..1dd37f9492 100644
  {
  	DevCon.WriteLn(Color_StrongBlue, "Allocating host memory for virtual systems...");
 diff --git a/pcsx2/Memory.h b/pcsx2/Memory.h
-index 16a24ebbdc..03d45c3de6 100644
+index 16a24ebbd..03d45c3de 100644
 --- a/pcsx2/Memory.h
 +++ b/pcsx2/Memory.h
 @@ -98,6 +98,12 @@ namespace HostMemoryMap
@@ -2156,8 +3314,91 @@ index 16a24ebbdc..03d45c3de6 100644
  	/// Reserve the host memory map (and, on arm64, the constant-VA arena) early,
  	/// before other allocations could squat on the fixed base. Idempotent — a
  	/// later Allocate() reuses the same reservation. Used by headless runners and
+diff --git a/pcsx2/PerformanceMetrics.cpp b/pcsx2/PerformanceMetrics.cpp
+index 5effefdf9..7a8452d1a 100644
+--- a/pcsx2/PerformanceMetrics.cpp
++++ b/pcsx2/PerformanceMetrics.cpp
+@@ -6,6 +6,7 @@
+ #include <mutex>
+ #include <utility>
+ #include <vector>
++#include <atomic>
+ 
+ #include "common/Console.h"
+ #include "common/Timer.h"
+@@ -18,6 +19,15 @@
+ #include "MTVU.h"
+ #include "VMManager.h"
+ 
++#if defined(__OHOS__)
++#include <dlfcn.h>
++#include <hilog/log.h>
++#include <qos/qos.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++static std::atomic<bool> s_ohos_thread_qos_diagnostic{false};
++#endif
++
+ #if defined(__ANDROID__)
+ #include <algorithm>
+ #include <cstdint>
+@@ -423,9 +433,40 @@ void PerformanceMetrics::SetCPUThread(Threading::ThreadHandle thread)
+ 	s_cpu_thread_handle = std::move(thread);
+ }
+ 
++void PerformanceMetrics::SetThreadQoSDiagnostic(bool enabled)
++{
++#if defined(__OHOS__)
++	s_ohos_thread_qos_diagnostic.store(enabled, std::memory_order_relaxed);
++#else
++	(void)enabled;
++#endif
++}
++
+ void PerformanceMetrics::AdpfRegisterCallingThread()
+ {
+-#if defined(__ANDROID__)
++#if defined(__OHOS__)
++	if (!s_ohos_thread_qos_diagnostic.load(std::memory_order_relaxed))
++		return;
++	// Resolve the optional system capability at runtime, retaining the library
++	// for the process lifetime. No calls or lookups occur on a frame's hot path.
++	struct QoSApi
++	{
++		void* library = dlopen("libqos.so", RTLD_NOW | RTLD_LOCAL);
++		decltype(&OH_QoS_SetThreadQoS) set = library ?
++			reinterpret_cast<decltype(set)>(dlsym(library, "OH_QoS_SetThreadQoS")) : nullptr;
++		decltype(&OH_QoS_GetThreadQoS) get = library ?
++			reinterpret_cast<decltype(get)>(dlsym(library, "OH_QoS_GetThreadQoS")) : nullptr;
++	};
++	static const QoSApi api;
++	QoS_Level before = QOS_DEFAULT, after = QOS_DEFAULT;
++	const int before_result = api.get ? api.get(&before) : -1;
++	const int set_result = api.set ? api.set(QOS_USER_INITIATED) : -1;
++	const int after_result = api.get ? api.get(&after) : -1;
++	OH_LOG_Print(LOG_APP, LOG_WARN, 0x3202, "HPS2_CORE",
++		"QOS_DIAG: tid=%{public}d before_ret=%{public}d before=%{public}d set_ret=%{public}d after_ret=%{public}d after=%{public}d",
++		static_cast<int>(syscall(SYS_gettid)), before_result, static_cast<int>(before),
++		set_result, after_result, static_cast<int>(after));
++#elif defined(__ANDROID__)
+ 	const int32_t tid = static_cast<int32_t>(syscall(SYS_gettid));
+ 	std::lock_guard<std::mutex> lock(s_adpf_mutex);
+ 	if (std::find(s_adpf_tids.begin(), s_adpf_tids.end(), tid) != s_adpf_tids.end())
+diff --git a/pcsx2/PerformanceMetrics.h b/pcsx2/PerformanceMetrics.h
+index 5a148ab0f..d3a9318cb 100644
+--- a/pcsx2/PerformanceMetrics.h
++++ b/pcsx2/PerformanceMetrics.h
+@@ -32,6 +32,8 @@ namespace PerformanceMetrics
+ 	/// low under emulation's bursty load. Called on the EE (CPU), GS and MTVU threads.
+ 	/// No-op on non-Android and below API 33 (symbols resolved via dlsym).
+ 	void AdpfRegisterCallingThread();
++	// OHOS development experiment; applied only when emulation workers start.
++	void SetThreadQoSDiagnostic(bool enabled);
+ 	/// Enable/disable ADPF hinting at runtime (settings toggle). Default OFF (experimental).
+ 	void AdpfSetEnabled(bool enabled);
+ 	/// Close the ADPF session and forget registered threads (VM shutdown).
 diff --git a/pcsx2/PrecompiledHeader.h b/pcsx2/PrecompiledHeader.h
-index bdfb247039..0e15a3bf02 100644
+index bdfb24703..0e15a3bf0 100644
 --- a/pcsx2/PrecompiledHeader.h
 +++ b/pcsx2/PrecompiledHeader.h
 @@ -11,6 +11,14 @@
@@ -2175,3 +3416,823 @@ index bdfb247039..0e15a3bf02 100644
  //////////////////////////////////////////////////////////////////////////////////////////
  // Include the STL that's actually handy.
  
+diff --git a/pcsx2/VMManager.cpp b/pcsx2/VMManager.cpp
+index a0965944a..a5ef623a3 100644
+--- a/pcsx2/VMManager.cpp
++++ b/pcsx2/VMManager.cpp
+@@ -4094,6 +4094,37 @@ static void InitializeProcessorList()
+ 		processors.push_back(proc);
+ 	}
+ 
++	// [Hps2] Some SoCs (observed: HiSilicon Kirin, e.g. 9030 Pro) expose no
++	// per-core frequency to cpuinfo — every cluster reports 0 MHz. The sort
++	// below then degenerates into enumeration order, so "fastest first" is
++	// silently lost. SMT sibling placement is also a risk when cpuinfo cannot
++	// identify the topology, but adjacent processor IDs and matching EE/GS
++	// times do not prove that two threads share a physical core.
++	//
++	// Without frequency data, leave placement to the OS scheduler instead of
++	// claiming enumeration order identifies the fastest cores. Clearing the list makes
++	// SetEmuThreadAffinities() take its "not supported on this platform"
++	// early-out, which leaves every thread unpinned.
++	bool all_frequencies_unknown = true;
++	for (const cpuinfo_processor* proc : processors)
++	{
++		if (proc->core && proc->core->frequency != 0)
++		{
++			all_frequencies_unknown = false;
++			break;
++		}
++	}
++
++	if (all_frequencies_unknown)
++	{
++		WARNING_LOG("cpuinfo reports 0 MHz for every core; disabling thread pinning "
++		            "(frequency-ordered placement would be enumeration order and may put "
++		            "EE/GS on SMT siblings of one core).");
++		s_processor_list.clear();
++		s_software_renderer_processor_list.clear();
++		return;
++	}
++
+ 	// Prioritize faster cores in heterogeneous CPUs.
+ 	std::sort(processors.begin(), processors.end(),
+ 		[](const cpuinfo_processor* lhs, const cpuinfo_processor* rhs) {
+@@ -4146,12 +4177,32 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
+ 	// on Apple Silicon under Asahi and Intel Alder Lake-class hybrid systems.
+ 	// SetEmuThreadAffinities already sorts processors by frequency, so pinning
+ 	// to indices 0..2 lands on the fastest cores.
+-	if (cpuinfo_get_clusters_count() > 1 && core_count >= 3)
++	//
++	// [Hps2] That reasoning needs per-core frequencies. When cpuinfo reports
++	// 0 MHz for every cluster (seen on Kirin 9030 Pro) the ordering degrades to
++	// enumeration order, so this default would be actively harmful. Leave the
++	// setting alone in that case and let the OS schedule the threads.
++	bool frequencies_known = false;
++	for (u32 i = 0; i < cpuinfo_get_processors_count(); i++)
++	{
++		const cpuinfo_processor* proc = cpuinfo_get_processor(i);
++		if (proc && proc->core && proc->core->frequency != 0)
++		{
++			frequencies_known = true;
++			break;
++		}
++	}
++
++	if (frequencies_known && cpuinfo_get_clusters_count() > 1 && core_count >= 3)
+ 	{
+ 		Console.WriteLn(fmt::format("  Heterogeneous CPU detected ({} clusters); enabling thread pinning.",
+ 			cpuinfo_get_clusters_count()));
+ 		si.SetBoolValue("EmuCore", "EnableThreadPinning", true);
+ 	}
++	else if (!frequencies_known)
++	{
++		Console.WriteLn("  Per-core frequency unavailable; leaving thread pinning disabled.");
++	}
+ }
+ 
+ #elif defined(__APPLE__)
+diff --git a/pcsx2/arm64/microVU-arm64.cpp b/pcsx2/arm64/microVU-arm64.cpp
+index 7cb9da3b8..e74de525b 100644
+--- a/pcsx2/arm64/microVU-arm64.cpp
++++ b/pcsx2/arm64/microVU-arm64.cpp
+@@ -573,6 +573,7 @@ static void mVUdispatcherAB(mV)
+ 	// instead of movz/movk chains (3 each) — this stub is regenerated per
+ 	// process, so baking the addresses as data is safe.
+ 	armAsm->Ldr(gprVUState, reinterpret_cast<u64>(&mVU.regs()));
++	armAsm->Ldr(gprVUMem, mVUstateMem(offsetof(VURegs, Mem)));
+ 
+ 	// Pin gprMVUFlag (x24) = &mVU.macFlag[0]. Reaches statFlag / macFlag /
+ 	// clipFlag / neonCTemp / neonBackup via signed [+/-imm12] (see
+@@ -1174,12 +1175,13 @@ void mVUreset(microVU& mVU, bool resetReserve)
+ 		if (!mVU.prog.prog[i])
+ 		{
+ 			mVU.prog.prog[i] = new std::deque<microProgram*>();
+-			continue;
+ 		}
+-		mVU.prog.prog[i]->clear();
++		else
++			mVU.prog.prog[i]->clear();
+ 		mVU.prog.quick[i].block = NULL;
+ 		mVU.prog.quick[i].prog = NULL;
+ 	}
++	std::memset(mVU.prog.quickOcc, 0, sizeof(mVU.prog.quickOcc));
+ 
+ #ifdef mVUcacheTrace
+ 	mVUCacheTraceResetWindow(mVU.index);
+@@ -1220,6 +1222,12 @@ void mVUclose(microVU& mVU)
+ }
+ 
+ // Clears Block Data in specified range
++static __fi void mVUquickInstall(microVU& mVU, u32 slot, microProgram* prog)
++{
++	mVU.prog.quick[slot].prog = prog;
++	mVU.prog.quickOcc[slot >> 6] |= u64(1) << (slot & 63);
++}
++
+ __fi void mVUclear(mV, u32 addr, u32 size)
+ {
+ 	// Every micro-mem write advances the generation; programs compare it
+@@ -1247,10 +1255,15 @@ __fi void mVUclear(mV, u32 addr, u32 size)
+ 		{
+ 			mVU.prog.cleared = 1;
+ 			std::memset(&mVU.prog.lpState, 0, sizeof(mVU.prog.lpState));
+-			for (u32 i = 0; i < (mVU.progSize / 2); i++)
++			for (u32 w = 0; w < (mVU.progSize / 2 + 63) / 64; w++)
+ 			{
+-				mVU.prog.quick[i].block = NULL;
+-				mVU.prog.quick[i].prog  = NULL;
++				for (u64 bits = mVU.prog.quickOcc[w]; bits; bits &= bits - 1)
++				{
++					const u32 i = w * 64 + static_cast<u32>(__builtin_ctzll(bits));
++					mVU.prog.quick[i].block = NULL;
++					mVU.prog.quick[i].prog  = NULL;
++				}
++				mVU.prog.quickOcc[w] = 0;
+ 			}
+ 		}
+ 		return;
+@@ -1260,16 +1273,22 @@ __fi void mVUclear(mV, u32 addr, u32 size)
+ 	// compiled range overlapping [addr, addr+size). Programs whose ranges are
+ 	// disjoint from the touched bytes stay quick-cached, skipping the per-PC
+ 	// deque walk on the next dispatch.
+-	for (u32 i = 0; i < (mVU.progSize / 2); i++)
++	for (u32 w = 0; w < (mVU.progSize / 2 + 63) / 64; w++)
+ 	{
+-		const microProgram* p = mVU.prog.quick[i].prog;
+-		if (!p)
+-			continue;
+-		if (mVUProgRangesOverlap(p, addr, size))
++		u64 keep = mVU.prog.quickOcc[w];
++		for (u64 bits = keep; bits; bits &= bits - 1)
+ 		{
+-			mVU.prog.quick[i].block = NULL;
+-			mVU.prog.quick[i].prog  = NULL;
++			const u32 bit = static_cast<u32>(__builtin_ctzll(bits));
++			const u32 i = w * 64 + bit;
++			const microProgram* p = mVU.prog.quick[i].prog;
++			if (mVUProgRangesOverlap(p, addr, size))
++			{
++				mVU.prog.quick[i].block = NULL;
++				mVU.prog.quick[i].prog  = NULL;
++				keep &= ~(u64(1) << bit);
++			}
+ 		}
++		mVU.prog.quickOcc[w] = keep;
+ 	}
+ 
+ 	// Drop the carried entry-search key on ANY micro-mem write — x86's
+@@ -1479,8 +1498,9 @@ __fi bool mVUcmpProg(microVU& mVU, microProgram& prog)
+ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
+ {
+ 	microVU& mVU = mVUx;
+-	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
+-	microProgramList*  list  = mVU.prog.prog [mVU.regs().start_pc / 8];
++	const u32 slot = mVU.regs().start_pc / 8;
++	microProgramQuick& quick = mVU.prog.quick[slot];
++	microProgramList*  list  = mVU.prog.prog [slot];
+ 
+ 	if (!quick.prog)
+ 	{
+@@ -1506,7 +1526,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
+ 				mVUCacheTraceObserveWalk(mVU.index, walkIters, /*matched=*/true, /*matchPos=*/walkIters - 1);
+ #endif
+ 				quick.block = it[0]->block[startPC / 8];
+-				quick.prog  = it[0];
++				mVUquickInstall(mVU, slot, it[0]);
+ 				list->erase(it);
+ 				list->push_front(quick.prog);
+ 				// Per-PC deque match resolved to this program;
+@@ -1540,7 +1560,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
+ 			mVU.prog.cleared = 0;
+ 			mVU.prog.isSame  = 1;
+ 			mVU.prog.cur     = shared;
+-			quick.prog       = shared;
++			mVUquickInstall(mVU, slot, shared);
+ 			quick.block      = shared->block[startPC / 8];
+ 			// Record the dispatched entry on the resolved program.
+ 			// Idempotent on duplicates; bumps `observed.version` only
+@@ -1569,7 +1589,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
+ 			mVU.prog.cleared = 0;
+ 			mVU.prog.isSame  = 1;
+ 			mVU.prog.cur     = hydrated;
+-			quick.prog       = hydrated;
++			mVUquickInstall(mVU, slot, hydrated);
+ 			quick.block      = hydrated->block[startPC / 8];
+ 			hydrated->observed.record(startPC);
+ 			if (quick.block == nullptr)
+@@ -1592,7 +1612,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
+ 		mVU.prog.cur->observed.record(startPC);
+ 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
+ 		quick.block      = mVU.prog.cur->block[startPC/8];
+-		quick.prog       = mVU.prog.cur;
++		mVUquickInstall(mVU, slot, mVU.prog.cur);
+ 		// Count this deque insertion in the program's refcount.
+ 		// contentMap owns the program; per-PC deques are non-owning refs.
+ 		list->push_front(mVU.prog.cur);
+diff --git a/pcsx2/arm64/microVU-arm64.h b/pcsx2/arm64/microVU-arm64.h
+index 9b11f3b0f..636e2c701 100644
+--- a/pcsx2/arm64/microVU-arm64.h
++++ b/pcsx2/arm64/microVU-arm64.h
+@@ -117,7 +117,8 @@
+ //       model calls.
+ //  20 — the zero-divisor Q is 0x7FFFFFFF from vuClampMode 3 and maxvals below,
+ //       so DIV and RSQRT carry the signbit/maxvals pair again at modes 0-2.
+-static constexpr u32 kMvuCompilerAbiVersion = 20;
++// Hps2: fixed data-memory base, VI clone folding and full ACC slot rebinding.
++static constexpr u32 kMvuCompilerAbiVersion = 1001;
+ 
+ // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
+ // work without a wrapping struct. low64 already carries the well-mixed half of
+@@ -431,6 +432,9 @@ struct microProgManager
+ 	u8*                x86start; // Start of rec-cache
+ 	u8*                x86end;   // Reset threshold — mVUcacheSafeZone MB below the physical rec-region end
+ 	microRegInfo       lpState;
++	// One bit per occupied quick[] slot. mVUclear runs on every VU micro-memory
++	// write, so walk only slots that currently hold a cached program.
++	u64                quickOcc[mProgSize / 2 / 64];
+ };
+ 
+ // Safe-Zone (megabytes): the gap between prog.x86end (mVUcleanUp's
+diff --git a/pcsx2/arm64/microVU_Compile-arm64.inl b/pcsx2/arm64/microVU_Compile-arm64.inl
+index 3e7388f04..b1dd4152b 100644
+--- a/pcsx2/arm64/microVU_Compile-arm64.inl
++++ b/pcsx2/arm64/microVU_Compile-arm64.inl
+@@ -958,12 +958,66 @@ void mVUdebugPrintBlocks(mV, bool isEndPC) {}
+ // Main Compile Function
+ //------------------------------------------------------------------
+ 
++// A parent block can recursively compile children and then emit its own tail.
++// Record separate emission segments so parent ranges never cover child code.
++// This scope runs only while compiling; it emits no guest execution probes.
++class MvuJitProfileScope
++{
++	inline static thread_local MvuJitProfileScope* s_current = nullptr;
++	MvuJitProfileScope* m_parent = nullptr;
++	u8* m_begin = nullptr;
++	bool m_enabled = false;
++	unsigned m_segment = 0;
++	bool m_vu1 = false;
++	char m_name[96] = {};
++
++	void FinishSegment(u8* end)
++	{
++		if (end > m_begin)
++		{
++			char name[112];
++			std::snprintf(name, sizeof(name), "%s_s%u", m_name, m_segment++);
++			(m_vu1 ? Perf::vu1 : Perf::vu0).Register(m_begin,
++				static_cast<u32>(end - m_begin), name);
++		}
++		m_begin = end;
++	}
++
++public:
++	MvuJitProfileScope(microVU& mVU, u32 pc, u8* begin)
++		: m_begin(begin), m_enabled(Perf::IsJitMapLogEnabled()), m_vu1(mVU.index != 0)
++	{
++		if (!m_enabled)
++			return;
++		m_parent = s_current;
++		if (m_parent)
++			m_parent->FinishSegment(begin);
++		s_current = this;
++		std::snprintf(m_name, sizeof(m_name), "p%d_e%04X_b%04X_h%016llx%016llx",
++			mVU.prog.cur->idx, mVU.regs().start_pc, pc,
++			static_cast<unsigned long long>(mVU.prog.cur->contentHash.high64),
++			static_cast<unsigned long long>(mVU.prog.cur->contentHash.low64));
++	}
++	~MvuJitProfileScope()
++	{
++		if (!m_enabled)
++			return;
++		u8* end = armGetCurrentCodePointer();
++		FinishSegment(end);
++		s_current = m_parent;
++		if (m_parent)
++			m_parent->m_begin = end;
++	}
++	bool Enabled() const { return m_enabled; }
++};
++
+ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
+ {
+ 	microFlagCycles mFC;
+ 	// armAsm is managed by mVUexecute/mVUcompileJIT — must be active here.
+ 	pxAssert(armAsm);
+ 	u8* thisPtr = armGetCurrentCodePointer();
++	MvuJitProfileScope profile_scope(mVU, startPC, thisPtr);
+ 
+ 	const u32 endCount = (((microRegInfo*)pState)->blockType) ? 1 : (mVU.microMemSize / 8);
+ 
+@@ -1319,7 +1373,7 @@ perf_and_return:
+ 	// branch-target sub-blocks; it's only re-pointed on the dispatch/indirect-
+ 	// jump path). Mirrors x86 microVU_Compile.inl (a5ed24ca8) — one clean
+ 	// jitdump symbol per VU program rather than a symbol per linked sub-block.
+-	if (mVU.regs().start_pc == startPC)
++	if (!profile_scope.Enabled() && mVU.regs().start_pc == startPC)
+ 	{
+ 		u8* endPtr = armGetCurrentCodePointer();
+ 		if (mVU.index)
+diff --git a/pcsx2/arm64/microVU_IR-arm64.h b/pcsx2/arm64/microVU_IR-arm64.h
+index 6f349e8af..ed568ee7f 100644
+--- a/pcsx2/arm64/microVU_IR-arm64.h
++++ b/pcsx2/arm64/microVU_IR-arm64.h
+@@ -41,7 +41,7 @@ static const int neonAllocTotal = 28;
+ // GPR allocatable for VI: x14-x15 (2) + x26-x28 (3) = 5.
+ // x0-x7=args/scratch, x8=RXSCRATCH, x9-x13=scratch, x16-x17=vixl,
+ // x18=platform, x19=gprVUState, x20-x23=gprF0-F3, x24=gprMVUFlag,
+-// x25=gprMVUglob, x29=fp (also the EE JIT's REEPIN_V0 $v0 pin — must stay
++// x25=gprMVUglob, x29=gprVUMem (also the EE JIT's REEPIN_V0 $v0 pin — must stay
+ // out of this pool: COP2 macro-mode runs mVU emitters inside EE blocks
+ // where x29 holds a live guest value; micro-mode is covered by the
+ // dispatcher's x29/x30 Stp/Ldp), x30=lr, sp=stack.
+@@ -61,6 +61,8 @@ protected:
+ 	int neonWatermark; // see getNeonWatermark()
+ 	int index; // VU0 or VU1
+ 	bool neonCop2Mode; // SL-13: macro mode — q25/q26 unallocatable (EE clamp consts)
++	struct GprCloneNote { int dst, src; ptrdiff_t end; };
++	GprCloneNote gprClone{-1, -1, -1};
+ 
+ 	VURegs& regs() const { return ::vuRegs[index]; }
+ 
+@@ -295,6 +297,7 @@ public:
+ 		}
+ 		counter = 0;
+ 		neonWatermark = 0;
++		gprClone = {-1, -1, -1};
+ 	}
+ 
+ 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
+@@ -337,6 +340,36 @@ public:
+ 	//       0xF=full-write). For SS writes a single bit is set.
+ 	// cloneWrite: if true, clone cached reg so caller's write doesn't
+ 	//             stomp the cached value.
++	// A full-width temporary becomes the destination's authoritative cache slot.
++	// clearNeeded() then invalidates every older copy using the normal write path.
++	void rebindFullWrite(const a64::VRegister& reg, int vfreg)
++	{
++		microMapNEON& map = neonMap[reg.GetCode()];
++		pxAssert(map.isNeeded && map.VFreg == 0 && map.xyzw == 0xF);
++		map.VFreg = vfreg;
++		map.isZero = false;
++		map.count = counter;
++	}
++
++	// Consume only an immediately preceding MOV emitted by this allocation.
++	// The caller must replace it with a whole-register write reading the source.
++	int takeGPRCloneSource(const a64::Register& dst)
++	{
++		const GprCloneNote note = gprClone;
++		gprClone = {-1, -1, -1};
++		if (note.dst != static_cast<int>(dst.GetCode()) || note.end != armAsm->GetCursorOffset() || note.end < 4)
++			return -1;
++		const u32 expected = 0x2A0003E0u | (note.src << 16) | note.dst;
++		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(note.end - 4);
++		if (*word != expected)
++		{
++			pxFailRel("mVU VI clone fold: unexpected instruction");
++			return -1;
++		}
++		armAsm->GetBuffer()->Rewind(note.end - 4);
++		return note.src;
++	}
++
+ 	const a64::VRegister allocReg(int vfLoadReg = -1, int vfWriteReg = -1, int xyzw = 0, bool cloneWrite = true)
+ 	{
+ 		counter++;
+@@ -504,6 +537,7 @@ public:
+ 	const a64::Register allocGPR(int viLoadReg = -1, int viWriteReg = -1, bool backup = false, bool zext_if_dirty = false)
+ 	{
+ 		counter++;
++		gprClone = {-1, -1, -1};
+ 
+ 		// Writing zero? Return a zeroed register
+ 		if (viWriteReg == 0)
+@@ -551,6 +585,7 @@ public:
+ 							}
+ 
+ 							armAsm->Mov(armWRegister(x).W(), armWRegister(i).W());
++							gprClone = {x, i, armAsm->GetCursorOffset()};
+ 
+ 							gprMap[x].isZeroExtended = zext_if_dirty;
+ 							// Swap so `i` names the new slot — matches x86's
+diff --git a/pcsx2/arm64/microVU_Lower-arm64.inl b/pcsx2/arm64/microVU_Lower-arm64.inl
+index 4ee960e47..be5c4fd44 100644
+--- a/pcsx2/arm64/microVU_Lower-arm64.inl
++++ b/pcsx2/arm64/microVU_Lower-arm64.inl
+@@ -1270,6 +1270,18 @@ mVUop(mVU_FSSET)
+ // IADD/IADDI/IADDIU/IAND/IOR/ISUB/ISUBIU
+ //------------------------------------------------------------------
+ 
++// What a VI op reads in place of its destination's old value. When the
++// destination is a different VI from the source, allocGPR copies the cached
++// source into the destination's slot; if that copy is the last word emitted,
++// the op reads the source register instead and the copy goes. Every caller
++// writes the whole destination register with the op that follows, so the
++// copy was dead.
++static __fi a64::Register mVUviSource(mV, const a64::Register& reg)
++{
++	const int src = mVU.regAlloc->takeGPRCloneSource(reg);
++	return (src >= 0) ? armWRegister(src) : reg;
++}
++
+ mVUop(mVU_IADD)
+ {
+ 	pass1 { mVUanalyzeIALU1(mVU, _Id_, _Is_, _It_); }
+@@ -1287,7 +1299,7 @@ mVUop(mVU_IADD)
+ 		{
+ 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
+ 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
+-			armAsm->Add(regS.W(), regS.W(), regT.W());
++			armAsm->Add(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
+ 			mVU.regAlloc->clearNeeded(regS);
+ 			mVU.regAlloc->clearNeeded(regT);
+ 		}
+@@ -1332,10 +1344,11 @@ mVUop(mVU_IADDI)
+ 				if (_Imm5_ != 0)
+ 				{
+ 					s16 imm = _Imm5_;
++					const a64::Register src = mVUviSource(mVU, regS);
+ 					if (imm >= 0)
+-						armAsm->Add(regS.W(), regS.W(), (u32)imm);
++						armAsm->Add(regS.W(), src.W(), (u32)imm);
+ 					else
+-						armAsm->Sub(regS.W(), regS.W(), (u32)(-imm));
++						armAsm->Sub(regS.W(), src.W(), (u32)(-imm));
+ 				}
+ 			}
+ 			else
+@@ -1388,10 +1401,7 @@ mVUop(mVU_IADDIU)
+ 			if (!EmuConfig.Gamefixes.IbitHack)
+ 			{
+ 				if (_Imm15_ != 0)
+-				{
+-					armAsm->Mov(gprT1.W(), _Imm15_);
+-					armAsm->Add(regS.W(), regS.W(), gprT1.W());
+-				}
++					armAsm->Add(regS.W(), mVUviSource(mVU, regS).W(), _Imm15_);
+ 			}
+ 			else
+ 			{
+@@ -1416,7 +1426,7 @@ mVUop(mVU_IAND)
+ 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
+ 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
+ 		if (_It_ != _Is_)
+-			armAsm->And(regS.W(), regS.W(), regT.W());
++			armAsm->And(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
+ 		mVU.regAlloc->clearNeeded(regS);
+ 		mVU.regAlloc->clearNeeded(regT);
+ 		mVU.profiler.EmitOp(opIAND);
+@@ -1432,7 +1442,7 @@ mVUop(mVU_IOR)
+ 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
+ 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
+ 		if (_It_ != _Is_)
+-			armAsm->Orr(regS.W(), regS.W(), regT.W());
++			armAsm->Orr(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
+ 		mVU.regAlloc->clearNeeded(regS);
+ 		mVU.regAlloc->clearNeeded(regT);
+ 		mVU.profiler.EmitOp(opIOR);
+@@ -1449,7 +1459,7 @@ mVUop(mVU_ISUB)
+ 		{
+ 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
+ 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
+-			armAsm->Sub(regS.W(), regS.W(), regT.W());
++			armAsm->Sub(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
+ 			mVU.regAlloc->clearNeeded(regS);
+ 			mVU.regAlloc->clearNeeded(regT);
+ 		}
+@@ -1473,10 +1483,7 @@ mVUop(mVU_ISUBIU)
+ 		if (!EmuConfig.Gamefixes.IbitHack)
+ 		{
+ 			if (_Imm15_ != 0)
+-			{
+-				armAsm->Mov(gprT1.W(), _Imm15_);
+-				armAsm->Sub(regS.W(), regS.W(), gprT1.W());
+-			}
++				armAsm->Sub(regS.W(), mVUviSource(mVU, regS).W(), _Imm15_);
+ 		}
+ 		else
+ 		{
+@@ -1653,8 +1660,7 @@ mVUop(mVU_ILW)
+ 			armAsm->Add(gprT1.W(), gprT1.W(), offsetSS);
+ 
+ 			// Add VU memory base
+-			armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-			armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++			mVUaddMemBase(mVU, gprT1q);
+ 		}
+ 
+ 		// Load 16-bit value from memory
+@@ -1689,8 +1695,7 @@ mVUop(mVU_ILWR)
+ 		}
+ 
+ 		armAsm->Add(gprT1.W(), gprT1.W(), offsetSS);
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
+ 		armAsm->Ldrh(regT.W(), a64::MemOperand(gprT1q));
+@@ -1739,8 +1744,7 @@ mVUop(mVU_ISW)
+ 			}
+ 			mVUaddrFix(mVU, gprT1);
+ 
+-			armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-			armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++			mVUaddMemBase(mVU, gprT1q);
+ 		}
+ 
+ 		// Load VI[It] value (zero-extended to 32-bit) and store to selected lanes
+@@ -1775,8 +1779,7 @@ mVUop(mVU_ISWR)
+ 			armAsm->Mov(gprT1.W(), 0);
+ 		}
+ 
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1, false, true);
+ 		if (_X) armAsm->Str(regT.W(), a64::MemOperand(gprT1q, 0));
+@@ -1822,8 +1825,7 @@ mVUop(mVU_LQ)
+ 				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
+ 			}
+ 			mVUaddrFix(mVU, gprT1);
+-			armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-			armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++			mVUaddMemBase(mVU, gprT1q);
+ 		}
+ 
+ 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
+@@ -1854,8 +1856,7 @@ mVUop(mVU_LQD)
+ 			armAsm->Mov(gprT1.W(), 0xffff & (mVU.microMemSize - 8));
+ 		}
+ 
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		if (!mVUlow.noWriteVF)
+ 		{
+@@ -1887,8 +1888,7 @@ mVUop(mVU_LQI)
+ 			armAsm->Mov(gprT1.W(), 0);
+ 		}
+ 
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		if (!mVUlow.noWriteVF)
+ 		{
+@@ -1934,8 +1934,7 @@ mVUop(mVU_SQ)
+ 				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
+ 			}
+ 			mVUaddrFix(mVU, gprT1);
+-			armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-			armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++			mVUaddMemBase(mVU, gprT1q);
+ 		}
+ 
+ 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
+@@ -1975,8 +1974,7 @@ mVUop(mVU_SQD)
+ 			armAsm->Mov(gprT1.W(), 0xffff & (mVU.microMemSize - 8));
+ 		}
+ 
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
+ 		if (_X_Y_Z_W == 0xf)
+@@ -2014,8 +2012,7 @@ mVUop(mVU_SQI)
+ 			armAsm->Mov(gprT1.W(), 0);
+ 		}
+ 
+-		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
+-		armAsm->Add(gprT1q, gprT2q, gprT1q.X());
++		mVUaddMemBase(mVU, gprT1q);
+ 
+ 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
+ 		if (_X_Y_Z_W == 0xf)
+diff --git a/pcsx2/arm64/microVU_Misc-arm64.h b/pcsx2/arm64/microVU_Misc-arm64.h
+index adff72f44..3fb1638e5 100644
+--- a/pcsx2/arm64/microVU_Misc-arm64.h
++++ b/pcsx2/arm64/microVU_Misc-arm64.h
+@@ -252,6 +252,8 @@ static const char branchSTR[16][8] = {
+ // globals at 0xaaab_xxxx_xxxx live ~64TB from the JIT cache at 0xfffe_xxxx,
+ // so adrp+add never reaches and we always fall through to the 3-insn path).
+ #define gprVUState a64::x19
++// Micro-mode data-memory pin. Macro mode keeps the EE's live x29 intact.
++#define gprVUMem a64::x29
+ 
+ // MemOperand anchored at gprVUState — `mVU.regs()` field accessor.
+ // `off` is the byte offset within `VURegs`. Caller is responsible for
+diff --git a/pcsx2/arm64/microVU_Misc-arm64.inl b/pcsx2/arm64/microVU_Misc-arm64.inl
+index 6dfc2a4f2..0a5a4e01b 100644
+--- a/pcsx2/arm64/microVU_Misc-arm64.inl
++++ b/pcsx2/arm64/microVU_Misc-arm64.inl
+@@ -378,6 +378,19 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
+ // IbitHack runtime-reconstruct path are deliberately left to mVUaddrFix.
+ // Ported 2026-06-23 from upstream 6018936dc (postdates the leak/4248; correct
+ // and ABI-neutral, so adopted per the "newer-upstream-pattern" rule).
++// Add an already-wrapped byte offset. VU0's cross-register-window offset
++// remains 64-bit and macro mode retains the original pointer-load path.
++static __fi void mVUaddMemBase(mV, const a64::Register& address)
++{
++	if (!mVU.cop2)
++		armAsm->Add(address, gprVUMem, address);
++	else
++	{
++		armAsm->Ldr(gprT2q, mVUstateMem(offsetof(VURegs, Mem)));
++		armAsm->Add(address, gprT2q, address);
++	}
++}
++
+ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_, const a64::Register& gprOutQ)
+ {
+ 	if (srcreg != 0 || EmuConfig.Gamefixes.IbitHack)
+@@ -395,8 +408,13 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_, con
+ 		byteAddr = ((offset & 0xff) << 4) + offsetSS_;
+ 	}
+ 
+-	armAsm->Ldr(gprOutQ, mVUstateMem(offsetof(VURegs, Mem)));
+-	if (byteAddr != 0)
+-		armAsm->Add(gprOutQ, gprOutQ, byteAddr);
++	if (!mVU.cop2)
++		armAsm->Add(gprOutQ, gprVUMem, byteAddr);
++	else
++	{
++		armAsm->Ldr(gprOutQ, mVUstateMem(offsetof(VURegs, Mem)));
++		if (byteAddr != 0)
++			armAsm->Add(gprOutQ, gprOutQ, byteAddr);
++	}
+ 	return true;
+ }
+diff --git a/pcsx2/arm64/microVU_Upper-arm64.inl b/pcsx2/arm64/microVU_Upper-arm64.inl
+index d2ae3d7da..c0f481766 100644
+--- a/pcsx2/arm64/microVU_Upper-arm64.inl
++++ b/pcsx2/arm64/microVU_Upper-arm64.inl
+@@ -652,10 +652,12 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
+ 
+ 		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, opType == 2);
+ 
++		const bool accInFs = isACC && (_X_Y_Z_W == 0xf);
+ 		if (isACC)
+ 		{
+ 			Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
+-			ACC = mVU.regAlloc->allocReg((_X_Y_Z_W == 0xf) ? -1 : 32, 32, 0xf, false);
++			if (!accInFs)
++				ACC = mVU.regAlloc->allocReg(32, 32, 0xf, false);
+ 			if (_XYZW_SS2)
+ 				shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
+ 		}
+@@ -683,7 +685,12 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
+ 
+ 		mVUemitSaturateAtMax(mVU, Fs, uo);
+ 
+-		if (isACC)
++		if (accInFs)
++		{
++			mVU.regAlloc->rebindFullWrite(Fs, 32);
++			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow);
++		}
++		else if (isACC)
+ 		{
+ 			if (_XYZW_SS)
+ 				armAsm->Ins(ACC.V4S(), 0, Fs.V4S(), 0); // MOVSS equivalent
+diff --git a/tests/ctest/core/recompilers/CMakeLists.txt b/tests/ctest/core/recompilers/CMakeLists.txt
+index 1867b90fd..2ad8147df 100644
+--- a/tests/ctest/core/recompilers/CMakeLists.txt
++++ b/tests/ctest/core/recompilers/CMakeLists.txt
+@@ -12,6 +12,7 @@
+ # block-link introspection.
+ add_pcsx2_test(recompiler_tests
+ 	main.cpp
++	hps2_mtvu_queue_tests.cpp
+ 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
+ 	harness/RecompilerTestEnvironment.cpp
+ 	harness/JitTestHarness.cpp
+diff --git a/tests/ctest/core/recompilers/hps2_mtvu_queue_tests.cpp b/tests/ctest/core/recompilers/hps2_mtvu_queue_tests.cpp
+new file mode 100644
+index 000000000..6fab5a8bf
+--- /dev/null
++++ b/tests/ctest/core/recompilers/hps2_mtvu_queue_tests.cpp
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: GPL-3.0+
++// Runs the actual MTVU packet writer/consumer, including NULL padding and
++// short published tails. The standalone policy test additionally checks
++// every packet under deliberate backpressure with ThreadSanitizer.
++#include "harness/RecompilerTestEnvironment.h"
++#include "MTVU.h"
++#include "VU.h"
++#include <gtest/gtest.h>
++#include <array>
++#include <cstring>
++
++namespace recompiler_tests {
++TEST(Hps2MtvuQueue, ProductionDataPacketsWrapDrainAndRestart)
++{
++	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
++	const bool was_open = vu1Thread.IsOpen();
++	if (was_open) { vu1Thread.WaitVU(); vu1Thread.Close(); }
++	struct RestoreThread
++	{
++		bool was_open;
++		~RestoreThread() { vu1Thread.Close(); if (was_open) vu1Thread.Open(); }
++	} restore{was_open};
++	std::array<u32, VU1_MEMSIZE / sizeof(u32)> payload{}, expected{};
++	for (unsigned session = 0; session < 2; ++session)
++	{
++		vu1Thread.Open();
++		std::memset(VU1.Mem, 0, VU1_MEMSIZE);
++		expected.fill(0);
++		for (unsigned n = 0; n < 20000; ++n)
++		{
++			const unsigned words = 1 + (n * 137u % payload.size());
++			for (unsigned i = 0; i < words; ++i) payload[i] = n ^ (i * 0x9e3779b9u) ^ session;
++			std::memcpy(expected.data(), payload.data(), words * sizeof(u32));
++			vu1Thread.WriteDataMem(0, payload.data(), words * sizeof(u32));
++			if (n % 97 == 0)
++			{
++				vu1Thread.WaitVU();
++				ASSERT_TRUE(vu1Thread.IsDone());
++				ASSERT_EQ(std::memcmp(expected.data(), VU1.Mem, VU1_MEMSIZE), 0) << n;
++			}
++		}
++		vu1Thread.WaitVU();
++		EXPECT_TRUE(vu1Thread.IsDone());
++		EXPECT_EQ(std::memcmp(expected.data(), VU1.Mem, VU1_MEMSIZE), 0);
++		vu1Thread.Close();
++	}
++}
++} // namespace recompiler_tests
+diff --git a/tests/ctest/core/recompilers/mvu_progcache_versioning_tests.cpp b/tests/ctest/core/recompilers/mvu_progcache_versioning_tests.cpp
+index 4b556e372..8be4c0141 100644
+--- a/tests/ctest/core/recompilers/mvu_progcache_versioning_tests.cpp
++++ b/tests/ctest/core/recompilers/mvu_progcache_versioning_tests.cpp
+@@ -59,7 +59,7 @@
+ // round-trip tests.
+ namespace pcsx2_test
+ {
+-	static constexpr u32 kMvuCompilerAbiVersionMirror = 20;
++	static constexpr u32 kMvuCompilerAbiVersionMirror = 1001;
+ }
+ 
+ namespace
+diff --git a/tests/ctest/core/recompilers/vif_unpack_dynarec_tests.cpp b/tests/ctest/core/recompilers/vif_unpack_dynarec_tests.cpp
+index 4c64d84c8..da524835c 100644
+--- a/tests/ctest/core/recompilers/vif_unpack_dynarec_tests.cpp
++++ b/tests/ctest/core/recompilers/vif_unpack_dynarec_tests.cpp
+@@ -231,7 +231,7 @@ struct RunResult
+ 
+ enum class Path { Reference, InterpreterNeon, Dynarec };
+ 
+-RunResult RunPath(const UnpackCase& c, const std::vector<u8>& data, Path path)
++RunResult RunPath(const UnpackCase& c, const std::vector<u8>& data, Path path, bool reset_cache = true)
+ {
+ 	FillVuMemPattern(c.idx);
+ 	SeedVifState(c);
+@@ -253,7 +253,8 @@ RunResult RunPath(const UnpackCase& c, const std::vector<u8>& data, Path path)
+ 			// and VifUnpackNEON_Dynarec::SetMasks/writeBackRow resolve MTVU_VifX
+ 			// through it. Left at its zero-initialized value, a VIF1 unpack reads
+ 			// VIF0's row/col registers.
+-			resetNewVif(c.idx);
++			if (reset_cache)
++				resetNewVif(c.idx);
+ 			if (c.idx)
+ 				dVifUnpack<1>(data.data(), isFill);
+ 			else
+@@ -475,6 +476,33 @@ INSTANTIATE_TEST_SUITE_P(
+ 
+ // ---------------------------------------------------------------------------
+ 
++TEST(VifUnpackCache, RepeatedKeysCollisionsAndCodeAddressReuse)
++{
++	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
++	EnsureVifUnpackReady();
++	resetNewVif(0);
++	resetNewVif(1);
++	for (unsigned repetition = 0; repetition < 3; ++repetition)
++	{
++		unsigned index = 0;
++		for (const UnpackCase& c : kCases)
++		{
++			// Reuse code addresses under different format/mask/mode keys.
++			if ((index++ % 17) == 0)
++			{
++				resetNewVif(0);
++				resetNewVif(1);
++			}
++			const auto data = MakeSourceData(static_cast<size_t>(c.num) * 16);
++			const auto expected = RunPath(c, data, Path::Reference);
++			const auto cold = RunPath(c, data, Path::Dynarec, false);
++			ExpectMemEqual(c, expected, cold, "cached lookup cold/collision");
++			const auto warm = RunPath(c, data, Path::Dynarec, false);
++			ExpectMemEqual(c, expected, warm, "cached lookup repeated key");
++		}
++	}
++}
++
+ // The one W-lane fact that is checkable without re-deriving the generators'
+ // iteration arithmetic: an aligned V2_32 unpack zeroes W. Both generators do it
+ // ("zero last word - tested on ps2"), and the x86 SSE generator agrees, so a

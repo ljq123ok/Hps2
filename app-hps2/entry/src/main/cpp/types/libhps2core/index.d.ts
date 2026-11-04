@@ -1,4 +1,19 @@
 export const startBios: (dataRoot: string, biosDir: string, gamePath: string) => number;
+/** 开发诊断：ogl/sw/null/default，Vulkan 构建另支持 vk；仅 VM 停止时接受，不持久化，返回 1/0。 */
+export const setDiagnosticRenderer: (renderer: string) => number;
+/** 开发诊断：停止 VM 后开启 JIT 地址映射日志；默认关闭，不持久化。 */
+export const setDiagnosticJitProfile: (enabled: boolean) => number;
+export const setDiagnosticThreadQoS: (enabled: boolean) => number;
+/** Development-only Kirin 8000 affinity experiment, 0=unchanged, 1=4-7, 2/3/4=only EE/GS/VU may use 7, 5=4-6. */
+export const setDiagnosticAffinity: (mode: number) => number;
+/** Development launch experiment; -1 / 99 / -1 preserve normal settings. */
+export const setTimingPreferences: (underclock: boolean, skip: boolean, instant: boolean) => boolean;
+export const setDiagnosticTiming: (instant: number, rate: number, skip: number) => number;
+export const setRendererPreference: (renderer: string) => number;
+export const isVulkanAvailable: () => boolean;
+/** 开发包实验开关：default=沿用游戏/核心，off=关闭，pipelined=Vulkan GS流水线程；下次启动生效。 */
+export const isDevelopmentBuild: () => boolean;
+export const setDiagnosticGsBackThreadMode: (mode: string) => number;
 export const setSurface: (surfaceId: string, width: number, height: number) => number;
 export const initVirtualPad: () => number;
 /** GameControllerKit 已接管实体手柄时返回 1。 */

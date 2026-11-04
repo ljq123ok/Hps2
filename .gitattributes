@@ -1,0 +1,2 @@
+# Unified diffs contain intentional context whitespace; verify-upstream checks the source.
+patches/upstream/*.patch -whitespace
